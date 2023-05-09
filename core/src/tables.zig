@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const trie = @import("./trie.zig");
 
@@ -16,9 +17,11 @@ pub const root_node = blk: {
         @embedFile("./tables/8.wxw.txt"),
     };
 
+    const end_of_line = if (builtin.os.tag == .windows) "\r\n" else "\n";
+
     @setEvalBranchQuota(100_000_000);
     inline for (tables) |table_content| {
-        var lines_iter = std.mem.split(u8, table_content, "\n");
+        var lines_iter = std.mem.split(u8, table_content, end_of_line);
 
         while (lines_iter.next()) |line| {
             const should_skip = std.mem.startsWith(u8, line, "#") or std.mem.trim(u8, line, " ").len == 0;
