@@ -17,7 +17,7 @@ pub const root_node = blk: {
         @embedFile("./tables/8.wxw.txt"),
     };
 
-    const end_of_line = if (builtin.os.tag == .windows) "\r\n" else "\n";
+    const end_of_line = if (@import("tables_eol").tables_eol) |tables_eol| tables_eol else if (builtin.os.tag == .windows) "\r\n" else "\n";
 
     @setEvalBranchQuota(100_000_000);
     inline for (tables) |table_content| {

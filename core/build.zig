@@ -15,6 +15,10 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const tables_eol_option = b.option([]const u8, "tables_eol", "The EOL character for table files in the `src/tables/` directory. Normally it's \"\\n\" in Unix and Unix-like OSs and \"\\r\\n\" in Windows.");
+    const tables_eol = b.addOptions();
+    tables_eol.addOption(?[]const u8, "tables_eol", tables_eol_option);
+
     const static_lib = b.addStaticLibrary(.{
         .name = "jd",
         // In this case the main source file is merely a path, however, in more
@@ -31,6 +35,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    static_lib.addOptions("tables_eol", tables_eol);
+    dynamic_lib.addOptions("tables_eol", tables_eol);
 
     static_lib.pie = true;
 
