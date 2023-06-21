@@ -1,14 +1,16 @@
 const std = @import("std");
 
 const query = @import("./query.zig");
+const trie = @import("./trie.zig");
 const root_node = @import("./tables.zig").root_node;
 
+const node_init_options = if (@import("lite").lite) |lite| trie.NodeInitOptions{ .compressed = lite } else trie.NodeInitOptions{};
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
-var context: query.Context = undefined;
+var context: query.Context(node_init_options) = undefined;
 
 export fn jd_init(page_size: u8) void {
-    context = query.Context.init(allocator, .{
+    context = query.Context(node_init_options).init(allocator, .{
         .root_node = &root_node,
         .page_size = page_size,
     });

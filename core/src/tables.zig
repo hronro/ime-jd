@@ -4,7 +4,8 @@ const builtin = @import("builtin");
 const trie = @import("./trie.zig");
 
 pub const root_node = blk: {
-    comptime var node = trie.Node.init();
+    const node_init_options = if (@import("lite").lite) |lite| trie.NodeInitOptions{ .compressed = lite } else trie.NodeInitOptions{};
+    comptime var node = trie.Node(node_init_options).init();
 
     const tables = [_][]const u8{
         @embedFile("./tables/1.danzi.txt"),
@@ -30,10 +31,10 @@ pub const root_node = blk: {
                 var split_iter = std.mem.split(u8, line, "\t");
                 const value = std.mem.trim(u8, split_iter.next().?, " ") ++ "";
                 if (split_iter.next()) |k| {
-                    const key = std.mem.trim(u8, k, " ") ++ "";
-                    node.add(key, value);
+                    const keys = std.mem.trim(u8, k, " ") ++ "";
+                    node.add(keys, value);
                 } else {
-                    @compileError(std.fmt.comptimePrint("Unable to find key in the line: {s}\n", .{line}));
+                    @compileError(std.fmt.comptimePrint("Unable to find keys in the line: {s}\n", .{line}));
                 }
             }
         }

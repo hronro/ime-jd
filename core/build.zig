@@ -19,6 +19,10 @@ pub fn build(b: *std.Build) void {
     const tables_eol = b.addOptions();
     tables_eol.addOption(?[]const u8, "tables_eol", tables_eol_option);
 
+    const lite_option = b.option(bool, "lite", "Whether to build the lite version of the library. Lite version uses less memory but is a little bit slower.");
+    const lite = b.addOptions();
+    lite.addOption(?bool, "lite", lite_option);
+
     const static_lib = b.addStaticLibrary(.{
         .name = "jd",
         // In this case the main source file is merely a path, however, in more
@@ -37,7 +41,9 @@ pub fn build(b: *std.Build) void {
     });
 
     static_lib.addOptions("tables_eol", tables_eol);
+    static_lib.addOptions("lite", lite);
     dynamic_lib.addOptions("tables_eol", tables_eol);
+    dynamic_lib.addOptions("lite", lite);
 
     static_lib.pie = true;
 
