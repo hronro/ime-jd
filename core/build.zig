@@ -59,7 +59,11 @@ pub fn build(b: *std.Build) void {
     // location when the user invokes the "install" step (the default step when
     // running `zig build`).
     b.installArtifact(static_lib);
-    b.installArtifact(dynamic_lib);
+    // Somehow on iOS, installing shared libraries will cause the linker to complain
+    // about missing symbols. So we don't install shared libraries on iOS.
+    if (target.os_tag != .ios) {
+        b.installArtifact(dynamic_lib);
+    }
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
