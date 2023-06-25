@@ -1,0 +1,4 @@
+module Libjd {
+    header "jd.h"
+    export *
+}
