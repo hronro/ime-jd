@@ -196,7 +196,7 @@ pub fn Node(comptime options: NodeInitOptions) type {
             pub fn indexOfChild(self: *const Self, key: u8) ?usize {
                 _ = self;
                 return switch (key) {
-                    'a'...'z' => @intCast(usize, key - 'a'),
+                    'a'...'z' => @intCast(key - 'a'),
                     ';' => 26,
                     else => null,
                 };
@@ -205,7 +205,7 @@ pub fn Node(comptime options: NodeInitOptions) type {
             pub fn keyOfChildByIndex(self: *const Self, index: usize) ?u8 {
                 _ = self;
                 return switch (index) {
-                    0...25 => @intCast(u8, index) + 'a',
+                    0...25 => @as(u8, @intCast(index)) + 'a',
                     26 => ';',
                     else => null,
                 };
