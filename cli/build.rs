@@ -1,40 +1,27 @@
 use std::env;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    let core_dir = {
-        let mut p = env::current_dir().unwrap();
-        p.pop();
-        p.push("core");
-        p
-    };
-
-    if let Ok(libjd_path) = env::var("LIBJD_PATH") {
-        println!("cargo:rustc-link-search=native={}", libjd_path);
-        println!("cargo:rustc-link-lib=static=jd");
+    // Where libjd.{a,dylib,so} live. Either supplied via LIBJD_PATH, or we
+    // build the core ourselves and use core/zig-out/lib.
+    let libs_dir: PathBuf = if let Ok(libjd_path) = env::var("LIBJD_PATH") {
+        PathBuf::from(libjd_path)
     } else {
-        let out_dir = {
-            let mut p = core_dir.clone();
-            p.push("zig-out");
-            p.push("lib");
+        let core_dir = {
+            let mut p = env::current_dir().unwrap();
+            p.pop();
+            p.push("core");
             p
         };
 
-        let zig_build_option = if cfg!(debug_assertions) {
-            vec!["build"]
-        } else {
-            vec!["build", "-Doptimize=ReleaseSmall"]
-        };
-
-        if cfg!(debug_assertions) {
-            println!("Debugging enabled");
-        } else {
-            println!("Debugging disabled");
-        }
-
+        // Always build the core with ReleaseSmall. We don't pair it with
+        // cargo's debug/release split because the trie blob + small library
+        // code are tiny — a Debug-optimized core would slow every Rust dev
+        // run with no benefit.
         if !Command::new("zig")
-            .args(zig_build_option)
-            .current_dir(core_dir)
+            .args(["build", "-Doptimize=ReleaseSmall"])
+            .current_dir(&core_dir)
             .status()
             .unwrap()
             .success()
@@ -42,8 +29,39 @@ fn main() {
             panic!("Failed to build core");
         }
 
-        println!("cargo:rustc-link-search=native={}", out_dir.display());
-        println!("cargo:rustc-link-lib=static=jd");
         println!("cargo:rerun-if-changed=../core/src");
+        println!("cargo:rerun-if-changed=../core/build.zig");
+        println!("cargo:rerun-if-changed=../core/scripts");
+
+        core_dir.join("zig-out").join("lib")
+    };
+
+    // Cargo release → static link. Cargo debug → dynamic link (faster
+    // relinks during iteration). The outcome is the same on macOS and Linux;
+    // the macOS-specific bit is just *how* we get there.
+    if cfg!(debug_assertions) {
+        // Dynamic linking. On both platforms we need an rpath so the binary
+        // can find libjd.{dylib,so} at runtime without DYLD_LIBRARY_PATH /
+        // LD_LIBRARY_PATH being set.
+        println!("cargo:rustc-link-search=native={}", libs_dir.display());
+        println!("cargo:rustc-link-lib=dylib=jd");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", libs_dir.display());
+    } else {
+        // Static linking. We pass the archive path directly because Apple's
+        // ld64 ignores rustc's "static" link kind and silently prefers
+        // libjd.dylib when both files are in a search dir — handing it the
+        // absolute .a path side-steps that. Linux's ld accepts the same
+        // form and treats it as a static input, so the build.rs behaves
+        // identically on both platforms.
+        let static_lib = libs_dir.join("libjd.a");
+        if !static_lib.exists() {
+            panic!(
+                "{} not found. Build core first or point LIBJD_PATH at a directory containing libjd.a.",
+                static_lib.display()
+            );
+        }
+        println!("cargo:rustc-link-arg={}", static_lib.display());
     }
+
+    println!("cargo:rerun-if-env-changed=LIBJD_PATH");
 }

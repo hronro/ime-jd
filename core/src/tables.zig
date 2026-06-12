@@ -1,46 +1,12 @@
-const std = @import("std");
-const builtin = @import("builtin");
+//! Exposes the table data as a raw blob of bytes.
+//!
+//! The blob is built at build time by `scripts/gen_trie.zig` (driven by
+//! `build.zig`) from `src/tables/*.txt`. At runtime, `jd_init` calls
+//! `trie.Trie.fromBytes(blob_bytes)` to reinterpret the embedded bytes as
+//! a `Trie` view in O(1) — no parsing, no copying.
 
-const trie = @import("./trie.zig");
+const trie_blob = @import("trie_blob");
 
-pub const root_node = blk: {
-    const node_init_options = if (@import("lite").lite) |lite| trie.NodeInitOptions{ .compressed = lite } else trie.NodeInitOptions{};
-    comptime var node = trie.Node(node_init_options).init();
-
-    const tables = [_][]const u8{
-        @embedFile("./tables/1.danzi.txt"),
-        @embedFile("./tables/2.cizu.txt"),
-        @embedFile("./tables/3.fuhao.txt"),
-        @embedFile("./tables/4.buchong.txt"),
-        @embedFile("./tables/5.lianjie.txt"),
-        @embedFile("./tables/6.yingwen.txt"),
-        @embedFile("./tables/7.chaojizici.txt"),
-        @embedFile("./tables/8.wxw.txt"),
-    };
-
-    const end_of_line = if (@import("tables_eol").tables_eol) |tables_eol| tables_eol else if (builtin.os.tag == .windows) "\r\n" else "\n";
-
-    @setEvalBranchQuota(100_000_000);
-    inline for (tables) |table_content| {
-        var lines_iter = std.mem.split(u8, table_content, end_of_line);
-
-        while (lines_iter.next()) |line| {
-            const should_skip = std.mem.startsWith(u8, line, "#") or std.mem.trim(u8, line, " ").len == 0;
-
-            if (!should_skip) {
-                var split_iter = std.mem.split(u8, line, "\t");
-                const value = std.mem.trim(u8, split_iter.next().?, " ") ++ "";
-                if (split_iter.next()) |k| {
-                    const keys = std.mem.trim(u8, k, " ") ++ "";
-                    node.add(keys, value);
-                } else {
-                    @compileError(std.fmt.comptimePrint("Unable to find keys in the line: {s}\n", .{line}));
-                }
-            }
-        }
-    }
-
-    node.calculateCount();
-
-    break :blk node;
-};
+/// 4-byte-aligned slice into the embedded blob. The alignment is set by
+/// the generator-emitted wrapper module that does the `@embedFile`.
+pub const blob_bytes: []align(4) const u8 = &trie_blob.bytes;

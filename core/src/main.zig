@@ -1,17 +1,21 @@
 const std = @import("std");
 
 const query = @import("./query.zig");
-const trie = @import("./trie.zig");
-const root_node = @import("./tables.zig").root_node;
+const trie_mod = @import("trie");
+const tables = @import("./tables.zig");
 
-const node_init_options = if (@import("lite").lite) |lite| trie.NodeInitOptions{ .compressed = lite } else trie.NodeInitOptions{};
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var gpa: std.heap.DebugAllocator(.{}) = .init;
 const allocator = gpa.allocator();
-var context: query.Context(node_init_options) = undefined;
+
+// Parsed once on first jd_init. Lives in BSS; the slice headers inside point
+// at the rodata-embedded blob bytes, so storage cost is just sizeof(Trie).
+var trie_value: trie_mod.Trie = undefined;
+var context: query.Context = undefined;
 
 export fn jd_init(page_size: u8) void {
-    context = query.Context(node_init_options).init(allocator, .{
-        .root_node = &root_node,
+    trie_value = trie_mod.Trie.fromBytes(tables.blob_bytes) catch unreachable;
+    context = query.Context.init(allocator, .{
+        .trie = &trie_value,
         .page_size = page_size,
     });
 }

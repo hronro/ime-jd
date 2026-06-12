@@ -1,86 +1,126 @@
 const std = @import("std");
 
-// Although this function looks imperative, note that its job is to
-// declaratively construct a build graph that will be executed by an external
-// runner.
 pub fn build(b: *std.Build) void {
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
     const target = b.standardTargetOptions(.{});
-
-    // Standard optimization options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
-    // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const tables_eol_option = b.option([]const u8, "tables_eol", "The EOL character for table files in the `src/tables/` directory. Normally it's \"\\n\" in Unix and Unix-like OSs and \"\\r\\n\" in Windows.");
-    const tables_eol = b.addOptions();
-    tables_eol.addOption(?[]const u8, "tables_eol", tables_eol_option);
+    // EOL of the table .txt files. Normally "\n" on Unix; pass "\r\n" if your
+    // checkout has CRLF endings on Windows.
+    const tables_eol_option = b.option([]const u8, "tables_eol", "EOL for src/tables/*.txt files (default: lf)") orelse "lf";
 
-    const lite_option = b.option(bool, "lite", "Whether to build the lite version of the library. Lite version uses less memory but is a little bit slower.");
-    const lite = b.addOptions();
-    lite.addOption(?bool, "lite", lite_option);
+    // ---- Shared format module (host + target) ----
+    // blob_format.zig defines the on-disk layout. Both the generator (host)
+    // and the library (target) compile against it.
+    const blob_format_target_mod = b.createModule(.{
+        .root_source_file = b.path("src/blob_format.zig"),
+        .target = target,
+    });
+    const blob_format_host_mod = b.createModule(.{
+        .root_source_file = b.path("src/blob_format.zig"),
+        .target = b.graph.host,
+    });
 
-    const static_lib = b.addStaticLibrary(.{
-        .name = "jd",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
-        .root_source_file = .{ .path = "src/main.zig" },
+    // ---- Trie module (target side, embedded in the lib) ----
+    // Has to be its own module so the host-side gen_trie can also import it,
+    // using a separate host-targeted copy below.
+    const trie_target_mod = b.createModule(.{
+        .root_source_file = b.path("src/trie.zig"),
+        .target = target,
+    });
+    trie_target_mod.addImport("blob_format", blob_format_target_mod);
+
+    // ---- Host-side generator ----
+    // gen_trie is a normal Zig executable that runs at build time. It needs
+    // its own host-targeted copy of trie.zig (which it uses for buildBlob).
+    const trie_host_mod = b.createModule(.{
+        .root_source_file = b.path("src/trie.zig"),
+        .target = b.graph.host,
+    });
+    trie_host_mod.addImport("blob_format", blob_format_host_mod);
+
+    const gen_mod = b.createModule(.{
+        .root_source_file = b.path("scripts/gen_trie.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseFast,
+    });
+    gen_mod.addImport("trie", trie_host_mod);
+
+    const gen_exe = b.addExecutable(.{ .name = "gen_trie", .root_module = gen_mod });
+
+    // ---- gen_trie run step: produces trie.bin + trie_blob_module.zig ----
+    const gen_run = b.addRunArtifact(gen_exe);
+    const trie_out_dir = gen_run.addOutputDirectoryArg("trie_data");
+    gen_run.addArg(tables_eol_option);
+    // Add every table file as an explicit input so cache invalidation works.
+    const tables = [_][]const u8{
+        "src/tables/1.danzi.txt",
+        "src/tables/2.cizu.txt",
+        "src/tables/3.fuhao.txt",
+        "src/tables/4.buchong.txt",
+        "src/tables/5.lianjie.txt",
+        "src/tables/6.yingwen.txt",
+        "src/tables/7.chaojizici.txt",
+        "src/tables/8.wxw.txt",
+    };
+    for (tables) |t| gen_run.addFileArg(b.path(t));
+
+    // ---- Blob module: wraps trie.bin via @embedFile, exposed as `trie_blob`. ----
+    const blob_module = b.createModule(.{
+        .root_source_file = trie_out_dir.path(b, "trie_blob_module.zig"),
+        .target = target,
+    });
+
+    // ---- Library root module ----
+    const lib_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const dynamic_lib = b.addSharedLibrary(.{
+    lib_mod.addImport("trie", trie_target_mod);
+    lib_mod.addImport("blob_format", blob_format_target_mod);
+    lib_mod.addImport("trie_blob", blob_module);
+
+    const static_lib = b.addLibrary(.{
         .name = "jd",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
-        .root_source_file = .{ .path = "src/main.zig" },
-        .target = target,
-        .optimize = optimize,
+        .root_module = lib_mod,
+        .linkage = .static,
     });
-
-    static_lib.addOptions("tables_eol", tables_eol);
-    static_lib.addOptions("lite", lite);
-    dynamic_lib.addOptions("tables_eol", tables_eol);
-    dynamic_lib.addOptions("lite", lite);
-
+    // PIE only applies to the static lib (shared libs are PIC by definition).
     static_lib.pie = true;
 
-    if (optimize == .Debug) {
-        static_lib.bundle_compiler_rt = true;
-        dynamic_lib.bundle_compiler_rt = true;
-    } else {
-        static_lib.strip = true;
-        dynamic_lib.strip = true;
-    }
+    const dynamic_lib = b.addLibrary(.{
+        .name = "jd",
+        .root_module = lib_mod,
+        .linkage = .dynamic,
+    });
 
-    // This declares intent for the library to be installed into the standard
-    // location when the user invokes the "install" step (the default step when
-    // running `zig build`).
+    // `bundle_compiler_rt` was set in Debug builds in the original build.zig
+    // to inline compiler-rt into the archive, but on macOS that produces an
+    // additional archive member that knocks the main object out of 8-byte
+    // alignment, which Apple's `ld` rejects. The consumer (cli/, etc.) gets
+    // compiler-rt symbols from libSystem on macOS / libgcc on Linux anyway,
+    // so leaving this off is fine.
+
     b.installArtifact(static_lib);
-    // Somehow on iOS, installing shared libraries will cause the linker to complain
-    // about missing symbols. So we don't install shared libraries on iOS.
-    if (target.os_tag != .ios) {
+    // On iOS the linker complains about missing symbols for shared libs.
+    if (target.result.os.tag != .ios) {
         b.installArtifact(dynamic_lib);
     }
 
-    // Creates a step for unit testing. This only builds the test executable
-    // but does not run it.
-    const main_tests = b.addTest(.{
-        // we choose `src/tests.zig` as root instead of `src/main.zig`,
-        // because we want to avoid the the compile-time trie generation,
-        // which would spend a lot of time.
-        .root_source_file = .{ .path = "src/tests.zig" },
+    // ---- Tests ----
+    // We run the trie tests, plus the query/pagination tests via tests.zig.
+    // Each test module gets the same module wiring as the lib so imports work.
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/tests.zig"),
         .target = target,
         .optimize = optimize,
     });
+    test_mod.addImport("trie", trie_target_mod);
+    test_mod.addImport("blob_format", blob_format_target_mod);
 
+    const main_tests = b.addTest(.{ .root_module = test_mod });
     const run_main_tests = b.addRunArtifact(main_tests);
 
-    // This creates a build step. It will be visible in the `zig build --help` menu,
-    // and can be selected like this: `zig build test`
-    // This will evaluate the `test` step rather than the default, which is "install".
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&run_main_tests.step);
 }
