@@ -1,6 +1,6 @@
-use std::io::Write;
+use std::io::{Result, Write};
 
-use crossterm::{event, terminal, Result};
+use crossterm::{event, terminal};
 
 use crate::core;
 

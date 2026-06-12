@@ -1,9 +1,9 @@
-use std::io::Write;
+use std::io::{Result, Write};
 
 use crossterm::{
     cursor, event, execute, queue,
     style::{Print, PrintStyledContent, StyledContent, Stylize},
-    terminal, Result,
+    terminal,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 

@@ -32,17 +32,21 @@ unsafe extern "C" {
 }
 
 unsafe fn c_str(ptr: *const c_char) -> Option<String> {
-    if ptr.is_null() {
-        None
-    } else {
-        Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+    unsafe {
+        if ptr.is_null() {
+            None
+        } else {
+            Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+        }
     }
 }
 
 unsafe fn first_option(r: &QueryResult) -> Option<String> {
-    let opts_ptr = r.options?;
-    let opt = &*opts_ptr.as_ptr();
-    c_str(opt.value)
+    unsafe {
+        let opts_ptr = r.options?;
+        let opt = &*opts_ptr.as_ptr();
+        c_str(opt.value)
+    }
 }
 
 #[test]
