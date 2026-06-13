@@ -1,5 +1,5 @@
 /// A linked list, but also contains a pointer to the last node,
-/// which allows you apped to the end of the list with O(1) complexity.
+/// which allows you append item to the end of the list with O(1) complexity.
 pub fn TailLinkedList(comptime T: type) type {
     return struct {
         const Self = @This();

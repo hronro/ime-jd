@@ -43,12 +43,12 @@ pub fn expectEqualQueryOption(expected: QueryOption, actual: QueryOption) !void 
                 return error.TestExpectedEqual;
             }
         } else {
-            std.debug.print("The `hint` field is expect not to be null but actully is.\n", .{});
+            std.debug.print("The `hint` field is expected not to be null but actually is.\n", .{});
             return error.TestExpectedEqual;
         }
     } else {
         if (actual.hint) |_| {
-            std.debug.print("The `hint` field is expect to be null but actuall is not.\n", .{});
+            std.debug.print("The `hint` field is expected to be null but actually is not.\n", .{});
             return error.TestExpectedEqual;
         }
     }
@@ -94,7 +94,7 @@ pub const NodePagination = struct {
     current_page: u32,
     pages: []?[]const QueryOption,
     tail_linked_list: TLL,
-    tll_node_skiped_options: u8,
+    tll_node_skipped_options: u8,
 
     pub fn init(allocator: std.mem.Allocator, trie: *const Trie, node: *const Node, page_size: u8) Self {
         const total_pages: u32 = blk: {
@@ -125,7 +125,7 @@ pub const NodePagination = struct {
             .current_page = 1,
             .pages = pages,
             .tail_linked_list = tail_linked_list,
-            .tll_node_skiped_options = 0,
+            .tll_node_skipped_options = 0,
         };
     }
 
@@ -183,7 +183,7 @@ pub const NodePagination = struct {
             const node = tll_node.*.data.node;
             const hint = tll_node.*.data.hint;
 
-            if (self.tll_node_skiped_options == 0) {
+            if (self.tll_node_skipped_options == 0) {
                 for (0..node.getWidth()) |i| {
                     if (node.getChildByIndex(self.trie, i)) |child| {
                         const new_tll_node = allocator.create(TLL.Node) catch unreachable;
@@ -219,19 +219,19 @@ pub const NodePagination = struct {
             }
 
             const node_values = node.values(self.trie);
-            const value = node_values.at(self.tll_node_skiped_options);
+            const value = node_values.at(self.tll_node_skipped_options);
             options[inserted_options_count] = .{
                 .hint = hint,
                 .value = value.ptr,
             };
 
-            self.tll_node_skiped_options += 1;
+            self.tll_node_skipped_options += 1;
             inserted_options_count += 1;
 
-            if (self.tll_node_skiped_options == node_values.len()) {
+            if (self.tll_node_skipped_options == node_values.len()) {
                 const removed_tll_node = self.tail_linked_list.popFirst().?;
                 allocator.destroy(removed_tll_node);
-                self.tll_node_skiped_options = 0;
+                self.tll_node_skipped_options = 0;
             }
         }
 

@@ -1,7 +1,7 @@
 //! On-disk format for the build-time-generated trie blob.
 //!
 //! The generator (`scripts/gen_trie.zig`) emits a single contiguous byte
-//! buffer in this layout; the runtime (`blob_trie.zig`) reinterprets that
+//! buffer in this layout; the runtime (`trie.zig`) reinterprets that
 //! buffer in place via @ptrCast. Both ends must speak the same format, so
 //! everything is defined once here.
 //!
