@@ -1,0 +1,163 @@
+name: Build Libraries and Executables On Push
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  # Zig cross-compiles everything from one x86_64 Linux runner. libjd doesn't
+  # link libc, so one Linux build per arch covers both glibc and musl CLI
+  # variants — no need to split.
+  build-libs:
+    name: libs ${{ matrix.libs_key }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - libs_key: linux-x86_64
+            zig_target: x86_64-linux
+          - libs_key: linux-aarch64
+            zig_target: aarch64-linux
+          - libs_key: macos-x86_64
+            zig_target: x86_64-macos
+          - libs_key: macos-aarch64
+            zig_target: aarch64-macos
+          - libs_key: windows-x86_64
+            zig_target: x86_64-windows-msvc
+          - libs_key: windows-aarch64
+            zig_target: aarch64-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build static + dynamic libraries
+        working-directory: core
+        run: zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.zig_target }}
+
+      - name: Stage libjd bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="dist/libjd-${{ matrix.libs_key }}"
+          mkdir -p "$out"
+          # Keeps zig-out's lib/ + bin/ split (DLLs live in bin/ on Windows).
+          cp -R core/zig-out/. "$out/"
+          cp -R core/include "$out/include"
+
+      - name: Upload libjd bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: libjd-${{ matrix.libs_key }}
+          path: dist/libjd-${{ matrix.libs_key }}
+          if-no-files-found: error
+
+  # One CLI build per Rust target. Each downloads the matching prebuilt libs
+  # and statically links libjd into jd-cli. Linux gnu and musl variants share
+  # the same libjd.a (it's libc-free).
+  build-cli:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    needs: build-libs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            libs_key: linux-x86_64
+            os: linux
+            use_cross: true
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            libs_key: linux-x86_64
+            os: linux
+            use_cross: true
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            libs_key: linux-aarch64
+            os: linux
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            libs_key: linux-aarch64
+            os: linux
+            use_cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            libs_key: macos-x86_64
+            os: macos
+            use_cross: false
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            libs_key: macos-aarch64
+            os: macos
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            libs_key: windows-x86_64
+            os: windows
+            use_cross: false
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            libs_key: windows-aarch64
+            os: windows
+            use_cross: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Download prebuilt libs
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-${{ matrix.libs_key }}
+          path: prebuilt-libs
+
+      - name: Build CLI (cross)
+        if: matrix.use_cross
+        working-directory: cli
+        env:
+          LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs/lib
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build CLI (cargo)
+        if: ${{ !matrix.use_cross }}
+        working-directory: cli
+        env:
+          LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs/lib
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage CLI binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="dist/jd-cli-${{ matrix.target }}"
+          mkdir -p "$out"
+          if [[ "${{ matrix.os }}" == "windows" ]]; then
+            cp cli/target/${{ matrix.target }}/release/jd-cli.exe "$out/"
+          else
+            cp cli/target/${{ matrix.target }}/release/jd-cli     "$out/"
+          fi
+
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: jd-cli-${{ matrix.target }}
+          path: dist/jd-cli-${{ matrix.target }}
+          if-no-files-found: error
