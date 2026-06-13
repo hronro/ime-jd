@@ -36,8 +36,8 @@ fn parseTables(
             if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
             const tab = std.mem.indexOfScalar(u8, trimmed, '\t') orelse {
-                std.debug.print("warning: line without TAB in {s}: {s}\n", .{ path, trimmed });
-                continue;
+                std.debug.print("error: line without TAB in {s}: {s}\n", .{ path, trimmed });
+                return error.MalformedTableLine;
             };
             const value = std.mem.trim(u8, trimmed[0..tab], " ");
             const keys = std.mem.trim(u8, trimmed[tab + 1 ..], " ");
