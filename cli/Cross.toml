@@ -1,0 +1,6 @@
+[build.env]
+# Forward LIBJD_PATH into the cross container *and* bind-mount the directory
+# it points at, so the pre-built libjd.a (produced by zig on the host) is
+# visible inside the container at the same absolute path.
+passthrough = ["LIBJD_PATH"]
+volumes = ["LIBJD_PATH"]

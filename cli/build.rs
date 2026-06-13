@@ -3,8 +3,15 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    // Where libjd.{a,dylib,so} live. Either supplied via LIBJD_PATH, or we
-    // build the core ourselves and use core/zig-out/lib.
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let is_windows = target_os == "windows";
+
+    // On Windows, build.zig names the static archive `jd_static.lib` to avoid
+    // colliding with the DLL's import library `jd.lib`. Unix uses `libjd.a`.
+    let static_lib_name = if is_windows { "jd_static.lib" } else { "libjd.a" };
+
+    // Where the libs live. Either supplied via LIBJD_PATH, or we build the
+    // core ourselves and use core/zig-out/lib.
     let libs_dir: PathBuf = if let Ok(libjd_path) = env::var("LIBJD_PATH") {
         PathBuf::from(libjd_path)
     } else {
@@ -36,10 +43,11 @@ fn main() {
         core_dir.join("zig-out").join("lib")
     };
 
-    // Cargo release → static link. Cargo debug → dynamic link (faster
-    // relinks during iteration). The outcome is the same on macOS and Linux;
-    // the macOS-specific bit is just *how* we get there.
-    if cfg!(debug_assertions) {
+    // Cargo release → static link. Cargo debug → dynamic link on Unix
+    // (faster relinks during iteration). Windows always static-links: the
+    // rpath trick used on Unix doesn't apply, and forcing jd.dll next to the
+    // binary at test time is more friction than it's worth.
+    if cfg!(debug_assertions) && !is_windows {
         // Dynamic linking. On both platforms we need an rpath so the binary
         // can find libjd.{dylib,so} at runtime without DYLD_LIBRARY_PATH /
         // LD_LIBRARY_PATH being set.
@@ -50,14 +58,15 @@ fn main() {
         // Static linking. We pass the archive path directly because Apple's
         // ld64 ignores rustc's "static" link kind and silently prefers
         // libjd.dylib when both files are in a search dir — handing it the
-        // absolute .a path side-steps that. Linux's ld accepts the same
-        // form and treats it as a static input, so the build.rs behaves
-        // identically on both platforms.
-        let static_lib = libs_dir.join("libjd.a");
+        // absolute .a path side-steps that. Linux's ld and MSVC's link.exe
+        // also accept an absolute path as a positional input file, so the
+        // same shape works for all three.
+        let static_lib = libs_dir.join(static_lib_name);
         if !static_lib.exists() {
             panic!(
-                "{} not found. Build core first or point LIBJD_PATH at a directory containing libjd.a.",
-                static_lib.display()
+                "{} not found. Build core first or point LIBJD_PATH at a directory containing {}.",
+                static_lib.display(),
+                static_lib_name,
             );
         }
         println!("cargo:rustc-link-arg={}", static_lib.display());
