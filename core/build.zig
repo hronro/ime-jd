@@ -88,8 +88,12 @@ pub fn build(b: *std.Build) void {
     lib_mod.addImport("blob_format", blob_format_target_mod);
     lib_mod.addImport("trie_blob", blob_module);
 
+    // On Windows, both a static lib and a DLL's import lib are named `<name>.lib`,
+    // so installing both as "jd" would overwrite one. Rename the static archive
+    // to avoid the collision.
+    const static_lib_name = if (target.result.os.tag == .windows) "jd_static" else "jd";
     const static_lib = b.addLibrary(.{
-        .name = "jd",
+        .name = static_lib_name,
         .root_module = lib_mod,
         .linkage = .static,
     });

@@ -10,7 +10,15 @@ zig build -Doptimize=ReleaseSmall            # smallest binary
 zig build -Doptimize=ReleaseFast             # fastest binary
 ```
 
-Outputs land in `zig-out/lib/`:
+Outputs land in `zig-out/lib/` (and `zig-out/bin/` for the DLL on Windows):
+
+| Platform | Static library      | Dynamic library                     |
+|----------|---------------------|-------------------------------------|
+| Linux    | `libjd.a`           | `libjd.so`                          |
+| macOS    | `libjd.a`           | `libjd.dylib`                       |
+| Windows  | `jd_static.lib`     | `jd.dll` (+ `jd.lib` import library) |
+
+On Windows the static archive is named `jd_static.lib` to avoid colliding with the DLL's import library (`jd.lib`) — both would otherwise be written as `jd.lib` and overwrite each other in `zig-out/lib/`. Link against `jd_static.lib` for static linking; link against `jd.lib` and ship `jd.dll` for dynamic linking.
 
 The public header is at `include/jd.h`; a Clang/Swift module map is at `include/module.modulemap` (module name `Libjd`).
 
