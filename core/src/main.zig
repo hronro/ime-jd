@@ -1,11 +1,18 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const query = @import("./query.zig");
 const trie_mod = @import("trie");
 const tables = @import("./tables.zig");
 
-var gpa: std.heap.DebugAllocator(.{}) = .init;
-const allocator = gpa.allocator();
+// Debug builds use DebugAllocator for leak detection; release builds use
+// smp_allocator (pure Zig, thread-safe, no libc dependency) so the library
+// stays zero-dep.
+var debug_gpa: std.heap.DebugAllocator(.{}) = .init;
+const allocator = if (builtin.mode == .Debug)
+    debug_gpa.allocator()
+else
+    std.heap.smp_allocator;
 
 // Parsed once on first jd_init. Lives in BSS; the slice headers inside point
 // at the rodata-embedded blob bytes, so storage cost is just sizeof(Trie).
@@ -42,4 +49,5 @@ export fn jd_reset() void {
 
 export fn jd_deinit() void {
     context.deinit();
+    if (builtin.mode == .Debug) _ = debug_gpa.deinit();
 }
