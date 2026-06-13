@@ -10,6 +10,7 @@
 //! programmatically.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const fmt = @import("./blob_format.zig");
 
@@ -170,7 +171,16 @@ const ChildRecord = struct {
 /// Build a complete blob from `entries`. Caller owns the returned slice and
 /// must free it with `allocator.free`. The slice is `align(4)` so it can
 /// be passed straight to `Trie.fromBytes`.
-pub fn buildBlob(allocator: std.mem.Allocator, entries: []const Entry) ![]align(4) u8 {
+///
+/// The resulting blob is in `target_endian` byte order. If the host (where
+/// this code runs) and the target differ, every u32 field is byte-swapped
+/// after construction so the consumer can `@ptrCast` the bytes in its own
+/// native endianness without further translation.
+pub fn buildBlob(
+    allocator: std.mem.Allocator,
+    entries: []const Entry,
+    target_endian: std.builtin.Endian,
+) ![]align(4) u8 {
     // ---- size the work arrays ----
     var max_nodes: usize = 1;
     for (entries) |e| max_nodes += e.keys.len;
@@ -376,7 +386,64 @@ pub fn buildBlob(allocator: std.mem.Allocator, entries: []const Entry) ![]align(
     @memcpy(buf[offsets.child_keys..][0..child_total], child_keys);
     @memcpy(buf[offsets.strings..][0..strings.items.len], strings.items);
 
+    // The struct writes above all use host-native u32 storage. If the
+    // target's endianness differs, swap every u32 field in place so the
+    // runtime can `@ptrCast` straight to []const Node etc. on its side.
+    if (target_endian != builtin.cpu.arch.endian()) {
+        byteSwapBlob(buf, builtin.cpu.arch.endian());
+    }
+
     return buf;
+}
+
+/// Byte-swap every u32 field of a blob in place. Reads the header's count
+/// fields as `current_endian` so it can locate the per-pool offsets; after
+/// the call, the blob is in the opposite endianness from `current_endian`.
+///
+/// The function only touches the u32 fields (header, node, value,
+/// child-indices); u8 fields (`Node.values_len`, child keys, strings) and
+/// padding bytes are left untouched.
+fn byteSwapBlob(buf: []align(4) u8, current_endian: std.builtin.Endian) void {
+    const node_count = std.mem.readInt(u32, buf[8..12], current_endian);
+    const values_count = std.mem.readInt(u32, buf[12..16], current_endian);
+    const child_keys_total = std.mem.readInt(u32, buf[16..20], current_endian);
+    const child_indices_total = std.mem.readInt(u32, buf[20..24], current_endian);
+
+    const offsets = fmt.PoolOffsets.compute(
+        node_count,
+        values_count,
+        child_indices_total,
+        child_keys_total,
+    );
+
+    // Header: 8 u32 fields starting at offset 0.
+    for (0..8) |i| swap32At(buf, i * 4);
+
+    // Nodes: 3 u32 fields per Node (count_and_width, values_start,
+    // children_start); the trailing u8 + padding doesn't need swapping.
+    for (0..node_count) |i| {
+        const off = offsets.nodes + i * @sizeOf(fmt.Node);
+        swap32At(buf, off);
+        swap32At(buf, off + 4);
+        swap32At(buf, off + 8);
+    }
+
+    // Values: 2 u32 fields per Value (str_start, str_len).
+    for (0..values_count) |i| {
+        const off = offsets.values + i * @sizeOf(fmt.Value);
+        swap32At(buf, off);
+        swap32At(buf, off + 4);
+    }
+
+    // Child indices: one u32 each.
+    for (0..child_indices_total) |i| {
+        swap32At(buf, offsets.child_indices + i * 4);
+    }
+}
+
+inline fn swap32At(buf: []align(4) u8, offset: usize) void {
+    const slot: *align(4) u32 = @ptrCast(@alignCast(buf[offset..].ptr));
+    slot.* = @byteSwap(slot.*);
 }
 
 /// Convenience for tests / runtime callers: build the blob and reinterpret
@@ -391,7 +458,9 @@ pub const TrieHandle = struct {
 };
 
 pub fn buildTrie(allocator: std.mem.Allocator, entries: []const Entry) !TrieHandle {
-    const bytes = try buildBlob(allocator, entries);
+    // Use host endianness — the handle is consumed in the same process, so
+    // the runtime reads it natively.
+    const bytes = try buildBlob(allocator, entries, builtin.cpu.arch.endian());
     errdefer allocator.free(bytes);
     return .{ .bytes = bytes, .trie = try Trie.fromBytes(bytes) };
 }
@@ -509,4 +578,49 @@ test "blob magic / version sanity" {
     h.magic = fmt.MAGIC;
     h.version = 999;
     try testing.expectError(error.BlobVersionMismatch, Trie.fromBytes(&bytes));
+}
+
+test "buildBlob produces a byte-swapped blob for cross-endian targets" {
+    const host = builtin.cpu.arch.endian();
+    const opposite: std.builtin.Endian = switch (host) {
+        .little => .big,
+        .big => .little,
+    };
+
+    const entries = [_]Entry{
+        .{ .keys = "a", .value = "甲" },
+        .{ .keys = "ab", .value = "乙" },
+        .{ .keys = "ab", .value = "丙" },
+        .{ .keys = "ac", .value = "丁" },
+    };
+
+    const native = try buildBlob(testing.allocator, &entries, host);
+    defer testing.allocator.free(native);
+
+    const swapped = try buildBlob(testing.allocator, &entries, opposite);
+    defer testing.allocator.free(swapped);
+
+    // Same length, but the magic u32 should appear byte-reversed.
+    try testing.expectEqual(native.len, swapped.len);
+    var native_magic_bytes: [4]u8 = native[0..4].*;
+    std.mem.reverse(u8, &native_magic_bytes);
+    try testing.expectEqualSlices(u8, &native_magic_bytes, swapped[0..4]);
+
+    // The runtime reads via @ptrCast in host endianness, so a cross-endian
+    // blob is rejected as having the wrong magic.
+    try testing.expectError(error.BlobBadMagic, Trie.fromBytes(swapped));
+
+    // Swap back; the blob should be bit-identical to the natively-built one.
+    byteSwapBlob(swapped, opposite);
+    try testing.expectEqualSlices(u8, native, swapped);
+
+    // And it must parse and yield the same data.
+    const t = try Trie.fromBytes(swapped);
+    const a = t.root().getChild(&t, 'a').?;
+    try testing.expectEqualStrings("甲", a.values(&t).at(0));
+    const ab = a.getChild(&t, 'b').?;
+    try testing.expectEqualStrings("乙", ab.values(&t).at(0));
+    try testing.expectEqualStrings("丙", ab.values(&t).at(1));
+    const ac = a.getChild(&t, 'c').?;
+    try testing.expectEqualStrings("丁", ac.values(&t).at(0));
 }

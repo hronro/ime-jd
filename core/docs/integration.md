@@ -23,7 +23,10 @@ zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall
 zig build -Dtarget=aarch64-linux-musl
 zig build -Dtarget=aarch64-ios
 zig build -Dtarget=x86_64-windows
+zig build -Dtarget=powerpc-linux-musl   # big-endian target
 ```
+
+The blob's multi-byte fields are written in the target's endianness — the build-time generator runs on the host and, when the host and target differ, byte-swaps every u32 field before embedding the blob. Cross-compiling between little-endian and big-endian platforms is fully supported.
 
 ## The C API
 

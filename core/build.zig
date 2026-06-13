@@ -51,6 +51,14 @@ pub fn build(b: *std.Build) void {
     const gen_run = b.addRunArtifact(gen_exe);
     const trie_out_dir = gen_run.addOutputDirectoryArg("trie_data");
     gen_run.addArg(tables_eol_option);
+    // Pass the target's endianness so the generator can byte-swap u32 fields
+    // when the host and target differ. gen_trie itself always runs on the
+    // host, so it can't infer this on its own.
+    const target_endian_arg: []const u8 = switch (target.result.cpu.arch.endian()) {
+        .little => "le",
+        .big => "be",
+    };
+    gen_run.addArg(target_endian_arg);
     // Add every table file as an explicit input so cache invalidation works.
     const tables = [_][]const u8{
         "src/tables/1.danzi.txt",

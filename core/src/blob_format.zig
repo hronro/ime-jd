@@ -8,12 +8,12 @@
 //! Cross-platform notes:
 //!   - All integer fields are explicit u8/u32 — no usize.
 //!   - Layout uses `extern struct` so field order/padding is guaranteed.
-//!   - All multi-byte integers are host-endian. Since every realistic
-//!     target the IME ships to is little-endian (macOS, iOS, Windows,
-//!     Linux, Android — all on x86_64/ARM64), and the generator runs on
-//!     the host at build time, this works for the host==target case (the
-//!     common case). For an exotic big-endian target you would need to
-//!     swap to explicit `std.mem.readInt(.little, …)` accessors.
+//!   - All multi-byte integers are stored in **target** endianness. The
+//!     build-time generator (`scripts/gen_trie.zig`) runs on the host;
+//!     when the host and target endianness differ, `trie.buildBlob`
+//!     byte-swaps every u32 field after construction. The runtime is
+//!     consequently free to read fields directly via `@ptrCast`, in its
+//!     own native endianness, on any target.
 //!   - The Node struct is 16 bytes including 3 bytes of natural padding
 //!     after `values_len`. Keep it 4-byte-aligned so the runtime can take
 //!     the embedded byte slice and @ptrCast it to []const Node without

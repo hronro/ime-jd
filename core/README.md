@@ -36,6 +36,8 @@ At build time, `scripts/gen_trie.zig` runs on the host: it parses every `src/tab
 
 At runtime, `jd_init` reinterprets the embedded bytes as a `Trie` view in O(1) — no parsing, no copying. All trie pointers (`*const Node`, value strings) point directly into the embedded blob.
 
+Multi-byte fields in the blob are written in **target** endianness. The generator detects a mismatch with the host at build time and byte-swaps every u32 field, so the runtime can always read fields directly through `@ptrCast` in its native byte order — including when cross-compiling from LE to BE (or vice versa).
+
 ## Build & test
 
 ```sh

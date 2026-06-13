@@ -1,10 +1,14 @@
 //! Build-time trie generator.
 //!
 //! Usage (driven by build.zig, not run by hand):
-//!   gen_trie <out_dir> <eol> <table.txt> [<table.txt> ...]
+//!   gen_trie <out_dir> <eol> <target_endian> <table.txt> [<table.txt> ...]
+//!
+//! `target_endian` is "le" or "be" — gen_trie runs on the host, so when the
+//! target's endianness differs from the host's, `trie.buildBlob` byte-swaps
+//! every u32 field before writing the blob to disk.
 //!
 //! Reads each table file (lines of "<value>\t<keys>" with '#' comments),
-//! builds the trie via `trie.buildBlob` at native speed, then writes:
+//! builds the trie via `trie.buildBlob`, then writes:
 //!
 //!   <out_dir>/trie.bin              — the on-disk format (see blob_format.zig)
 //!   <out_dir>/trie_blob_module.zig  — a tiny wrapper that exposes
@@ -65,13 +69,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const io = threaded.io();
 
     const raw_args = try init.args.toSlice(arena);
-    if (raw_args.len < 4) {
-        std.debug.print("usage: gen_trie <out_dir> <eol> <table.txt> [<table.txt> ...]\n", .{});
+    if (raw_args.len < 5) {
+        std.debug.print("usage: gen_trie <out_dir> <eol> <target_endian> <table.txt> [<table.txt> ...]\n", .{});
         return error.MissingArgs;
     }
     const out_dir_path = raw_args[1];
     const eol_arg = raw_args[2];
-    const table_paths = raw_args[3..];
+    const endian_arg = raw_args[3];
+    const table_paths = raw_args[4..];
 
     const eol: []const u8 = if (std.mem.eql(u8, eol_arg, "lf"))
         "\n"
@@ -80,8 +85,15 @@ pub fn main(init: std.process.Init.Minimal) !void {
     else
         eol_arg;
 
+    const target_endian: std.builtin.Endian = blk: {
+        if (std.mem.eql(u8, endian_arg, "le")) break :blk .little;
+        if (std.mem.eql(u8, endian_arg, "be")) break :blk .big;
+        std.debug.print("error: unknown target endianness {s} (expected \"le\" or \"be\")\n", .{endian_arg});
+        return error.BadEndianArg;
+    };
+
     const entries = try parseTables(arena, io, table_paths, eol);
-    const blob = try trie.buildBlob(arena, entries);
+    const blob = try trie.buildBlob(arena, entries, target_endian);
 
     const cwd = std.Io.Dir.cwd();
     var out_dir = try cwd.createDirPathOpen(io, out_dir_path, .{});
