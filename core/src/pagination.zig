@@ -4,8 +4,9 @@ const testing = std.testing;
 const trie_mod = @import("trie");
 const Trie = trie_mod.Trie;
 const Node = trie_mod.Trie.Node;
-const TailLinkedList = @import("./tail_linked_list.zig").TailLinkedList;
 const buildTestTrie = @import("./trie_test_data.zig").buildTestTrie;
+
+const ArrayList = std.ArrayList;
 
 pub const QueryOption = extern struct {
     value: [*:0]const u8,
@@ -77,164 +78,197 @@ pub fn expectEqualQueryOptionManyItemPtr(expected: [*]const QueryOption, actual:
     }
 }
 
-const TLLNode = struct {
-    hint: ?[*:0]const u8,
+/// One entry in the BFS frontier. `path_start`/`path_len` index into the
+/// shared `path_buf`, giving the key sequence from the queried start node
+/// down to this entry's node. Hint strings are materialized on demand from
+/// this path when a value is emitted.
+const FrontierEntry = struct {
     node: *const Node,
+    path_start: u32,
+    path_len: u8,
 };
-const TLL = TailLinkedList(TLLNode);
 
+/// Lazy paginator over the values reachable from a given trie node, in BFS
+/// order (shorter completions first, ties broken by `keyRank`).
+///
+/// Design: pagination state is a single forward-only BFS cursor plus the
+/// most-recently-materialized page. `nextPage`/`prevPage` are pure integer
+/// bumps on `current_page`; all real work happens lazily in `getOptions`.
+/// If the user navigates backwards, the cursor is rewound and replayed from
+/// the start. The replay cost is O(current_page × page_size), which is
+/// invisible at IME interaction speeds.
 pub const NodePagination = struct {
     const Self = @This();
 
-    arena: std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
+    /// Backs the materialized current page (options array + hint strings).
+    /// Reset before each materialization, so old page memory is reclaimed.
+    page_arena: std.heap.ArenaAllocator,
+
     trie: *const Trie,
-    node: *const Node,
+    start_node: *const Node,
     page_size: u8,
     total_pages: u32,
     current_page: u32,
-    pages: []?[]const QueryOption,
-    tail_linked_list: TLL,
-    tll_node_skipped_options: u8,
+
+    /// BFS cursor — together (frontier, frontier_head, skipped) identify
+    /// the next value to emit. `bfs_page` is the page that the cursor will
+    /// emit next.
+    bfs_page: u32,
+    frontier: ArrayList(FrontierEntry),
+    frontier_head: usize,
+    path_buf: ArrayList(u8),
+    skipped: u8,
+
+    /// Cached page contents for `cached_page`, allocated in `page_arena`.
+    /// `cached_page == 0` means no page is currently materialized.
+    cached_options: []QueryOption,
+    cached_page: u32,
 
     pub fn init(allocator: std.mem.Allocator, trie: *const Trie, node: *const Node, page_size: u8) Self {
-        const total_pages: u32 = blk: {
-            if (node.count() % page_size == 0) {
-                break :blk node.count() / page_size;
-            } else {
-                break :blk node.count() / page_size + 1;
-            }
-        };
-
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        const pages = arena.allocator().alloc(?[]const QueryOption, total_pages) catch unreachable;
-        @memset(pages, null);
-        var tail_linked_list = TLL{};
-        const first_tll_node = arena.allocator().create(TLL.Node) catch unreachable;
-        first_tll_node.*.data = .{
-            .hint = null,
+        const total_pages: u32 = (node.count() + page_size - 1) / page_size;
+        var frontier: ArrayList(FrontierEntry) = .empty;
+        frontier.append(allocator, .{
             .node = node,
-        };
-        tail_linked_list.append(first_tll_node);
-
+            .path_start = 0,
+            .path_len = 0,
+        }) catch unreachable;
         return .{
-            .arena = arena,
+            .allocator = allocator,
+            .page_arena = std.heap.ArenaAllocator.init(allocator),
             .trie = trie,
-            .node = node,
+            .start_node = node,
             .page_size = page_size,
             .total_pages = total_pages,
             .current_page = 1,
-            .pages = pages,
-            .tail_linked_list = tail_linked_list,
-            .tll_node_skipped_options = 0,
+            .bfs_page = 1,
+            .frontier = frontier,
+            .frontier_head = 0,
+            .path_buf = .empty,
+            .skipped = 0,
+            .cached_options = &.{},
+            .cached_page = 0,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.arena.deinit();
-    }
-
-    pub fn getOptions(self: *Self) []const QueryOption {
-        if (self.pages[self.current_page - 1]) |options| {
-            return options;
-        } else {
-            const options = self.calculateQueryOptionsOfCurrentPage();
-            self.pages[self.current_page - 1] = options;
-            return options;
-        }
+        self.frontier.deinit(self.allocator);
+        self.path_buf.deinit(self.allocator);
+        self.page_arena.deinit();
     }
 
     pub fn nextPage(self: *Self) void {
-        if (self.pages[self.current_page - 1] == null) {
-            self.pages[self.current_page - 1] = self.calculateQueryOptionsOfCurrentPage();
-        }
-
-        if (self.current_page < self.total_pages) {
-            self.current_page += 1;
-        }
+        if (self.current_page < self.total_pages) self.current_page += 1;
     }
 
     pub fn prevPage(self: *Self) void {
-        if (self.current_page > 1) {
-            self.current_page -= 1;
+        if (self.current_page > 1) self.current_page -= 1;
+    }
+
+    pub fn getOptions(self: *Self) []const QueryOption {
+        if (self.cached_page == self.current_page) return self.cached_options;
+
+        if (self.current_page < self.bfs_page) self.rewindBFS();
+        while (self.bfs_page < self.current_page) self.skipOnePage();
+
+        _ = self.page_arena.reset(.retain_capacity);
+        self.cached_options = self.materializeOnePage();
+        self.cached_page = self.current_page;
+        return self.cached_options;
+    }
+
+    fn rewindBFS(self: *Self) void {
+        self.frontier.clearRetainingCapacity();
+        self.path_buf.clearRetainingCapacity();
+        self.frontier.append(self.allocator, .{
+            .node = self.start_node,
+            .path_start = 0,
+            .path_len = 0,
+        }) catch unreachable;
+        self.frontier_head = 0;
+        self.skipped = 0;
+        self.bfs_page = 1;
+    }
+
+    fn pageOptionCount(self: *const Self, page: u32) u8 {
+        if (page == self.total_pages) {
+            const rem = self.start_node.count() % self.page_size;
+            if (rem != 0) return @intCast(rem);
+        }
+        return self.page_size;
+    }
+
+    fn enqueueChildren(self: *Self, entry: FrontierEntry) void {
+        const w = entry.node.getWidth();
+        if (w == 0) return;
+        // Reserve so the inner loop never reallocates — otherwise the
+        // parent-path slice we re-read every iteration could be invalidated.
+        self.path_buf.ensureUnusedCapacity(self.allocator, @as(usize, entry.path_len + 1) * w) catch unreachable;
+        self.frontier.ensureUnusedCapacity(self.allocator, w) catch unreachable;
+        for (0..w) |i| {
+            const child = entry.node.getChildByIndex(self.trie, i).?;
+            const key = entry.node.keyOfChildByIndex(self.trie, i).?;
+            const child_path_start: u32 = @intCast(self.path_buf.items.len);
+            const parent_path = self.path_buf.items[entry.path_start..][0..entry.path_len];
+            self.path_buf.appendSliceAssumeCapacity(parent_path);
+            self.path_buf.appendAssumeCapacity(key);
+            self.frontier.appendAssumeCapacity(.{
+                .node = child,
+                .path_start = child_path_start,
+                .path_len = entry.path_len + 1,
+            });
         }
     }
 
-    fn calculateQueryOptionsOfCurrentPage(self: *Self) []QueryOption {
-        const allocator = self.arena.allocator();
+    /// Consume one value from the BFS cursor. If `emit_to` is non-null, the
+    /// value is materialized as a `QueryOption` allocated in that allocator
+    /// (with a freshly-allocated hint copy). Otherwise the value is skipped.
+    fn consumeOne(self: *Self, emit_to: ?std.mem.Allocator) ?QueryOption {
+        while (true) {
+            // Copy by value — `enqueueChildren` may reallocate `frontier`.
+            const entry = self.frontier.items[self.frontier_head];
+            const values = entry.node.values(self.trie);
 
-        const options_len = get_options_len: {
-            if (self.current_page == self.total_pages) {
-                const last_page_size = self.node.count() % self.page_size;
-
-                if (last_page_size != 0) {
-                    break :get_options_len last_page_size;
-                }
-            }
-
-            break :get_options_len self.page_size;
-        };
-        var options = allocator.alloc(QueryOption, options_len) catch unreachable;
-
-        var inserted_options_count: u32 = 0;
-
-        while (inserted_options_count < options.len) {
-            const tll_node = self.tail_linked_list.first.?;
-
-            const node = tll_node.*.data.node;
-            const hint = tll_node.*.data.hint;
-
-            if (self.tll_node_skipped_options == 0) {
-                for (0..node.getWidth()) |i| {
-                    if (node.getChildByIndex(self.trie, i)) |child| {
-                        const new_tll_node = allocator.create(TLL.Node) catch unreachable;
-                        const key = node.keyOfChildByIndex(self.trie, i).?;
-
-                        const new_hint = gen_new_hint: {
-                            if (hint) |old_hint| {
-                                const old_hint_len = std.mem.len(old_hint);
-                                var new_hint = allocator.allocSentinel(u8, old_hint_len + 1, 0) catch unreachable;
-                                @memcpy(new_hint[0..old_hint_len], old_hint[0..old_hint_len]);
-                                new_hint[old_hint_len] = key;
-                                break :gen_new_hint new_hint;
-                            } else {
-                                var new_hint = allocator.allocSentinel(u8, 1, 0) catch unreachable;
-                                new_hint[0] = key;
-                                break :gen_new_hint new_hint;
-                            }
-                        };
-
-                        new_tll_node.*.data = .{
-                            .hint = new_hint,
-                            .node = child,
-                        };
-                        self.tail_linked_list.append(new_tll_node);
-                    }
-                }
-
-                if (node.values(self.trie).len() == 0) {
-                    const removed_tll_node = self.tail_linked_list.popFirst().?;
-                    allocator.destroy(removed_tll_node);
+            if (self.skipped == 0) {
+                self.enqueueChildren(entry);
+                if (values.len() == 0) {
+                    self.frontier_head += 1;
                     continue;
                 }
             }
 
-            const node_values = node.values(self.trie);
-            const value = node_values.at(self.tll_node_skipped_options);
-            options[inserted_options_count] = .{
-                .hint = hint,
-                .value = value.ptr,
-            };
+            const value = values.at(self.skipped);
+            const opt: ?QueryOption = if (emit_to) |alloc| blk: {
+                const hint: ?[*:0]const u8 = if (entry.path_len == 0) null else h: {
+                    const path = self.path_buf.items[entry.path_start..][0..entry.path_len];
+                    const buf = alloc.allocSentinel(u8, entry.path_len, 0) catch unreachable;
+                    @memcpy(buf, path);
+                    break :h buf.ptr;
+                };
+                break :blk .{ .value = value.ptr, .hint = hint };
+            } else null;
 
-            self.tll_node_skipped_options += 1;
-            inserted_options_count += 1;
-
-            if (self.tll_node_skipped_options == node_values.len()) {
-                const removed_tll_node = self.tail_linked_list.popFirst().?;
-                allocator.destroy(removed_tll_node);
-                self.tll_node_skipped_options = 0;
+            self.skipped += 1;
+            if (self.skipped == values.len()) {
+                self.frontier_head += 1;
+                self.skipped = 0;
             }
+            return opt;
         }
+    }
 
+    fn skipOnePage(self: *Self) void {
+        const n = self.pageOptionCount(self.bfs_page);
+        for (0..n) |_| _ = self.consumeOne(null);
+        self.bfs_page += 1;
+    }
+
+    fn materializeOnePage(self: *Self) []QueryOption {
+        const page_alloc = self.page_arena.allocator();
+        const n = self.pageOptionCount(self.current_page);
+        const options = page_alloc.alloc(QueryOption, n) catch unreachable;
+        for (0..n) |i| options[i] = self.consumeOne(page_alloc).?;
+        self.bfs_page += 1;
         return options;
     }
 };
