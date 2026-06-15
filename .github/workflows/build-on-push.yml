@@ -89,12 +89,12 @@ jobs:
             os: linux
             use_cross: true
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-15-intel
             libs_key: macos-x86_64
             os: macos
             use_cross: false
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             libs_key: macos-aarch64
             os: macos
             use_cross: false
