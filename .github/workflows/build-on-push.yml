@@ -161,3 +161,58 @@ jobs:
           name: jd-cli-${{ matrix.target }}
           path: dist/jd-cli-${{ matrix.target }}
           if-no-files-found: error
+
+  # One IME build per Windows Rust target. Reuses the prebuilt libjd bundle
+  # matching the target arch — jd-windows links jd_static.lib the same way
+  # jd-cli does, via LIBJD_PATH.
+  build-windows-ime:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    needs: build-libs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            libs_key: windows-x86_64
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            libs_key: windows-aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Download prebuilt libs
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-${{ matrix.libs_key }}
+          path: prebuilt-libs
+
+      - name: Build IME
+        working-directory: windows
+        env:
+          LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs/lib
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage IME DLL
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="dist/jd-ime-${{ matrix.target }}"
+          mkdir -p "$out"
+          cp windows/target/${{ matrix.target }}/release/jd_ime.dll "$out/"
+          cp windows/register.bat   "$out/"
+          cp windows/unregister.bat "$out/"
+
+      - name: Upload IME bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: jd-ime-${{ matrix.target }}
+          path: dist/jd-ime-${{ matrix.target }}
+          if-no-files-found: error
