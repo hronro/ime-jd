@@ -16,7 +16,7 @@ use windows::core::{
 use crate::candidate_window::{self, CandidateItem};
 use crate::display_attribute::{DisplayAttributeEnum, DisplayAttributeInfo};
 use crate::guids::GUID_JD_DISPLAY_ATTRIBUTE;
-use crate::{composition, jd};
+use crate::{composition, jd, ui_element};
 
 #[implement(
     ITfTextInputProcessorEx,
@@ -51,6 +51,7 @@ impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
         drop(state);
         *self.state.borrow_mut() = TipState::default();
         composition::on_externally_terminated();
+        ui_element::destroy();
         candidate_window::destroy();
         Ok(())
     }
@@ -160,6 +161,7 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
                 jd::ENGINE.reset();
                 let _ = composition::commit(ctx, tid);
                 candidate_window::hide();
+                ui_element::end();
                 return Ok(BOOL(1));
             }
             if vk == VK_RETURN {
@@ -171,6 +173,7 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
                 let _ = composition::commit(ctx, tid);
                 jd::ENGINE.reset();
                 candidate_window::hide();
+                ui_element::end();
                 return Ok(BOOL(1));
             }
             // Candidate selector: only triggers when the translated byte is
@@ -184,6 +187,7 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
                     let _ = composition::commit_text(ctx, tid, &opt.value);
                     jd::ENGINE.reset();
                     candidate_window::hide();
+                    ui_element::end();
                     return Ok(BOOL(1));
                 }
                 // No candidate at that slot — fall through to the engine so
@@ -198,6 +202,7 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
                 if !composition::is_active() {
                     jd::ENGINE.reset();
                     candidate_window::hide();
+                    ui_element::end();
                 } else {
                     self.update_candidates_from_engine(ctx, tid, &result);
                 }
@@ -225,17 +230,18 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
                 }
                 if result.options.is_empty() {
                     candidate_window::hide();
+                    ui_element::end();
                 } else {
                     // Drilled-in: start a fresh composition with the typed key.
                     let _ = composition::append_key(ctx, tid, &sink, byte as char);
-                    show_candidates_from_engine(ctx, tid, &result);
+                    self.show_candidates_from_engine(ctx, tid, &result);
                 }
                 return Ok(BOOL(1));
             }
 
             if !result.options.is_empty() {
                 let _ = composition::append_key(ctx, tid, &sink, byte as char);
-                show_candidates_from_engine(ctx, tid, &result);
+                self.show_candidates_from_engine(ctx, tid, &result);
                 return Ok(BOOL(1));
             }
 
@@ -270,6 +276,7 @@ impl ITfCompositionSink_Impl for TextInputProcessor_Impl {
         composition::on_externally_terminated();
         jd::ENGINE.reset();
         candidate_window::hide();
+        ui_element::end();
         Ok(())
     }
 }
@@ -278,20 +285,44 @@ impl TextInputProcessor_Impl {
     fn update_candidates_from_engine(&self, ctx: &ITfContext, tid: u32, result: &jd::QueryResult) {
         if result.options.is_empty() {
             candidate_window::hide();
+            ui_element::end();
         } else {
-            show_candidates_from_engine(ctx, tid, result);
+            self.show_candidates_from_engine(ctx, tid, result);
         }
     }
-}
 
-fn show_candidates_from_engine(ctx: &ITfContext, tid: u32, result: &jd::QueryResult) {
-    let items: Vec<CandidateItem> = result
-        .options
-        .iter()
-        .map(|o| CandidateItem { value: o.value.clone(), hint: o.hint.clone() })
-        .collect();
-    let pos = popup_pos();
-    candidate_window::show(pos, items, result.current_page, result.total_pages, ctx.clone(), tid);
+    fn show_candidates_from_engine(
+        &self,
+        ctx: &ITfContext,
+        tid: u32,
+        result: &jd::QueryResult,
+    ) {
+        let items: Vec<CandidateItem> = result
+            .options
+            .iter()
+            .map(|o| CandidateItem { value: o.value.clone(), hint: o.hint.clone() })
+            .collect();
+        let pos = popup_pos();
+        candidate_window::show(
+            pos,
+            items.clone(),
+            result.current_page,
+            result.total_pages,
+            ctx.clone(),
+            tid,
+        );
+        // Mirror the candidate state into the TSF UIElement so UI-less hosts
+        // (games, immersive shells) can render the list in their own UI.
+        if let Some(tm) = self.state.borrow().thread_mgr.clone() {
+            ui_element::sync(
+                &tm,
+                items,
+                result.current_page,
+                result.total_pages,
+                result.options_count,
+            );
+        }
+    }
 }
 
 /// Best position for the candidate popup. Prefers `ITfContextView::GetTextExt`

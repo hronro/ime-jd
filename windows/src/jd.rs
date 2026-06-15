@@ -28,6 +28,7 @@ mod ffi {
         pub fn jd_press_key(key: u8) -> QueryResult;
         pub fn jd_next_page() -> QueryResult;
         pub fn jd_prev_page() -> QueryResult;
+        pub fn jd_jump_to_page(page: u32) -> QueryResult;
         pub fn jd_backspace() -> QueryResult;
         pub fn jd_reset();
         pub fn jd_deinit();
@@ -89,6 +90,15 @@ impl JdEngine {
         unsafe { copy_query_result(ffi::jd_prev_page(), page_size) }
     }
 
+    /// Random-access page jump. Out-of-range targets (0, or beyond
+    /// `total_pages`) silently no-op on the engine side — match the
+    /// behavior of `next_page`/`prev_page` at the boundaries.
+    pub fn jump_to_page(&self, page: u32) -> QueryResult {
+        let _guard = self.serialize.lock().unwrap();
+        let page_size = *self.page_size.get().expect("JdEngine not initialized");
+        unsafe { copy_query_result(ffi::jd_jump_to_page(page), page_size) }
+    }
+
     pub fn backspace(&self) -> QueryResult {
         let _guard = self.serialize.lock().unwrap();
         let page_size = *self.page_size.get().expect("JdEngine not initialized");
@@ -147,3 +157,9 @@ unsafe fn copy_query_result(raw: ffi::QueryResult, page_size: u8) -> QueryResult
 }
 
 pub static ENGINE: JdEngine = JdEngine::new();
+
+/// Engine page size for candidate pagination. Hard-coded as the only call
+/// site is `Activate`'s `ENGINE.init(8)`. Exposed so other modules (the
+/// TSF `ITfCandidateListUIElement` implementation, the candidate window,
+/// future installers/configs) can reference the same number.
+pub const PAGE_SIZE: u8 = 8;

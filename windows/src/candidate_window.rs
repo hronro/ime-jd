@@ -64,7 +64,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const WM_MOUSELEAVE: u32 = 0x02A3;
 use windows::core::{PCWSTR, Result, w};
 
-use crate::{composition, dll_hmodule, jd};
+use crate::{composition, dll_hmodule, jd, ui_element};
 
 const WINDOW_CLASS_NAME: PCWSTR = w!("JdImeCandidateWindow");
 const FONT_FAMILY: PCWSTR = w!("Microsoft YaHei UI");
@@ -291,7 +291,14 @@ impl CandidateWindow {
                 SWP_NOACTIVATE | SWP_NOZORDER,
             )
         }?;
-        let _ = unsafe { ShowWindow(self.hwnd, SW_SHOWNOACTIVATE) };
+        // When a UIElement-aware host has opted to render the candidate list
+        // itself, leave the window hidden — we still keep `self.items` and
+        // sizing fresh so flipping `is_shown` back on later re-renders cleanly.
+        if ui_element::is_shown() {
+            let _ = unsafe { ShowWindow(self.hwnd, SW_SHOWNOACTIVATE) };
+        } else {
+            let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
+        }
         unsafe {
             let _ = InvalidateRect(Some(self.hwnd), None, true);
         }
@@ -564,6 +571,23 @@ pub fn hide() {
 pub fn destroy() {
     WINDOW.with(|w| {
         *w.borrow_mut() = None;
+    });
+}
+
+/// Called by `ui_element` when the host toggles `ITfUIElement::Show`.
+/// Reflects the new state into the popup without re-laying-out content.
+pub fn sync_visibility() {
+    let shown = ui_element::is_shown();
+    WINDOW.with(|w| {
+        if let Some(win) = w.borrow_mut().as_mut() {
+            unsafe {
+                let _ = if shown {
+                    ShowWindow(win.hwnd, SW_SHOWNOACTIVATE)
+                } else {
+                    ShowWindow(win.hwnd, SW_HIDE)
+                };
+            }
+        }
     });
 }
 

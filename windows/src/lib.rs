@@ -10,6 +10,7 @@ mod factory;
 mod guids;
 mod registration;
 mod tip;
+mod ui_element;
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};
