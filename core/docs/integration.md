@@ -115,6 +115,77 @@ Calling `jd_init` while a context is already initialized leaks the previous cont
 
 The library is **not** thread-safe. All state is global; concurrent calls from multiple threads will corrupt it. Either funnel calls through one thread, or wrap calls in an external mutex.
 
+## Key routing for IMEs
+
+`libjd` is the input *engine*; an IME built on top of it is the *interaction layer*. They have a clean split of responsibilities:
+
+- The **engine** owns text-input semantics — extending the trie, committing on terminators, generating candidates, paginating.
+- The **IME** owns UX — when to consume a keystroke vs let it pass through, how to render the composition and candidate list, what gesture/key selects a candidate.
+
+The table below is the recommended dispatch policy across all platforms. Following it keeps engine behavior identical on Windows / macOS / Linux / iOS / Android, and concentrates per-platform differences in a small number of IME-side decisions.
+
+| Key class | Dispatch | API call |
+|---|---|---|
+| Modifier chords (Ctrl / Cmd / Alt / Win+anything) | IME | pass through to the host — these are host shortcuts (select-all, copy/paste, menu accelerators, system commands) |
+| `a`–`z`, `;` | engine | `jd_press_key(byte)` |
+| Other printable ASCII (`.` `,` `'` `[` `]` `=` uppercase letters, `Shift`/`Caps Lock`-modified bytes …) | engine | `jd_press_key(byte)` — engine commits the current state and appends the byte. The IME must translate to the **actually-typed byte** (e.g. `Shift+/` → `?`, `Shift+1` → `!`, `Shift+K` → `K`), not the unshifted virtual key — the engine appends the byte literally, so `?` and `/` produce different commit strings |
+| Space | engine | `jd_press_key(' ')` — engine commits the top candidate and appends nothing |
+| Candidate-selector keys / gestures | IME (bindings up to the implementer) | `commit_text(option_at(N).value)` then `jd_reset()` |
+| Page-navigation keys / gestures | IME (bindings up to the implementer) | `jd_next_page` / `jd_prev_page` — separate functions, not bytes |
+| Backspace | IME | `jd_backspace` plus shrink the IME's composition |
+| Escape / Cancel | IME | `jd_reset` + tear down the composition without committing |
+| Enter / Return | IME | commit the raw in-flight letters as-is — escape hatch for literal ASCII output; *do not* route to the engine |
+| Home / End / Insert / Delete, arrows (if not bound to page nav) | IME | **consume while composing** — letting them through would move the host's caret out of the composition range |
+| Function keys (F1-F12), modifiers (Ctrl/Shift/Alt/Win/Meta), media keys | IME | pass through to the host — not text input |
+
+### Rationale
+
+- **Why the engine handles all printable bytes (including space and punctuation)**: the engine's contract is "extend trie if the byte is a child of the current node; otherwise commit current state, then start fresh from root with the byte." Space is the one byte the engine treats as commit-only (it never appears in the appended commit string). Punctuation auto-commits *and* appends. Letting the engine own this means platform IMEs don't have to special-case any printable key.
+
+- **Why modifier chords pass through**: `Ctrl`/`Cmd`/`Alt`/`Win`+anything are user shortcuts (select-all, save, menu accelerators, system commands). Routing them to the engine would feed `'a'` to the trie every time the user pressed Ctrl+A and break every editor convention. `Shift` and `Caps Lock` are *not* in this category — they don't pass through; they're the means by which the user types uppercase / shifted bytes that the engine receives. The IME translates the keypress via the platform's "VK + keyboard state → character" API (`ToUnicode` on Windows, `UCKeyTranslate` on macOS, etc.) so the engine sees `K` and `?` rather than `k` and `/`, and the engine's commit-and-append rule produces `你K` / `你?` naturally — no IME-side special case for "uppercase letter."
+
+- **Why candidate selectors and page-nav bindings are the IME's call**: the engine has no opinion on *how* the user picks a non-top candidate or paginates — only on *what* candidates exist. Pick the bindings that fit the platform's idioms. A desktop IME might use `PgUp`/`PgDn` for pagination and `1` - `9` for selection, a mobile IME might use a swipe for pagination and a tap for selection. Whatever the bindings are, intercept them *before* `jd_press_key` so the engine never sees them.
+
+- **Why pagination is IME-side**: `jd_press_key` doesn't have a "page" byte. The engine exposes `jd_next_page` / `jd_prev_page` as direct calls; the IME picks the gesture and invokes them.
+
+- **Why Enter commits the raw letters, not via the engine**: it's the escape hatch for typing literal ASCII (URLs, code, English words) without engine conversion. The IME ends the composition with whatever text is currently displayed (the raw typed bytes), bypassing the engine's commit pipeline entirely. `jd_reset()` resets the engine state afterward.
+
+- **Why arrow / nav keys are always consumed while composing**: the engine has no "cursor inside the composition" model — corrections are via `jd_backspace` only. If the IME let arrow keys reach the host, the host would move its caret out of the in-flight composition range, breaking the visual link between what the user is typing and where the text lands. Either bind arrows to page navigation (most natural — users expect ← to move "back" through pages) or no-op them, but never pass them through.
+
+### Putting it together
+
+A minimal IME key handler looks like:
+
+```text
+on_key_down(key):
+    if ctrl / cmd / alt / win held: pass through to host
+
+    byte = translate_to_ascii(key, current keyboard state)
+              # shift/caps-aware; e.g. Shift+/ → '?', Shift+K → 'K'
+
+    if not composing:
+        if byte is a lowercase letter (a-z): start composition; jd_press_key(byte)
+        else: pass through to host (host inserts literal `K`, `?`, `1`, etc.)
+
+    else (composing):
+        match key:
+            backspace      → jd_backspace(); shrink composition; redraw
+            escape         → jd_reset(); end composition; hide candidates
+            enter          → commit raw composition text; jd_reset(); hide candidates
+            page-prev gesture → result = jd_prev_page(); redraw candidates
+            page-next gesture → result = jd_next_page(); redraw candidates
+            candidate-selector for N → commit option_at(N).value; jd_reset(); hide
+            other nav (home/end/etc.)→ consume but no-op (engine has no cursor)
+            otherwise (any byte the engine accepts):
+                result = jd_press_key(byte)
+                if result.commit: insert it, end composition
+                if result.options: extend composition, show candidates
+                if both: drilled-in — insert commit, restart composition with byte
+                if neither: don't consume (let the host see the key)
+```
+
+The page-prev / page-next / candidate-selector lines are where the per-platform bindings live; everything else is identical across platforms.
+
 ## Debug builds
 
 A `Debug` build of `libjd` uses Zig's `DebugAllocator`, which detects leaks at `jd_deinit` time. If you suspect a leak, build the core with `zig build` (no `-Doptimize=`) and look at stderr after teardown.
