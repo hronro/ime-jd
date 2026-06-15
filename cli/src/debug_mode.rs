@@ -9,7 +9,7 @@ where
     W: Write,
 {
     terminal::enable_raw_mode()?;
-    core::init(core::InitOptions { page_size: 4 });
+    let mut jd = core::JdContext::new(core::InitOptions { page_size: 4 });
 
     loop {
         if let event::Event::Key(event::KeyEvent {
@@ -25,13 +25,13 @@ where
                         break;
                     }
                     _ => {
-                        let query_result = core::press_key(c as u8);
+                        let query_result = jd.press_key(c as u8);
 
                         write!(w, "Pressed `{}`:\n{:?}\n\n\n\r", c, query_result)?;
                     }
                 },
                 event::KeyCode::Backspace => {
-                    let query_result = core::backspace();
+                    let query_result = jd.backspace();
                     write!(w, "Pressed backspace:\n{:?}\n\n\n\r", query_result)?;
                 }
                 event::KeyCode::Esc => break,
@@ -43,7 +43,6 @@ where
     }
 
     terminal::disable_raw_mode()?;
-    core::deinit();
 
     Ok(())
 }

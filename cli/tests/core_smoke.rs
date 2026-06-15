@@ -10,6 +10,11 @@ use std::os::raw::c_char;
 use std::ptr::NonNull;
 
 #[repr(C)]
+struct JdContext {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
 struct QueryOption {
     value: *const c_char,
     hint: Option<NonNull<c_char>>,
@@ -25,10 +30,10 @@ struct QueryResult {
 }
 
 unsafe extern "C" {
-    fn jd_init(page_size: u8);
-    fn jd_press_key(key: u8) -> QueryResult;
-    fn jd_backspace() -> QueryResult;
-    fn jd_deinit();
+    fn jd_init(page_size: u8) -> *mut JdContext;
+    fn jd_press_key(ctx: *mut JdContext, key: u8) -> QueryResult;
+    fn jd_backspace(ctx: *mut JdContext) -> QueryResult;
+    fn jd_deinit(ctx: *mut JdContext);
 }
 
 unsafe fn c_str(ptr: *const c_char) -> Option<String> {
@@ -52,25 +57,26 @@ unsafe fn first_option(r: &QueryResult) -> Option<String> {
 #[test]
 fn loads_blob_and_returns_options() {
     unsafe {
-        jd_init(4);
+        let ctx = jd_init(4);
+        assert!(!ctx.is_null(), "jd_init returned null");
 
         // Press 'b' — expect at least one candidate (the IME data has
         // many words/chars starting with 'b' in shuangpin).
-        let r1 = jd_press_key(b'b');
+        let r1 = jd_press_key(ctx, b'b');
         assert!(r1.options_count > 0, "no options for 'b'");
         let first = first_option(&r1).expect("missing first option");
         assert!(!first.is_empty(), "first option for 'b' was empty");
 
         // Press another key to advance — must still be non-empty.
-        let r2 = jd_press_key(b'a');
+        let r2 = jd_press_key(ctx, b'a');
         assert!(
             r2.options_count > 0 || r2.commit.is_some(),
             "no options and no commit after 'ba'"
         );
 
         // Backspace returns us up; should not crash.
-        let _ = jd_backspace();
+        let _ = jd_backspace(ctx);
 
-        jd_deinit();
+        jd_deinit(ctx);
     }
 }

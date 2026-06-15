@@ -41,15 +41,15 @@ pub struct Renderer {
     /// The options currently displayed, retained so they can be redrawn after
     /// a resize without re-querying (and thus mutating) the core.
     current_options: Vec<core::QueryOption>,
+    jd: core::JdContext,
 }
 impl Renderer {
-    /// Please note that you can not initialize more than one instance of `Renderer`.
     pub fn new(size: (u16, u16)) -> Self {
         let (width, height) = size;
         let option_rows = ((height - 3) / 2 - 2).min(4);
         let output_rows = height - 4 - option_rows - 1;
 
-        core::init(core::InitOptions {
+        let jd = core::JdContext::new(core::InitOptions {
             page_size: option_rows as u8,
         });
 
@@ -69,6 +69,7 @@ impl Renderer {
             ),
             input: String::from(""),
             current_options: Vec::new(),
+            jd,
         }
     }
 
@@ -260,7 +261,7 @@ impl Renderer {
                                 if self.input.is_empty() {
                                     self.output.scroll_down(w)?;
                                 } else {
-                                    let query_result = core::next_page();
+                                    let query_result = self.jd.next_page();
                                     self.update_options(w, query_result.options)?;
                                 }
                             }
@@ -269,13 +270,13 @@ impl Renderer {
                                 if self.input.is_empty() {
                                     self.output.scroll_up(w)?;
                                 } else {
-                                    let query_result = core::prev_page();
+                                    let query_result = self.jd.prev_page();
                                     self.update_options(w, query_result.options)?;
                                 }
                             }
 
                             _ => {
-                                let query_result = core::press_key(c as u8);
+                                let query_result = self.jd.press_key(c as u8);
 
                                 if let Some(commit) = query_result.commit {
                                     self.output_string.push_str(commit);
@@ -301,7 +302,7 @@ impl Renderer {
                             } else {
                                 _ = self.input.pop();
                                 self.draw_input(w)?;
-                                let query_result = core::backspace();
+                                let query_result = self.jd.backspace();
                                 self.update_options(w, query_result.options)?;
                             }
                         }
@@ -323,12 +324,6 @@ impl Renderer {
         }
     }
 }
-impl Drop for Renderer {
-    fn drop(&mut self) {
-        core::deinit();
-    }
-}
-
 #[derive(Debug)]
 struct Output {
     width: u16,

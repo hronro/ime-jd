@@ -1,9 +1,14 @@
 use std::ffi::CStr;
-use std::sync::OnceLock;
+use std::ptr::NonNull;
 
 mod ffi {
     use std::os::raw::c_char;
     use std::ptr::NonNull;
+
+    #[repr(C)]
+    pub struct JdContext {
+        _private: [u8; 0],
+    }
 
     #[derive(Debug)]
     #[repr(C)]
@@ -22,21 +27,15 @@ mod ffi {
         pub current_page: u32,
     }
 
-    #[allow(dead_code)]
     unsafe extern "C" {
-        pub fn jd_init(page_size: u8);
-
-        pub fn jd_press_key(key: u8) -> QueryResult;
-
-        pub fn jd_next_page() -> QueryResult;
-
-        pub fn jd_prev_page() -> QueryResult;
-
-        pub fn jd_backspace() -> QueryResult;
-
-        pub fn jd_reset();
-
-        pub fn jd_deinit();
+        pub fn jd_init(page_size: u8) -> *mut JdContext;
+        pub fn jd_press_key(ctx: *mut JdContext, key: u8) -> QueryResult;
+        pub fn jd_next_page(ctx: *mut JdContext) -> QueryResult;
+        pub fn jd_prev_page(ctx: *mut JdContext) -> QueryResult;
+        pub fn jd_backspace(ctx: *mut JdContext) -> QueryResult;
+        #[allow(dead_code)]
+        pub fn jd_reset(ctx: *mut JdContext);
+        pub fn jd_deinit(ctx: *mut JdContext);
     }
 }
 
@@ -114,45 +113,57 @@ impl QueryResult {
     }
 }
 
-static PAGE_SIZE: OnceLock<u8> = OnceLock::new();
+pub struct JdContext {
+    handle: NonNull<ffi::JdContext>,
+    page_size: u8,
+}
 
-pub fn init(options: InitOptions) {
-    PAGE_SIZE.set(options.page_size).unwrap();
-    unsafe {
-        ffi::jd_init(options.page_size);
+impl JdContext {
+    pub fn new(options: InitOptions) -> Self {
+        let raw = unsafe { ffi::jd_init(options.page_size) };
+        let handle = NonNull::new(raw).expect("jd_init returned null");
+        Self {
+            handle,
+            page_size: options.page_size,
+        }
+    }
+
+    pub fn press_key(&mut self, key: u8) -> QueryResult {
+        unsafe {
+            let raw = ffi::jd_press_key(self.handle.as_ptr(), key);
+            QueryResult::from_raw_query_result(raw, self.page_size)
+        }
+    }
+
+    pub fn next_page(&mut self) -> QueryResult {
+        unsafe {
+            let raw = ffi::jd_next_page(self.handle.as_ptr());
+            QueryResult::from_raw_query_result(raw, self.page_size)
+        }
+    }
+
+    pub fn prev_page(&mut self) -> QueryResult {
+        unsafe {
+            let raw = ffi::jd_prev_page(self.handle.as_ptr());
+            QueryResult::from_raw_query_result(raw, self.page_size)
+        }
+    }
+
+    pub fn backspace(&mut self) -> QueryResult {
+        unsafe {
+            let raw = ffi::jd_backspace(self.handle.as_ptr());
+            QueryResult::from_raw_query_result(raw, self.page_size)
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn reset(&mut self) {
+        unsafe { ffi::jd_reset(self.handle.as_ptr()) }
     }
 }
 
-pub fn press_key(key: u8) -> QueryResult {
-    unsafe {
-        let raw_query_result = ffi::jd_press_key(key);
-        QueryResult::from_raw_query_result(raw_query_result, *PAGE_SIZE.get().unwrap())
-    }
-}
-
-pub fn backspace() -> QueryResult {
-    unsafe {
-        let raw_query_result = ffi::jd_backspace();
-        QueryResult::from_raw_query_result(raw_query_result, *PAGE_SIZE.get().unwrap())
-    }
-}
-
-pub fn next_page() -> QueryResult {
-    unsafe {
-        let raw_query_result = ffi::jd_next_page();
-        QueryResult::from_raw_query_result(raw_query_result, *PAGE_SIZE.get().unwrap())
-    }
-}
-
-pub fn prev_page() -> QueryResult {
-    unsafe {
-        let raw_query_result = ffi::jd_prev_page();
-        QueryResult::from_raw_query_result(raw_query_result, *PAGE_SIZE.get().unwrap())
-    }
-}
-
-pub fn deinit() {
-    unsafe {
-        ffi::jd_deinit();
+impl Drop for JdContext {
+    fn drop(&mut self) {
+        unsafe { ffi::jd_deinit(self.handle.as_ptr()) }
     }
 }
