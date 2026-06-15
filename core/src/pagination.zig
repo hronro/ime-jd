@@ -165,6 +165,13 @@ pub const NodePagination = struct {
         if (self.current_page > 1) self.current_page -= 1;
     }
 
+    /// Random-access page jump. Like `nextPage`/`prevPage`, out-of-range
+    /// requests are silently ignored — callers can pass any `u32` without
+    /// guarding the bounds themselves.
+    pub fn jumpToPage(self: *Self, page: u32) void {
+        if (page >= 1 and page <= self.total_pages) self.current_page = page;
+    }
+
     pub fn getOptions(self: *Self) []const QueryOption {
         if (self.cached_page == self.current_page) return self.cached_options;
 
@@ -536,6 +543,50 @@ test "page size is larger than the length of all options" {
         .{ .value = "FooBar", .hint = "c;" },
     };
     try expectEqualQueryOptionSlice(expected[0..], options);
+}
+
+test "jump to page" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    const node = th.trie.root().getChild(&th.trie, 'a').?;
+
+    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 3);
+    defer node_pagination.deinit();
+
+    // Jump forward past the current page.
+    node_pagination.jumpToPage(3);
+    const options3 = node_pagination.getOptions();
+    var expected3 = [_]QueryOption{
+        .{ .value = "丁1", .hint = "cd" },
+        .{ .value = "丁2", .hint = "cd" },
+        .{ .value = "丁3", .hint = "cd" },
+    };
+    try expectEqualQueryOptionSlice(expected3[0..], options3);
+
+    // Jump backward — exercises the BFS rewind path.
+    node_pagination.jumpToPage(1);
+    const options1 = node_pagination.getOptions();
+    var expected1 = [_]QueryOption{
+        .{ .value = "甲", .hint = null },
+        .{ .value = "乙", .hint = "b" },
+        .{ .value = "丙1", .hint = "c" },
+    };
+    try expectEqualQueryOptionSlice(expected1[0..], options1);
+
+    // Jump to the partial last page.
+    node_pagination.jumpToPage(4);
+    const options4 = node_pagination.getOptions();
+    var expected4 = [_]QueryOption{
+        .{ .value = "丁4", .hint = "ce" },
+        .{ .value = "FooBar", .hint = "c;" },
+    };
+    try expectEqualQueryOptionSlice(expected4[0..], options4);
+
+    // Out-of-range: silently ignored.
+    node_pagination.jumpToPage(0);
+    try testing.expectEqual(@as(u32, 4), node_pagination.current_page);
+    node_pagination.jumpToPage(999);
+    try testing.expectEqual(@as(u32, 4), node_pagination.current_page);
 }
 
 test "deep nodes" {

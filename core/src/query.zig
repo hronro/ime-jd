@@ -319,6 +319,22 @@ pub const Context = struct {
         }
     }
 
+    pub fn jumpToPage(self: *Self, page: u32) QueryResult {
+        if (self.pager) |*pager| {
+            pager.*.jumpToPage(page);
+
+            return .{
+                .commit = null,
+                .options = pager.*.getOptions().ptr,
+                .options_count = self.node.count(),
+                .total_pages = pager.*.total_pages,
+                .current_page = pager.*.current_page,
+            };
+        } else {
+            return emptyResult();
+        }
+    }
+
     pub fn backspace(self: *Self) QueryResult {
         if (self.pressed_key_indexes.items.len != 0) {
             _ = self.pressed_key_indexes.pop();
@@ -728,6 +744,57 @@ test "previous page" {
     try testing.expectEqual(@as(u32, 11), query_result.options_count);
     try testing.expectEqual(@as(u32, 4), query_result.total_pages);
     try testing.expectEqual(@as(u32, 2), query_result.current_page);
+}
+
+test "jump to page" {
+    const pagination = @import("./pagination.zig");
+
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
+    defer context.deinit();
+
+    _ = context.pressKey('a');
+
+    // Jump forward past the current page.
+    const r3 = context.jumpToPage(3);
+    var expected_p3 = [_]QueryOption{
+        .{ .value = "丁1", .hint = "cd" },
+        .{ .value = "丁2", .hint = "cd" },
+        .{ .value = "丁3", .hint = "cd" },
+    };
+    try pagination.expectEqualQueryOptionManyItemPtr(expected_p3[0..], r3.options.?, 3);
+    try testing.expectEqual(@as(u32, 3), r3.current_page);
+
+    // Jump backward.
+    const r1 = context.jumpToPage(1);
+    var expected_p1 = [_]QueryOption{
+        .{ .value = "甲", .hint = null },
+        .{ .value = "乙", .hint = "b" },
+        .{ .value = "丙1", .hint = "c" },
+    };
+    try pagination.expectEqualQueryOptionManyItemPtr(expected_p1[0..], r1.options.?, 3);
+    try testing.expectEqual(@as(u32, 1), r1.current_page);
+
+    // Out-of-range targets are silent no-ops.
+    const r_zero = context.jumpToPage(0);
+    try testing.expectEqual(@as(u32, 1), r_zero.current_page);
+    const r_huge = context.jumpToPage(999);
+    try testing.expectEqual(@as(u32, 1), r_huge.current_page);
+}
+
+test "jump to page with no composition" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
+    defer context.deinit();
+
+    const r = context.jumpToPage(2);
+    try testing.expectEqual(@as(?[*:0]const u8, null), r.commit);
+    try testing.expectEqual(@as(?[*]const QueryOption, null), r.options);
+    try testing.expectEqual(@as(u32, 0), r.current_page);
 }
 
 test "press the first key, and the key is not in the root node children" {

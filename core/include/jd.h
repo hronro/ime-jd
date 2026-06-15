@@ -37,6 +37,15 @@ jd_context *jd_init(unsigned char page_size);
 query_result jd_press_key(jd_context *ctx, char key);
 query_result jd_next_page(jd_context *ctx);
 query_result jd_prev_page(jd_context *ctx);
+/**
+ * Set the paginator's current page directly. `page` is 1-based. Out-of-range
+ * requests (0, or larger than `total_pages`) are silently ignored, matching
+ * the behavior of jd_next_page / jd_prev_page at boundaries.
+ *
+ * Returns the materialized options for the resulting current page, or an
+ * empty result if no composition is in flight.
+ */
+query_result jd_jump_to_page(jd_context *ctx, unsigned int page);
 query_result jd_backspace(jd_context *ctx);
 void         jd_reset(jd_context *ctx);
 

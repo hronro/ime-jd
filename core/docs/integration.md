@@ -57,6 +57,7 @@ jd_context   *jd_init(unsigned char page_size);
 query_result  jd_press_key(jd_context *ctx, char key);
 query_result  jd_next_page(jd_context *ctx);
 query_result  jd_prev_page(jd_context *ctx);
+query_result  jd_jump_to_page(jd_context *ctx, unsigned int page);
 query_result  jd_backspace(jd_context *ctx);
 void          jd_reset(jd_context *ctx);
 void          jd_deinit(jd_context *ctx);
@@ -74,6 +75,7 @@ The header is C89-compatible and includes an `extern "C"` block for C++ consumer
 | `jd_press_key(ctx, key)`       | Feed one keystroke. Returns either a committed string or a page.             |
 | `jd_next_page(ctx)`            | Move to next page of the current candidate list, if any.                     |
 | `jd_prev_page(ctx)`            | Move to previous page, if any.                                               |
+| `jd_jump_to_page(ctx, n)`      | Set the current page directly (1-based); out-of-range is a no-op.            |
 | `jd_backspace(ctx)`            | Undo the most recent letter keypress; recompute candidates.                  |
 | `jd_reset(ctx)`                | Drop the in-flight query but keep the context alive.                         |
 | `jd_deinit(ctx)`               | Tear down this context. Other contexts and the shared trie are unaffected.   |
@@ -103,7 +105,7 @@ visible = (current_page == total_pages)
 
 Every pointer in a returned `query_result` is **borrowed**. Lifetimes are per-context — invalidation triggers are calls into the same `ctx`:
 
-- **`commit`** is allocated in a per-keypress arena (per context) and is valid only until the next call into that context: `jd_press_key`, `jd_next_page`, `jd_prev_page`, `jd_backspace`, `jd_reset`, or `jd_deinit`. Copy it out before making any further call if you need it longer.
+- **`commit`** is allocated in a per-keypress arena (per context) and is valid only until the next call into that context: `jd_press_key`, `jd_next_page`, `jd_prev_page`, `jd_jump_to_page`, `jd_backspace`, `jd_reset`, or `jd_deinit`. Copy it out before making any further call if you need it longer.
 - **`options` and each `option.value` / `option.hint`** are valid only until the next state-changing call into the same context (same list as above). Specifically, `option.value` points into the embedded blob (effectively static), but `option.hint` is allocated in the paginator's per-page arena and is invalidated when the user navigates to another page.
 
 Treat the rule simply as: **don't hold any pointer returned for a context across the next call into that context.** Pointers from one context are unaffected by calls into a different context.
@@ -111,8 +113,8 @@ Treat the rule simply as: **don't hold any pointer returned for a context across
 ### Lifecycle contract
 
 ```
-ctx = jd_init(...)  ──►  (jd_press_key | jd_next_page | jd_prev_page |
-                          jd_backspace | jd_reset)*  ──►  jd_deinit(ctx)
+ctx = jd_init(...)  ──►  (jd_press_key   | jd_next_page | jd_prev_page |
+                          jd_jump_to_page | jd_backspace | jd_reset)*  ──►  jd_deinit(ctx)
 ```
 
 Each `jd_init` call returns an independent context owned by the caller. Contexts share the embedded trie (parsed lazily on the first call from any thread, then immutable for the rest of the process), but their query state is fully separate — pages, in-flight key indexes, the per-keypress arena, etc.

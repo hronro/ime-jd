@@ -86,6 +86,10 @@ export fn jd_prev_page(handle: *JdContext) query.QueryResult {
     return wrapperOf(handle).context.prevPage();
 }
 
+export fn jd_jump_to_page(handle: *JdContext, page: u32) query.QueryResult {
+    return wrapperOf(handle).context.jumpToPage(page);
+}
+
 export fn jd_backspace(handle: *JdContext) query.QueryResult {
     return wrapperOf(handle).context.backspace();
 }
