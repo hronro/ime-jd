@@ -82,19 +82,11 @@ pub fn unregister() -> Result<()> {
     let com_result = ComScope::init();
     if let Ok(_com) = com_result {
         if let Ok(category_mgr) = unsafe {
-            CoCreateInstance::<_, ITfCategoryMgr>(
-                &CLSID_TF_CategoryMgr,
-                None,
-                CLSCTX_INPROC_SERVER,
-            )
+            CoCreateInstance::<_, ITfCategoryMgr>(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)
         } {
             for cat in REGISTERED_CATEGORIES {
                 let _ = unsafe {
-                    category_mgr.UnregisterCategory(
-                        &guids::CLSID_JD_IME,
-                        cat,
-                        &guids::CLSID_JD_IME,
-                    )
+                    category_mgr.UnregisterCategory(&guids::CLSID_JD_IME, cat, &guids::CLSID_JD_IME)
                 };
             }
         }
@@ -167,9 +159,17 @@ fn clsid_registry_path() -> String {
     let g = &guids::CLSID_JD_IME;
     format!(
         "SOFTWARE\\Classes\\CLSID\\{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-        g.data1, g.data2, g.data3,
-        g.data4[0], g.data4[1], g.data4[2], g.data4[3],
-        g.data4[4], g.data4[5], g.data4[6], g.data4[7]
+        g.data1,
+        g.data2,
+        g.data3,
+        g.data4[0],
+        g.data4[1],
+        g.data4[2],
+        g.data4[3],
+        g.data4[4],
+        g.data4[5],
+        g.data4[6],
+        g.data4[7]
     )
 }
 
@@ -237,10 +237,8 @@ fn write_value(path: &str, value_name: PCWSTR, value_wide_z: &[u16]) -> Result<(
         )
         .ok()?;
 
-        let bytes = std::slice::from_raw_parts(
-            value_wide_z.as_ptr() as *const u8,
-            value_wide_z.len() * 2,
-        );
+        let bytes =
+            std::slice::from_raw_parts(value_wide_z.as_ptr() as *const u8, value_wide_z.len() * 2);
         let set_err = RegSetValueExW(hkey, value_name, None, REG_SZ, Some(bytes)).ok();
         let close_err = RegCloseKey(hkey).ok();
         set_err?;

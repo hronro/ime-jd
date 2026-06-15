@@ -9,9 +9,7 @@ use windows::Win32::UI::TextServices::{
     ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
     ITfTextInputProcessorEx_Impl, ITfThreadMgr,
 };
-use windows::core::{
-    BOOL, ComObjectInner, GUID, IUnknownImpl, Interface, Ref, Result, implement,
-};
+use windows::core::{BOOL, ComObjectInner, GUID, IUnknownImpl, Interface, Ref, Result, implement};
 
 use crate::candidate_window::{self, CandidateItem};
 use crate::display_attribute::{DisplayAttributeEnum, DisplayAttributeInfo};
@@ -53,13 +51,14 @@ impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
         composition::on_externally_terminated();
         ui_element::destroy();
         candidate_window::destroy();
+        jd::deactivate();
         Ok(())
     }
 }
 
 impl ITfTextInputProcessorEx_Impl for TextInputProcessor_Impl {
     fn ActivateEx(&self, ptim: Ref<'_, ITfThreadMgr>, tid: u32, _dwflags: u32) -> Result<()> {
-        jd::ENGINE.init(8);
+        jd::activate();
 
         let thread_mgr: ITfThreadMgr = ptim
             .cloned()
@@ -105,7 +104,11 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
-        Ok(BOOL(if should_consume(wparam.0 as u16) { 1 } else { 0 }))
+        Ok(BOOL(if should_consume(wparam.0 as u16) {
+            1
+        } else {
+            0
+        }))
     }
 
     fn OnTestKeyUp(
@@ -117,14 +120,11 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
         Ok(BOOL(0))
     }
 
-    fn OnKeyDown(
-        &self,
-        pic: Ref<'_, ITfContext>,
-        wparam: WPARAM,
-        _lparam: LPARAM,
-    ) -> Result<BOOL> {
+    fn OnKeyDown(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
         let vk = wparam.0 as u16;
-        let Some(ctx_ref) = pic.as_ref() else { return Ok(BOOL(0)) };
+        let Some(ctx_ref) = pic.as_ref() else {
+            return Ok(BOOL(0));
+        };
         let ctx = ctx_ref;
         let tid = self.state.borrow().client_id;
         let sink: ITfCompositionSink = self.to_interface();
@@ -148,17 +148,17 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
             // Shift held, those keys produce `_` / `+`, which fall through
             // to the engine like any other shifted punctuation.
             if matches!(vk, VK_LEFT | VK_UP | VK_PRIOR) || translated == Some(b'-') {
-                let result = jd::ENGINE.prev_page();
+                let result = jd::prev_page();
                 self.update_candidates_from_engine(ctx, tid, &result);
                 return Ok(BOOL(1));
             }
             if matches!(vk, VK_RIGHT | VK_DOWN | VK_NEXT) || translated == Some(b'=') {
-                let result = jd::ENGINE.next_page();
+                let result = jd::next_page();
                 self.update_candidates_from_engine(ctx, tid, &result);
                 return Ok(BOOL(1));
             }
             if vk == VK_ESCAPE {
-                jd::ENGINE.reset();
+                jd::reset();
                 let _ = composition::commit(ctx, tid);
                 candidate_window::hide();
                 ui_element::end();
@@ -171,7 +171,7 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
                 // whatever SetText left in it (the buffer), so we don't
                 // ask the engine for a commit string.
                 let _ = composition::commit(ctx, tid);
-                jd::ENGINE.reset();
+                jd::reset();
                 candidate_window::hide();
                 ui_element::end();
                 return Ok(BOOL(1));
@@ -185,7 +185,7 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
                 let items = candidate_window::current_items();
                 if let Some(opt) = items.get(idx).cloned() {
                     let _ = composition::commit_text(ctx, tid, &opt.value);
-                    jd::ENGINE.reset();
+                    jd::reset();
                     candidate_window::hide();
                     ui_element::end();
                     return Ok(BOOL(1));
@@ -197,10 +197,10 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
             // translate, falls through to the engine, and the engine's own
             // "space commits the current state" semantics drive the commit.
             if vk == VK_BACK {
-                let result = jd::ENGINE.backspace();
+                let result = jd::backspace();
                 let _ = composition::backspace(ctx, tid);
                 if !composition::is_active() {
-                    jd::ENGINE.reset();
+                    jd::reset();
                     candidate_window::hide();
                     ui_element::end();
                 } else {
@@ -212,7 +212,7 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
 
         // -- Translated byte drives the engine forward ----------------------
         if let Some(byte) = translated {
-            let result = jd::ENGINE.press_key(byte);
+            let result = jd::press_key(byte);
 
             // Engine-driven auto-commit (rare in practice): replace
             // composition with `commit` text, then optionally restart with
@@ -253,12 +253,7 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
         Ok(BOOL(0))
     }
 
-    fn OnKeyUp(
-        &self,
-        _pic: Ref<'_, ITfContext>,
-        _wparam: WPARAM,
-        _lparam: LPARAM,
-    ) -> Result<BOOL> {
+    fn OnKeyUp(&self, _pic: Ref<'_, ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
         Ok(BOOL(0))
     }
 
@@ -274,7 +269,7 @@ impl ITfCompositionSink_Impl for TextInputProcessor_Impl {
         _pcomposition: Ref<'_, ITfComposition>,
     ) -> Result<()> {
         composition::on_externally_terminated();
-        jd::ENGINE.reset();
+        jd::reset();
         candidate_window::hide();
         ui_element::end();
         Ok(())
@@ -291,16 +286,14 @@ impl TextInputProcessor_Impl {
         }
     }
 
-    fn show_candidates_from_engine(
-        &self,
-        ctx: &ITfContext,
-        tid: u32,
-        result: &jd::QueryResult,
-    ) {
+    fn show_candidates_from_engine(&self, ctx: &ITfContext, tid: u32, result: &jd::QueryResult) {
         let items: Vec<CandidateItem> = result
             .options
             .iter()
-            .map(|o| CandidateItem { value: o.value.clone(), hint: o.hint.clone() })
+            .map(|o| CandidateItem {
+                value: o.value.clone(),
+                hint: o.hint.clone(),
+            })
             .collect();
         let pos = popup_pos();
         candidate_window::show(
@@ -332,7 +325,10 @@ impl TextInputProcessor_Impl {
 fn popup_pos() -> windows::Win32::Foundation::POINT {
     use windows::Win32::Foundation::POINT;
     if let Some(rect) = composition::last_screen_rect() {
-        return POINT { x: rect.left, y: rect.bottom + 4 };
+        return POINT {
+            x: rect.left,
+            y: rect.bottom + 4,
+        };
     }
     candidate_window::caret_screen_pos()
 }
@@ -398,9 +394,9 @@ fn mods() -> Mods {
         unsafe { GetKeyState(vk) }.is_negative()
     }
     Mods {
-        ctrl: pressed(0x11),                       // VK_CONTROL
-        alt: pressed(0x12),                        // VK_MENU
-        win: pressed(0x5B) || pressed(0x5C),       // VK_LWIN / VK_RWIN
+        ctrl: pressed(0x11),                 // VK_CONTROL
+        alt: pressed(0x12),                  // VK_MENU
+        win: pressed(0x5B) || pressed(0x5C), // VK_LWIN / VK_RWIN
     }
 }
 

@@ -35,26 +35,25 @@ struct CompositionState {
 
 impl CompositionState {
     const fn new() -> Self {
-        Self { buffer: String::new(), composition: None }
+        Self {
+            buffer: String::new(),
+            composition: None,
+        }
     }
 }
 
 /// Called from OnKeyDown for each consumable letter. Starts a composition on
 /// the first key, then extends the buffer + replaces the composition's text
 /// on every subsequent key.
-pub fn append_key(
-    ctx: &ITfContext,
-    tid: u32,
-    sink: &ITfCompositionSink,
-    ch: char,
-) -> Result<()> {
+pub fn append_key(ctx: &ITfContext, tid: u32, sink: &ITfCompositionSink, ch: char) -> Result<()> {
     let ctx_for_session = ctx.clone();
     let sink_for_session = sink.clone();
     let session = EditSession::new(move |ec| {
         STATE.with(|s| -> Result<()> {
             let mut state = s.borrow_mut();
             if state.composition.is_none() {
-                state.composition = Some(start_composition(&ctx_for_session, ec, &sink_for_session)?);
+                state.composition =
+                    Some(start_composition(&ctx_for_session, ec, &sink_for_session)?);
             }
             state.buffer.push(ch);
             let comp = state.composition.as_ref().unwrap();
@@ -86,7 +85,10 @@ pub fn commit_text(ctx: &ITfContext, tid: u32, text: &str) -> Result<()> {
                 unsafe { range.Collapse(ec, TF_ANCHOR_END) }?;
                 let mut sel = [TF_SELECTION {
                     range: ManuallyDrop::new(Some(range)),
-                    style: TF_SELECTIONSTYLE { ase: TF_AE_NONE, fInterimChar: BOOL(0) },
+                    style: TF_SELECTIONSTYLE {
+                        ase: TF_AE_NONE,
+                        fInterimChar: BOOL(0),
+                    },
                 }];
                 unsafe { ctx_for_session.SetSelection(ec, &sel) }?;
                 unsafe { ManuallyDrop::drop(&mut sel[0].range) };
@@ -146,7 +148,6 @@ pub fn commit(ctx: &ITfContext, tid: u32) -> Result<()> {
     request_session(ctx, tid, session)
 }
 
-
 /// Called by ITfCompositionSink::OnCompositionTerminated when something
 /// external (focus loss, app rejection, etc.) ended our composition. Just
 /// drop our handles; the composition is already gone in TSF's eyes.
@@ -175,8 +176,12 @@ pub fn last_screen_rect() -> Option<RECT> {
 
 fn refresh_screen_rect(ctx: &ITfContext, ec: u32, comp: &ITfComposition) {
     use windows::core::BOOL;
-    let Ok(view) = (unsafe { ctx.GetActiveView() }) else { return };
-    let Ok(range) = (unsafe { comp.GetRange() }) else { return };
+    let Ok(view) = (unsafe { ctx.GetActiveView() }) else {
+        return;
+    };
+    let Ok(range) = (unsafe { comp.GetRange() }) else {
+        return;
+    };
     let mut rect = RECT::default();
     let mut clipped = BOOL::default();
     let r = unsafe { view.GetTextExt(ec, &range, &mut rect, &mut clipped) };
@@ -215,12 +220,7 @@ fn start_composition(
 /// Set the composition's text, paint the display attribute over it, and
 /// move the document caret to the end — all in one shot on one ITfRange so
 /// the host sees a consistent view.
-fn update_composition(
-    ctx: &ITfContext,
-    comp: &ITfComposition,
-    ec: u32,
-    text: &str,
-) -> Result<()> {
+fn update_composition(ctx: &ITfContext, comp: &ITfComposition, ec: u32, text: &str) -> Result<()> {
     let range = unsafe { comp.GetRange() }?;
     let wide: Vec<u16> = text.encode_utf16().collect();
     unsafe { range.SetText(ec, 0, &wide) }?;
@@ -232,7 +232,10 @@ fn update_composition(
     unsafe { range.Collapse(ec, TF_ANCHOR_END) }?;
     let mut sel = [TF_SELECTION {
         range: ManuallyDrop::new(Some(range)),
-        style: TF_SELECTIONSTYLE { ase: TF_AE_NONE, fInterimChar: BOOL(0) },
+        style: TF_SELECTIONSTYLE {
+            ase: TF_AE_NONE,
+            fInterimChar: BOOL(0),
+        },
     }];
     unsafe { ctx.SetSelection(ec, &sel) }?;
     unsafe { ManuallyDrop::drop(&mut sel[0].range) };

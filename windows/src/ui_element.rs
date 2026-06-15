@@ -19,7 +19,7 @@ use std::cell::{Cell, RefCell};
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG};
 use windows::Win32::UI::TextServices::{
     ITfCandidateListUIElement, ITfCandidateListUIElement_Impl, ITfDocumentMgr, ITfThreadMgr,
-    ITfUIElement, ITfUIElementMgr, ITfUIElement_Impl, TF_CLUIE_COUNT, TF_CLUIE_CURRENTPAGE,
+    ITfUIElement, ITfUIElement_Impl, ITfUIElementMgr, TF_CLUIE_COUNT, TF_CLUIE_CURRENTPAGE,
     TF_CLUIE_PAGEINDEX, TF_CLUIE_SELECTION, TF_CLUIE_STRING,
 };
 use windows::core::{BOOL, BSTR, ComObjectInner, GUID, Interface, Result, implement};
@@ -51,7 +51,12 @@ struct CandidateListUIElement {
 
 struct ElementState {
     thread_mgr: Option<ITfThreadMgr>,
-    items: Vec<CandidateItem>,
+    /// All candidates across every page, in order. Pre-fetched once per
+    /// `sync` so `GetString(i)` is an O(1) slice lookup — modern Win11
+    /// Notepad iterates every index on each `UpdateUIElement` callback,
+    /// and round-tripping `jd::jump_to_page` per index was visibly
+    /// stalling fast typists (O(N²) BFS work per keystroke).
+    all_items: Vec<CandidateItem>,
     /// 1-based, as the engine reports.
     current_page: u32,
     total_pages: u32,
@@ -113,54 +118,14 @@ impl ITfCandidateListUIElement_Impl for CandidateListUIElement_Impl {
     }
 
     fn GetString(&self, uindex: u32) -> Result<BSTR> {
-        let page_size = PAGE_SIZE as u32;
-
-        // Read the snapshot fields and drop the borrow before any engine
-        // call — `jd::ENGINE` calls don't reenter us today, but releasing
-        // the borrow keeps future refactors safe and removes an aliasing
-        // hazard if `GetString` is ever called recursively.
-        let (current_page, total_count, local_idx, target_page, fast_path_item) = {
-            let state = self.state.borrow();
-            if uindex >= state.total_count {
-                return Err(E_INVALIDARG.into());
-            }
-            let target = uindex / page_size + 1;
-            let local = (uindex % page_size) as usize;
-            let fast = if target == state.current_page {
-                state.items.get(local).cloned()
-            } else {
-                None
-            };
-            (state.current_page, state.total_count, local, target, fast)
-        };
-
-        if let Some(item) = fast_path_item {
-            return Ok(BSTR::from(&item.value));
-        }
-
-        let _ = total_count;
-
-        // Cross-page query — jump the engine to the target page, snapshot
-        // the string, then jump back so the engine's notion of "current
-        // page" stays in sync with what our popup is showing. Each jump is
-        // one BFS rewind + materialization in the worst case; cheap.
-        let target_result = jd::ENGINE.jump_to_page(target_page);
-        let snapshot = target_result.options.get(local_idx).map(|o| o.value.clone());
-        // Always restore, even if the lookup failed.
-        let _ = jd::ENGINE.jump_to_page(current_page);
-
-        match snapshot {
-            Some(s) => Ok(BSTR::from(&s)),
+        let state = self.state.borrow();
+        match state.all_items.get(uindex as usize) {
+            Some(item) => Ok(BSTR::from(&item.value)),
             None => Err(E_INVALIDARG.into()),
         }
     }
 
-    fn GetPageIndex(
-        &self,
-        pindex: *mut u32,
-        size: u32,
-        pupagecnt: *mut u32,
-    ) -> Result<()> {
+    fn GetPageIndex(&self, pindex: *mut u32, size: u32, pupagecnt: *mut u32) -> Result<()> {
         let state = self.state.borrow();
         if !pupagecnt.is_null() {
             unsafe { *pupagecnt = state.total_pages };
@@ -190,25 +155,103 @@ impl ITfCandidateListUIElement_Impl for CandidateListUIElement_Impl {
 /// navigation, new keystroke that produced new options. The first call per
 /// session creates the element and registers it with the host; subsequent
 /// calls just update state and fire `UpdateUIElement`.
+///
+/// `current_items` is the current page's candidates (already materialized
+/// by the caller). Whether we also pre-fetch the other pages is gated by
+/// the host: see `should_prefetch_all_pages` for the policy.
 pub fn sync(
     thread_mgr: &ITfThreadMgr,
-    items: Vec<CandidateItem>,
+    current_items: Vec<CandidateItem>,
     current_page: u32,
     total_pages: u32,
     total_count: u32,
 ) {
     let need_begin = ELEMENT.with(|e| e.borrow().is_none());
 
-    if need_begin {
-        let _ = begin(thread_mgr, items, current_page, total_pages, total_count);
+    let all_items = if should_prefetch_all_pages(need_begin) {
+        collect_all_candidates(current_items, current_page, total_pages)
     } else {
-        let _ = update(items, current_page, total_pages, total_count);
+        current_items
+    };
+
+    if need_begin {
+        let _ = begin(
+            thread_mgr,
+            all_items,
+            current_page,
+            total_pages,
+            total_count,
+        );
+    } else {
+        let _ = update(all_items, current_page, total_pages, total_count);
     }
+}
+
+/// Hybrid policy: only pay the pre-fetch cost when we know (or have to
+/// guess) that the host will iterate every candidate index.
+///
+/// * First sync of a session (`need_begin = true`): we haven't called
+///   `BeginUIElement` yet, so we don't know `pb_show`. Pre-fetch defensively
+///   so the host has full data immediately if it starts iterating during
+///   the `BeginUIElement` call.
+///
+/// * Subsequent syncs: gate on `IS_SHOWN`. `IS_SHOWN == false` means the
+///   host opted to draw the candidate list itself (game / immersive shell /
+///   accessibility consumer) — it will iterate every index, so pre-fetch.
+///   `IS_SHOWN == true` means our overlay popup is doing the rendering;
+///   hosts in this mode either don't query UIElement at all, or only query
+///   the current page, so we skip the ~`total_pages` engine calls.
+///
+/// Saves the ~120 µs pre-fetch cost on every keystroke after the first for
+/// regular hosts (most of them), while preserving correctness for UI-less
+/// consumers.
+fn should_prefetch_all_pages(need_begin: bool) -> bool {
+    if need_begin {
+        return true;
+    }
+    !IS_SHOWN.with(|c| c.get())
+}
+
+/// Materialize every candidate across every page. For single-page results
+/// this is just the input; for multi-page results, we walk the engine
+/// through the other pages and stitch them in. The engine is restored to
+/// `current_page` before returning so subsequent page-nav (`prev`/`next`
+/// from the popup or arrow keys) operates from the user-visible page.
+fn collect_all_candidates(
+    current_items: Vec<CandidateItem>,
+    current_page: u32,
+    total_pages: u32,
+) -> Vec<CandidateItem> {
+    if total_pages <= 1 {
+        return current_items;
+    }
+
+    let page_size = PAGE_SIZE as usize;
+    let mut all = Vec::with_capacity(total_pages as usize * page_size);
+
+    for page in 1..=total_pages {
+        if page == current_page {
+            all.extend(current_items.iter().cloned());
+        } else {
+            let result = jd::jump_to_page(page);
+            for opt in result.options {
+                all.push(CandidateItem {
+                    value: opt.value,
+                    hint: opt.hint,
+                });
+            }
+        }
+    }
+
+    // Restore the engine cursor to the page our popup is showing so
+    // subsequent next/prev calls navigate relative to it.
+    let _ = jd::jump_to_page(current_page);
+    all
 }
 
 fn begin(
     thread_mgr: &ITfThreadMgr,
-    items: Vec<CandidateItem>,
+    all_items: Vec<CandidateItem>,
     current_page: u32,
     total_pages: u32,
     total_count: u32,
@@ -217,7 +260,7 @@ fn begin(
     let elem = CandidateListUIElement {
         state: RefCell::new(ElementState {
             thread_mgr: Some(thread_mgr.clone()),
-            items,
+            all_items,
             current_page,
             total_pages,
             total_count,
@@ -234,6 +277,13 @@ fn begin(
         candidate_window::sync_visibility();
     }
 
+    // Some hosts (notably LoL's in-game chat) treat `BeginUIElement` as a
+    // registration step and only render the candidate list after they
+    // receive their first `UpdateUIElement`. Without this nudge, the popup
+    // doesn't appear until the user's second keystroke — the first
+    // keystroke shows the composition underline but no candidate UI.
+    let _ = unsafe { mgr.UpdateUIElement(id) };
+
     ID.with(|c| c.set(Some(id)));
     MGR.with(|c| *c.borrow_mut() = Some(mgr));
     ELEMENT.with(|c| *c.borrow_mut() = Some(iface));
@@ -242,7 +292,7 @@ fn begin(
 }
 
 fn update(
-    items: Vec<CandidateItem>,
+    all_items: Vec<CandidateItem>,
     current_page: u32,
     total_pages: u32,
     total_count: u32,
@@ -253,7 +303,7 @@ fn update(
     let inner = iface.cast_object::<CandidateListUIElement>()?;
     {
         let mut s = inner.state.borrow_mut();
-        s.items = items;
+        s.all_items = all_items;
         s.current_page = current_page;
         s.total_pages = total_pages;
         s.total_count = total_count;

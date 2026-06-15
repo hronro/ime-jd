@@ -1,21 +1,30 @@
-use jd_ime::jd::ENGINE;
-
-// All tests share one global engine. The internal Mutex serializes
-// calls, but state from a previous test can leak into the next, so
-// each test resets before doing anything observable.
+use jd_ime::jd::{JdContext, PAGE_SIZE};
 
 #[test]
-fn init_is_idempotent() {
-    ENGINE.init(8);
-    ENGINE.init(8);
+fn two_contexts_are_independent() {
+    let mut a = JdContext::new(PAGE_SIZE);
+    let mut b = JdContext::new(PAGE_SIZE);
+
+    let ra = a.press_key(b'a');
+    let rb = b.press_key(b'a');
+
+    assert_eq!(ra.options.len(), rb.options.len());
+    assert_eq!(ra.options_count, rb.options_count);
+    assert_eq!(ra.total_pages, rb.total_pages);
+
+    a.reset();
+    drop(a);
+
+    // After dropping `a`, `b` is still healthy.
+    let rb2 = b.press_key(b'b');
+    let _ = rb2;
 }
 
 #[test]
 fn press_key_returns_well_formed_result() {
-    ENGINE.init(8);
-    ENGINE.reset();
+    let mut ctx = JdContext::new(PAGE_SIZE);
 
-    let r = ENGINE.press_key(b'a');
+    let r = ctx.press_key(b'a');
 
     // Three valid shapes: candidates, committed, or empty. Pointer/size
     // fields must be internally consistent — that's what we verify.
@@ -28,15 +37,11 @@ fn press_key_returns_well_formed_result() {
         assert_eq!(r.current_page, 0);
         assert_eq!(r.options_count, 0);
     }
-
-    ENGINE.reset();
 }
 
 #[test]
 fn backspace_after_press_does_not_crash() {
-    ENGINE.init(8);
-    ENGINE.reset();
-    ENGINE.press_key(b'a');
-    let _ = ENGINE.backspace();
-    ENGINE.reset();
+    let mut ctx = JdContext::new(PAGE_SIZE);
+    ctx.press_key(b'a');
+    let _ = ctx.backspace();
 }

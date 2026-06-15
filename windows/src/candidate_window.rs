@@ -23,14 +23,13 @@ use windows::Win32::Foundation::{
     D2DERR_RECREATE_TARGET, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_FEATURE_LEVEL_DEFAULT, D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
-    D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, ID2D1Factory, ID2D1HwndRenderTarget,
-    ID2D1SolidColorBrush,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
+    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
+    D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -40,20 +39,20 @@ use windows::Win32::Graphics::DirectWrite::{
     IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dwm::{
-    DWMWA_WINDOW_CORNER_PREFERENCE, DWM_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    DWM_WINDOW_CORNER_PREFERENCE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{HBRUSH, InvalidateRect, ValidateRect};
-use windows::Win32::UI::TextServices::ITfContext;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
+use windows::Win32::UI::TextServices::ITfContext;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_IME, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
-    HICON, IDC_HAND, LoadCursorW, MA_NOACTIVATE, RegisterClassExW, SWP_NOACTIVATE, SWP_NOZORDER,
-    SW_HIDE, SW_SHOWNOACTIVATE, SetCursor, SetWindowPos, ShowWindow, WM_LBUTTONDOWN,
+    HICON, IDC_HAND, LoadCursorW, MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOZORDER, SetCursor, SetWindowPos, ShowWindow, WM_LBUTTONDOWN,
     WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR, WNDCLASSEXW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
@@ -403,7 +402,12 @@ impl CandidateWindow {
             let dim_brush = rt.CreateSolidColorBrush(&dim, None)?;
 
             let body = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F { left: 0.0, top: 0.0, right: width, bottom: height },
+                rect: D2D_RECT_F {
+                    left: 0.0,
+                    top: 0.0,
+                    right: width,
+                    bottom: height,
+                },
                 radiusX: CORNER_RADIUS,
                 radiusY: CORNER_RADIUS,
             };
@@ -412,8 +416,7 @@ impl CandidateWindow {
             // Hover highlight, drawn under text + arrows so it acts as a
             // background pill.
             if let Some(target) = self.hover {
-                let hover_brush = rt
-                    .CreateSolidColorBrush(&color(0.30, 0.30, 0.32, 1.0), None)?;
+                let hover_brush = rt.CreateSolidColorBrush(&color(0.30, 0.30, 0.32, 1.0), None)?;
                 let pill = |r: &D2D_RECT_F, pad_x: f32, pad_y: f32| D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
                         left: r.left - pad_x,
@@ -489,8 +492,20 @@ impl CandidateWindow {
             let can_next = self.total_pages > 1 && self.page < self.total_pages;
             let prev_brush = if can_prev { &text_brush } else { &dim_brush };
             let next_brush = if can_next { &text_brush } else { &dim_brush };
-            draw_text(&rt, "◀", &self.prev_btn_rect, &self.arrow_format, prev_brush);
-            draw_text(&rt, "▶", &self.next_btn_rect, &self.arrow_format, next_brush);
+            draw_text(
+                &rt,
+                "◀",
+                &self.prev_btn_rect,
+                &self.arrow_format,
+                prev_brush,
+            );
+            draw_text(
+                &rt,
+                "▶",
+                &self.next_btn_rect,
+                &self.arrow_format,
+                next_brush,
+            );
 
             match rt.EndDraw(None, None) {
                 Ok(()) => {}
@@ -595,7 +610,10 @@ pub fn sync_visibility() {
 /// selection ("press '2' to commit candidate #2").
 pub fn current_items() -> Vec<CandidateItem> {
     WINDOW.with(|w| {
-        w.borrow().as_ref().map(|win| win.items.clone()).unwrap_or_default()
+        w.borrow()
+            .as_ref()
+            .map(|win| win.items.clone())
+            .unwrap_or_default()
     })
 }
 
@@ -610,7 +628,10 @@ pub fn caret_screen_pos() -> POINT {
             let _ = ClientToScreen(focus, &mut pt);
         }
     }
-    POINT { x: pt.x, y: pt.y + 24 }
+    POINT {
+        x: pt.x,
+        y: pt.y + 24,
+    }
 }
 
 // ---- internal helpers ----------------------------------------------------
@@ -621,8 +642,8 @@ fn hits(rect: &D2D_RECT_F, x: f32, y: f32) -> bool {
 
 fn perform_page_nav(nav: PageNav) {
     let result = match nav {
-        PageNav::Prev => jd::ENGINE.prev_page(),
-        PageNav::Next => jd::ENGINE.next_page(),
+        PageNav::Prev => jd::prev_page(),
+        PageNav::Next => jd::next_page(),
     };
     if result.options.is_empty() {
         hide();
@@ -631,7 +652,10 @@ fn perform_page_nav(nav: PageNav) {
     let items: Vec<CandidateItem> = result
         .options
         .iter()
-        .map(|o| CandidateItem { value: o.value.clone(), hint: o.hint.clone() })
+        .map(|o| CandidateItem {
+            value: o.value.clone(),
+            hint: o.hint.clone(),
+        })
         .collect();
     WINDOW.with(|w| {
         if let Some(win) = w.borrow_mut().as_mut() {
@@ -651,9 +675,11 @@ fn perform_commit(idx: usize) {
         let ctx = win.ctx.clone()?;
         Some((ctx, win.tid, item))
     });
-    let Some((ctx, tid, item)) = snapshot else { return };
+    let Some((ctx, tid, item)) = snapshot else {
+        return;
+    };
     let _ = composition::commit_text(&ctx, tid, &item.value);
-    jd::ENGINE.reset();
+    jd::reset();
     hide();
 }
 
@@ -729,12 +755,16 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             let y_px = (xy >> 16) as i16 as f32;
             WINDOW.with(|w| {
                 if let Some(win) = w.borrow_mut().as_mut() {
-                    if win.hwnd != hwnd { return; }
+                    if win.hwnd != hwnd {
+                        return;
+                    }
                     let scale = win.dpi() / 96.0;
                     let new_hover = win.hit_test(x_px / scale, y_px / scale);
                     if new_hover != win.hover {
                         win.hover = new_hover;
-                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        unsafe {
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
                     }
                     // Arm WM_MOUSELEAVE so we know when the cursor exits.
                     if !win.tracking_leave {
@@ -744,7 +774,9 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                             hwndTrack: hwnd,
                             dwHoverTime: 0,
                         };
-                        unsafe { let _ = TrackMouseEvent(&mut tme); }
+                        unsafe {
+                            let _ = TrackMouseEvent(&mut tme);
+                        }
                         win.tracking_leave = true;
                     }
                 }
@@ -754,11 +786,15 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
         WM_MOUSELEAVE => {
             WINDOW.with(|w| {
                 if let Some(win) = w.borrow_mut().as_mut() {
-                    if win.hwnd != hwnd { return; }
+                    if win.hwnd != hwnd {
+                        return;
+                    }
                     win.tracking_leave = false;
                     if win.hover.is_some() {
                         win.hover = None;
-                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        unsafe {
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
                     }
                 }
             });
@@ -806,11 +842,7 @@ fn format_hint(hint: &str) -> String {
     format!(" 〔{hint}〕")
 }
 
-fn measure_text(
-    dwrite: &IDWriteFactory,
-    format: &IDWriteTextFormat,
-    text: &str,
-) -> Result<f32> {
+fn measure_text(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &str) -> Result<f32> {
     let wide: Vec<u16> = text.encode_utf16().collect();
     let layout: IDWriteTextLayout =
         unsafe { dwrite.CreateTextLayout(&wide, format, 4096.0, ROW_HEIGHT) }?;

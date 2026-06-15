@@ -69,13 +69,17 @@ pub struct DisplayAttributeEnum {
 
 impl Default for DisplayAttributeEnum {
     fn default() -> Self {
-        Self { position: Cell::new(0) }
+        Self {
+            position: Cell::new(0),
+        }
     }
 }
 
 impl DisplayAttributeEnum {
     fn at(position: u32) -> Self {
-        Self { position: Cell::new(position) }
+        Self {
+            position: Cell::new(position),
+        }
     }
 }
 
@@ -95,8 +99,7 @@ impl IEnumTfDisplayAttributeInfo_Impl for DisplayAttributeEnum_Impl {
         // We expose exactly one display attribute (input/in-flight).
         let want = ulcount.min(1u32.saturating_sub(self.position.get()));
         if want > 0 {
-            let info: ITfDisplayAttributeInfo =
-                DisplayAttributeInfo.into_object().into_interface();
+            let info: ITfDisplayAttributeInfo = DisplayAttributeInfo.into_object().into_interface();
             unsafe { rginfo.write(Some(info)) };
             self.position.set(self.position.get() + 1);
         }
