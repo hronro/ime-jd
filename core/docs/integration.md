@@ -51,28 +51,32 @@ typedef struct {
   unsigned int options_count, total_pages, current_page;
 } query_result;
 
-void          jd_init(unsigned char page_size);
-query_result  jd_press_key(char key);
-query_result  jd_next_page(void);
-query_result  jd_prev_page(void);
-query_result  jd_backspace(void);
-void          jd_reset(void);
-void          jd_deinit(void);
+typedef struct jd_context jd_context;
+
+jd_context   *jd_init(unsigned char page_size);
+query_result  jd_press_key(jd_context *ctx, char key);
+query_result  jd_next_page(jd_context *ctx);
+query_result  jd_prev_page(jd_context *ctx);
+query_result  jd_backspace(jd_context *ctx);
+void          jd_reset(jd_context *ctx);
+void          jd_deinit(jd_context *ctx);
 ```
 
 The header is C89-compatible and includes an `extern "C"` block for C++ consumers.
 
+`jd_context` is opaque — the caller never inspects its layout. Multiple contexts may exist at once; the embedded trie is parsed once on first use and shared read-only across all of them.
+
 ### Function semantics
 
-| Function                | Effect                                                                |
-|-------------------------|-----------------------------------------------------------------------|
-| `jd_init(page_size)`    | One-time setup. Parses the embedded blob, allocates the global state. |
-| `jd_press_key(key)`     | Feed one keystroke. Returns either a committed string or a page.      |
-| `jd_next_page()`        | Move to next page of the current candidate list, if any.              |
-| `jd_prev_page()`        | Move to previous page, if any.                                        |
-| `jd_backspace()`        | Undo the most recent letter keypress; recompute candidates.           |
-| `jd_reset()`            | Drop the in-flight query but keep the library initialized.            |
-| `jd_deinit()`           | Tear down all state. After this, only `jd_init` is callable.          |
+| Function                       | Effect                                                                       |
+|--------------------------------|------------------------------------------------------------------------------|
+| `jd_init(page_size)`           | Allocate a new context. Returns NULL on allocation failure.                  |
+| `jd_press_key(ctx, key)`       | Feed one keystroke. Returns either a committed string or a page.             |
+| `jd_next_page(ctx)`            | Move to next page of the current candidate list, if any.                     |
+| `jd_prev_page(ctx)`            | Move to previous page, if any.                                               |
+| `jd_backspace(ctx)`            | Undo the most recent letter keypress; recompute candidates.                  |
+| `jd_reset(ctx)`                | Drop the in-flight query but keep the context alive.                         |
+| `jd_deinit(ctx)`               | Tear down this context. Other contexts and the shared trie are unaffected.   |
 
 ### Reading `query_result`
 
@@ -97,23 +101,31 @@ visible = (current_page == total_pages)
 
 ### Pointer lifetimes (important)
 
-Every pointer in a returned `query_result` is **borrowed**. Lifetimes:
+Every pointer in a returned `query_result` is **borrowed**. Lifetimes are per-context — invalidation triggers are calls into the same `ctx`:
 
-- **`commit`** is allocated in a per-keypress arena and is valid only until the next call to `jd_press_key`, `jd_next_page`, `jd_prev_page`, `jd_backspace`, `jd_reset`, or `jd_deinit`. Copy it out before making any further call if you need it longer.
-- **`options` and each `option.value` / `option.hint`** are valid only until the next state-changing call (same list as above). Specifically, `option.value` points into the embedded blob (effectively static), but `option.hint` is allocated in the paginator's per-page arena and is invalidated when the user navigates to another page.
+- **`commit`** is allocated in a per-keypress arena (per context) and is valid only until the next call into that context: `jd_press_key`, `jd_next_page`, `jd_prev_page`, `jd_backspace`, `jd_reset`, or `jd_deinit`. Copy it out before making any further call if you need it longer.
+- **`options` and each `option.value` / `option.hint`** are valid only until the next state-changing call into the same context (same list as above). Specifically, `option.value` points into the embedded blob (effectively static), but `option.hint` is allocated in the paginator's per-page arena and is invalidated when the user navigates to another page.
 
-Treat the rule simply as: **don't hold any pointer returned by the library across the next library call.**
+Treat the rule simply as: **don't hold any pointer returned for a context across the next call into that context.** Pointers from one context are unaffected by calls into a different context.
 
 ### Lifecycle contract
 
 ```
-jd_init  ──►  (jd_press_key | jd_next_page | jd_prev_page |
-              jd_backspace  | jd_reset)*       ──►  jd_deinit
+ctx = jd_init(...)  ──►  (jd_press_key | jd_next_page | jd_prev_page |
+                          jd_backspace | jd_reset)*  ──►  jd_deinit(ctx)
 ```
 
-Calling `jd_init` while a context is already initialized leaks the previous context's memory. Always call `jd_deinit` between successive inits. (The library doesn't enforce this — it's a caller contract, documented in `jd.h`.)
+Each `jd_init` call returns an independent context owned by the caller. Contexts share the embedded trie (parsed lazily on the first call from any thread, then immutable for the rest of the process), but their query state is fully separate — pages, in-flight key indexes, the per-keypress arena, etc.
 
-The library is **not** thread-safe. All state is global; concurrent calls from multiple threads will corrupt it. Either funnel calls through one thread, or wrap calls in an external mutex.
+### Thread-safety
+
+| Pattern                                                    | Safe?                                |
+|------------------------------------------------------------|--------------------------------------|
+| Different contexts called from different threads           | Yes — trie is read-only after init.  |
+| A single context called from multiple threads concurrently | No — wrap calls in an external lock. |
+| Multiple threads racing the very first `jd_init`           | Yes — the trie's one-time init is atomic. |
+
+The library uses `std.heap.smp_allocator` internally (thread-safe, pure Zig, no libc dependency).
 
 ## Key routing for IMEs
 
@@ -157,27 +169,27 @@ The table below is the recommended dispatch policy across all platforms. Followi
 A minimal IME key handler looks like:
 
 ```text
-on_key_down(key):
+on_key_down(key, ctx):
     if ctrl / cmd / alt / win held: pass through to host
 
     byte = translate_to_ascii(key, current keyboard state)
               # shift/caps-aware; e.g. Shift+/ → '?', Shift+K → 'K'
 
     if not composing:
-        if byte is a lowercase letter (a-z): start composition; jd_press_key(byte)
+        if byte is a lowercase letter (a-z): start composition; jd_press_key(ctx, byte)
         else: pass through to host (host inserts literal `K`, `?`, `1`, etc.)
 
     else (composing):
         match key:
-            backspace      → jd_backspace(); shrink composition; redraw
-            escape         → jd_reset(); end composition; hide candidates
-            enter          → commit raw composition text; jd_reset(); hide candidates
-            page-prev gesture → result = jd_prev_page(); redraw candidates
-            page-next gesture → result = jd_next_page(); redraw candidates
-            candidate-selector for N → commit option_at(N).value; jd_reset(); hide
+            backspace      → jd_backspace(ctx); shrink composition; redraw
+            escape         → jd_reset(ctx); end composition; hide candidates
+            enter          → commit raw composition text; jd_reset(ctx); hide candidates
+            page-prev gesture → result = jd_prev_page(ctx); redraw candidates
+            page-next gesture → result = jd_next_page(ctx); redraw candidates
+            candidate-selector for N → commit option_at(N).value; jd_reset(ctx); hide
             other nav (home/end/etc.)→ consume but no-op (engine has no cursor)
             otherwise (any byte the engine accepts):
-                result = jd_press_key(byte)
+                result = jd_press_key(ctx, byte)
                 if result.commit: insert it, end composition
                 if result.options: extend composition, show candidates
                 if both: drilled-in — insert commit, restart composition with byte
@@ -188,6 +200,6 @@ The page-prev / page-next / candidate-selector lines are where the per-platform 
 
 ## Debug builds
 
-A `Debug` build of `libjd` uses Zig's `DebugAllocator`, which detects leaks at `jd_deinit` time. If you suspect a leak, build the core with `zig build` (no `-Doptimize=`) and look at stderr after teardown.
+A `Debug` build gives each context its own `DebugAllocator`. When you call `jd_deinit(ctx)`, the allocator's leak detector runs against that context's allocations and prints any unfreed blocks to stderr — independently for every context.
 
-`Release` builds use `std.heap.smp_allocator` — pure Zig, thread-safe, no libc dependency. That keeps the library zero-dep for distribution.
+`Release` builds use `std.heap.smp_allocator` across all contexts — pure Zig, thread-safe, no libc dependency. That keeps the library zero-dep for distribution.

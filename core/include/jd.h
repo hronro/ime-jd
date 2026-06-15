@@ -16,26 +16,36 @@ typedef struct {
 } query_result;
 
 /**
- * Initialize the library with the given page size.
+ * Opaque per-instance context handle. Create with jd_init, destroy with
+ * jd_deinit. Multiple contexts may exist simultaneously; the embedded trie
+ * is parsed once on first use and shared read-only across all of them.
  *
- * Must be called before any other jd_* function. If called more than once,
- * the caller is responsible for invoking jd_deinit() before each subsequent
- * jd_init() — otherwise the previous context's memory leaks.
+ * Thread-safety: contexts are independent — different threads operating on
+ * different contexts is safe. A single context must not be used concurrently
+ * from multiple threads; serialize calls with an external mutex if you need
+ * that.
  */
-void jd_init(unsigned char page_size);
-
-query_result jd_press_key(char key);
-query_result jd_next_page(void);
-query_result jd_prev_page(void);
-query_result jd_backspace(void);
-void jd_reset(void);
+typedef struct jd_context jd_context;
 
 /**
- * Tear down the library and release all memory held by the current context.
- * After this call, jd_init() must be invoked again before any other jd_*
- * function is used.
+ * Create a new context with the given page size. Returns NULL on allocation
+ * failure. Each returned handle is owned by the caller and must be released
+ * with jd_deinit.
  */
-void jd_deinit(void);
+jd_context *jd_init(unsigned char page_size);
+
+query_result jd_press_key(jd_context *ctx, char key);
+query_result jd_next_page(jd_context *ctx);
+query_result jd_prev_page(jd_context *ctx);
+query_result jd_backspace(jd_context *ctx);
+void         jd_reset(jd_context *ctx);
+
+/**
+ * Release all memory held by ctx. After this call ctx is invalid; do not
+ * use it for any other jd_* function. The shared trie remains alive for the
+ * rest of the process; other contexts are unaffected.
+ */
+void jd_deinit(jd_context *ctx);
 
 #ifdef __cplusplus
 }
