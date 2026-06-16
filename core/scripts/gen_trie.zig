@@ -109,8 +109,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
         ,
     });
 
+    // Re-parse the blob locally to surface the worst-case caps it embedded.
+    // These dictate per-context memory in `jd_init`; logging them gives early
+    // visibility into the per-context resident size.
+    const t = try trie.Trie.fromBytes(blob);
     std.debug.print(
-        "gen_trie: {d} entries → {d} bytes blob\n",
-        .{ entries.len, blob.len },
+        "gen_trie: {d} entries → {d} bytes blob (frontier_cap={d}, path_buf_cap={d})\n",
+        .{ entries.len, blob.len, t.frontier_cap, t.path_buf_cap },
     );
 }

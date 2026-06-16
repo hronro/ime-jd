@@ -6,8 +6,6 @@ const Trie = trie_mod.Trie;
 const Node = trie_mod.Trie.Node;
 const buildTestTrie = @import("./trie_test_data.zig").buildTestTrie;
 
-const ArrayList = std.ArrayList;
-
 pub const QueryOption = extern struct {
     value: [*:0]const u8,
     hint: ?[*:0]const u8,
@@ -82,7 +80,7 @@ pub fn expectEqualQueryOptionManyItemPtr(expected: [*]const QueryOption, actual:
 /// shared `path_buf`, giving the key sequence from the queried start node
 /// down to this entry's node. Hint strings are materialized on demand from
 /// this path when a value is emitted.
-const FrontierEntry = struct {
+pub const FrontierEntry = struct {
     node: *const Node,
     path_start: u32,
     path_len: u8,
@@ -97,13 +95,23 @@ const FrontierEntry = struct {
 /// If the user navigates backwards, the cursor is rewound and replayed from
 /// the start. The replay cost is O(current_page × page_size), which is
 /// invisible at IME interaction speeds.
+/// Pre-allocated buffers a `NodePagination` borrows. The caller owns the
+/// memory and is responsible for keeping it valid for the paginator's
+/// lifetime. Sizes are dictated by `Trie.frontier_cap` / `Trie.path_buf_cap`
+/// and the chosen page_size; in production these come from the per-context
+/// buffer carved by `jd_init`.
+pub const Buffers = struct {
+    frontier: []FrontierEntry,
+    path_buf: []u8,
+    page_fba: *std.heap.FixedBufferAllocator,
+};
+
 pub const NodePagination = struct {
     const Self = @This();
 
-    allocator: std.mem.Allocator,
     /// Backs the materialized current page (options array + hint strings).
     /// Reset before each materialization, so old page memory is reclaimed.
-    page_arena: std.heap.ArenaAllocator,
+    page_fba: *std.heap.FixedBufferAllocator,
 
     trie: *const Trie,
     start_node: *const Node,
@@ -115,46 +123,42 @@ pub const NodePagination = struct {
     /// the next value to emit. `bfs_page` is the page that the cursor will
     /// emit next.
     bfs_page: u32,
-    frontier: ArrayList(FrontierEntry),
+    frontier: []FrontierEntry,
+    frontier_len: usize,
     frontier_head: usize,
-    path_buf: ArrayList(u8),
+    path_buf: []u8,
+    path_buf_len: usize,
     skipped: u8,
 
-    /// Cached page contents for `cached_page`, allocated in `page_arena`.
+    /// Cached page contents for `cached_page`, allocated in `page_fba`.
     /// `cached_page == 0` means no page is currently materialized.
     cached_options: []QueryOption,
     cached_page: u32,
 
-    pub fn init(allocator: std.mem.Allocator, trie: *const Trie, node: *const Node, page_size: u8) Self {
+    pub fn init(buffers: Buffers, trie: *const Trie, node: *const Node, page_size: u8) Self {
         const total_pages: u32 = (node.count() + page_size - 1) / page_size;
-        var frontier: ArrayList(FrontierEntry) = .empty;
-        frontier.append(allocator, .{
+        buffers.frontier[0] = .{
             .node = node,
             .path_start = 0,
             .path_len = 0,
-        }) catch unreachable;
+        };
         return .{
-            .allocator = allocator,
-            .page_arena = std.heap.ArenaAllocator.init(allocator),
+            .page_fba = buffers.page_fba,
             .trie = trie,
             .start_node = node,
             .page_size = page_size,
             .total_pages = total_pages,
             .current_page = 1,
             .bfs_page = 1,
-            .frontier = frontier,
+            .frontier = buffers.frontier,
+            .frontier_len = 1,
             .frontier_head = 0,
-            .path_buf = .empty,
+            .path_buf = buffers.path_buf,
+            .path_buf_len = 0,
             .skipped = 0,
             .cached_options = &.{},
             .cached_page = 0,
         };
-    }
-
-    pub fn deinit(self: *Self) void {
-        self.frontier.deinit(self.allocator);
-        self.path_buf.deinit(self.allocator);
-        self.page_arena.deinit();
     }
 
     pub fn nextPage(self: *Self) void {
@@ -178,20 +182,20 @@ pub const NodePagination = struct {
         if (self.current_page < self.bfs_page) self.rewindBFS();
         while (self.bfs_page < self.current_page) self.skipOnePage();
 
-        _ = self.page_arena.reset(.retain_capacity);
+        self.page_fba.reset();
         self.cached_options = self.materializeOnePage();
         self.cached_page = self.current_page;
         return self.cached_options;
     }
 
     fn rewindBFS(self: *Self) void {
-        self.frontier.clearRetainingCapacity();
-        self.path_buf.clearRetainingCapacity();
-        self.frontier.append(self.allocator, .{
+        self.frontier[0] = .{
             .node = self.start_node,
             .path_start = 0,
             .path_len = 0,
-        }) catch unreachable;
+        };
+        self.frontier_len = 1;
+        self.path_buf_len = 0;
         self.frontier_head = 0;
         self.skipped = 0;
         self.bfs_page = 1;
@@ -208,22 +212,21 @@ pub const NodePagination = struct {
     fn enqueueChildren(self: *Self, entry: FrontierEntry) void {
         const w = entry.node.getWidth();
         if (w == 0) return;
-        // Reserve so the inner loop never reallocates — otherwise the
-        // parent-path slice we re-read every iteration could be invalidated.
-        self.path_buf.ensureUnusedCapacity(self.allocator, @as(usize, entry.path_len + 1) * w) catch unreachable;
-        self.frontier.ensureUnusedCapacity(self.allocator, w) catch unreachable;
         for (0..w) |i| {
             const child = entry.node.getChildByIndex(self.trie, i).?;
             const key = entry.node.keyOfChildByIndex(self.trie, i).?;
-            const child_path_start: u32 = @intCast(self.path_buf.items.len);
-            const parent_path = self.path_buf.items[entry.path_start..][0..entry.path_len];
-            self.path_buf.appendSliceAssumeCapacity(parent_path);
-            self.path_buf.appendAssumeCapacity(key);
-            self.frontier.appendAssumeCapacity(.{
+            const child_path_start: u32 = @intCast(self.path_buf_len);
+            const parent_path = self.path_buf[entry.path_start..][0..entry.path_len];
+            @memcpy(self.path_buf[self.path_buf_len..][0..entry.path_len], parent_path);
+            self.path_buf_len += entry.path_len;
+            self.path_buf[self.path_buf_len] = key;
+            self.path_buf_len += 1;
+            self.frontier[self.frontier_len] = .{
                 .node = child,
                 .path_start = child_path_start,
                 .path_len = entry.path_len + 1,
-            });
+            };
+            self.frontier_len += 1;
         }
     }
 
@@ -232,8 +235,7 @@ pub const NodePagination = struct {
     /// (with a freshly-allocated hint copy). Otherwise the value is skipped.
     fn consumeOne(self: *Self, emit_to: ?std.mem.Allocator) ?QueryOption {
         while (true) {
-            // Copy by value — `enqueueChildren` may reallocate `frontier`.
-            const entry = self.frontier.items[self.frontier_head];
+            const entry = self.frontier[self.frontier_head];
             const values = entry.node.values(self.trie);
 
             if (self.skipped == 0) {
@@ -247,7 +249,7 @@ pub const NodePagination = struct {
             const value = values.at(self.skipped);
             const opt: ?QueryOption = if (emit_to) |alloc| blk: {
                 const hint: ?[*:0]const u8 = if (entry.path_len == 0) null else h: {
-                    const path = self.path_buf.items[entry.path_start..][0..entry.path_len];
+                    const path = self.path_buf[entry.path_start..][0..entry.path_len];
                     const buf = alloc.allocSentinel(u8, entry.path_len, 0) catch unreachable;
                     @memcpy(buf, path);
                     break :h buf.ptr;
@@ -271,7 +273,7 @@ pub const NodePagination = struct {
     }
 
     fn materializeOnePage(self: *Self) []QueryOption {
-        const page_alloc = self.page_arena.allocator();
+        const page_alloc = self.page_fba.allocator();
         const n = self.pageOptionCount(self.current_page);
         const options = page_alloc.alloc(QueryOption, n) catch unreachable;
         for (0..n) |i| options[i] = self.consumeOne(page_alloc).?;
@@ -280,16 +282,64 @@ pub const NodePagination = struct {
     }
 };
 
+/// Computes the page_fba buffer size for a given page_size. Used by both
+/// production (`jd_init` in main.zig) and tests.
+pub fn pageBufferSize(page_size: u8) usize {
+    // page_size options + one hint per option of up to MAX_HINT_LEN bytes + sentinel.
+    const MAX_HINT_LEN: usize = 5;
+    return @as(usize, page_size) * (@sizeOf(QueryOption) + MAX_HINT_LEN + 1);
+}
+
 // =========================================================================
 // Tests
 // =========================================================================
+
+/// Wraps the three heap regions a `NodePagination` borrows so each test can
+/// build/teardown them in two lines instead of five. In production this work
+/// is done by `jd_init`.
+const TestHarness = struct {
+    frontier: []FrontierEntry,
+    path_buf: []u8,
+    page_buf: []u8,
+    page_fba: std.heap.FixedBufferAllocator,
+
+    fn init(allocator: std.mem.Allocator, trie: *const Trie, page_size: u8) !TestHarness {
+        // `+1` so tests that paginate from root (with subtree = root's full
+        // node count, one more than any non-root node) still fit.
+        const frontier = try allocator.alloc(FrontierEntry, trie.frontier_cap + 1);
+        const path_buf = try allocator.alloc(u8, trie.path_buf_cap + 1);
+        const page_buf = try allocator.alloc(u8, pageBufferSize(page_size));
+        return .{
+            .frontier = frontier,
+            .path_buf = path_buf,
+            .page_buf = page_buf,
+            .page_fba = std.heap.FixedBufferAllocator.init(page_buf),
+        };
+    }
+
+    fn deinit(self: *TestHarness, allocator: std.mem.Allocator) void {
+        allocator.free(self.frontier);
+        allocator.free(self.path_buf);
+        allocator.free(self.page_buf);
+    }
+
+    fn buffers(self: *TestHarness) Buffers {
+        return .{
+            .frontier = self.frontier,
+            .path_buf = self.path_buf,
+            .page_fba = &self.page_fba,
+        };
+    }
+};
 
 test "page count is correct" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, th.trie.root(), 8);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 8);
+    defer harness.deinit(testing.allocator);
+
+    const node_pagination = NodePagination.init(harness.buffers(), &th.trie, th.trie.root(), 8);
 
     try testing.expectEqual(node_pagination.total_pages, 2);
 }
@@ -299,8 +349,9 @@ test "work properly with simple pagination" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 8);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 8);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 8);
 
     const options = node_pagination.getOptions();
 
@@ -323,8 +374,9 @@ test "work properly with small page size" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 3);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
     const options = node_pagination.getOptions();
 
@@ -342,8 +394,9 @@ test "next page" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 3);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
     node_pagination.nextPage();
     const options = node_pagination.getOptions();
@@ -362,8 +415,9 @@ test "last page" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 3);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
     node_pagination.nextPage();
     node_pagination.nextPage();
@@ -383,8 +437,9 @@ test "next page on last page" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 3);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
     node_pagination.nextPage();
     node_pagination.nextPage();
@@ -408,8 +463,9 @@ test "back and forth" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 3);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
     node_pagination.nextPage();
     node_pagination.nextPage();
@@ -434,8 +490,9 @@ test "back and forth 2" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 3);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
     node_pagination.nextPage();
     node_pagination.prevPage();
@@ -457,8 +514,9 @@ test "back and forth to the first page" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 3);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
     node_pagination.nextPage();
     node_pagination.nextPage();
@@ -484,8 +542,9 @@ test "page size is 1" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 1);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 1);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 1);
 
     const expected_total_pages: u32 = 11;
     try testing.expectEqual(expected_total_pages, node_pagination.total_pages);
@@ -523,8 +582,9 @@ test "page size is larger than the length of all options" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 16);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 16);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 16);
 
     try testing.expectEqual(@as(u32, 1), node_pagination.total_pages);
 
@@ -550,8 +610,9 @@ test "jump to page" {
     defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 3);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
     // Jump forward past the current page.
     node_pagination.jumpToPage(3);
@@ -598,14 +659,15 @@ test "deep nodes" {
         .{ .keys = "ae", .value = "Foo" },
         .{ .keys = "afj", .value = "Bar" },
         .{ .keys = "abcde", .value = "Hello" },
-        .{ .keys = "asdfghjkl", .value = "World" },
+        .{ .keys = "asdfgh", .value = "World" },
     });
     defer th.deinit(testing.allocator);
 
     const node = th.trie.root().getChild(&th.trie, 'a').?;
 
-    var node_pagination = NodePagination.init(testing.allocator, &th.trie, node, 3);
-    defer node_pagination.deinit();
+    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
     const options1 = node_pagination.getOptions();
     var expected1 = [_]QueryOption{
@@ -628,7 +690,7 @@ test "deep nodes" {
     const options3 = node_pagination.getOptions();
     var expected3 = [_]QueryOption{
         .{ .value = "Hello", .hint = "bcde" },
-        .{ .value = "World", .hint = "sdfghjkl" },
+        .{ .value = "World", .hint = "sdfgh" },
     };
     try expectEqualQueryOptionSlice(expected3[0..], options3);
 }

@@ -37,6 +37,11 @@ pub const Trie = struct {
     child_keys: []const u8,
     strings: []const u8,
 
+    /// Worst-case BFS frontier entry count across any non-root start node.
+    frontier_cap: u32,
+    /// Worst-case BFS path-buffer byte count across any non-root start node.
+    path_buf_cap: u32,
+
     pub const Node = NodeView;
 
     /// Parse a blob produced by `buildBlob` (or by `scripts/gen_trie.zig`).
@@ -44,8 +49,6 @@ pub const Trie = struct {
     pub fn fromBytes(bytes: []align(4) const u8) !Trie {
         if (bytes.len < @sizeOf(fmt.Header)) return error.BlobTooSmall;
         const header_ptr: *const fmt.Header = @ptrCast(@alignCast(bytes.ptr));
-        if (header_ptr.magic != fmt.MAGIC) return error.BlobBadMagic;
-        if (header_ptr.version != fmt.VERSION) return error.BlobVersionMismatch;
 
         const offsets = fmt.PoolOffsets.compute(
             header_ptr.node_count,
@@ -66,6 +69,8 @@ pub const Trie = struct {
             .child_indices = std.mem.bytesAsSlice(u32, @as([]align(4) const u8, @alignCast(child_idx_bytes))),
             .child_keys = child_keys,
             .strings = strings,
+            .frontier_cap = header_ptr.frontier_cap,
+            .path_buf_cap = header_ptr.path_buf_cap,
         };
     }
 
@@ -197,6 +202,13 @@ pub fn buildBlob(
 
     // ---- Phase 1: walk entries, build trie shape, count values ----
     for (entries) |e| {
+        // Domain invariants the consumer relies on:
+        // - Key sequences fit in `Context.pressed_keys: [MAX_PRESSED_KEYS]usize`
+        //   in main.zig (currently 6).
+        // - Any commit composition (worst case: two values concatenated)
+        //   fits in `Context.commit_scratch: [128]u8`.
+        std.debug.assert(e.keys.len <= 6);
+        std.debug.assert(e.value.len * 2 + 1 <= 128);
         var cur: u32 = 0;
         for (e.keys) |k| {
             var rec_idx = nodes[cur].first_child;
@@ -243,6 +255,46 @@ pub fn buildBlob(
             while (rec_idx != 0) : (rec_idx = records[rec_idx].next_sibling) {
                 counts[i] += counts[records[rec_idx].child_node];
             }
+        }
+    }
+
+    // ---- Phase 2b: subtree node count + path bytes, for sizing the per-
+    // context BFS buffers in `jd_init`. Same reverse-pass shape as Phase 2:
+    //   node_count[i] = 1 + Σ node_count[child]
+    //   path_bytes[i] = Σ (node_count[child] + path_bytes[child])
+    // We then take the max over non-root indices — `NodePagination.init` is
+    // never called on the root, so the root's totals (which sum the whole
+    // trie) don't enter the bound. ----
+    var subtree_node_count = try allocator.alloc(u32, NC);
+    defer allocator.free(subtree_node_count);
+    var subtree_path_bytes = try allocator.alloc(u32, NC);
+    defer allocator.free(subtree_path_bytes);
+    {
+        var i: usize = 0;
+        while (i < NC) : (i += 1) {
+            subtree_node_count[i] = 1;
+            subtree_path_bytes[i] = 0;
+        }
+    }
+    {
+        var i: usize = NC;
+        while (i > 0) {
+            i -= 1;
+            var rec_idx = nodes[i].first_child;
+            while (rec_idx != 0) : (rec_idx = records[rec_idx].next_sibling) {
+                const c = records[rec_idx].child_node;
+                subtree_node_count[i] += subtree_node_count[c];
+                subtree_path_bytes[i] += subtree_node_count[c] + subtree_path_bytes[c];
+            }
+        }
+    }
+    var frontier_cap: u32 = 0;
+    var path_buf_cap: u32 = 0;
+    {
+        var i: usize = 1; // skip root
+        while (i < NC) : (i += 1) {
+            if (subtree_node_count[i] > frontier_cap) frontier_cap = subtree_node_count[i];
+            if (subtree_path_bytes[i] > path_buf_cap) path_buf_cap = subtree_path_bytes[i];
         }
     }
 
@@ -352,14 +404,13 @@ pub fn buildBlob(
 
     const header = std.mem.bytesAsValue(fmt.Header, buf[0..@sizeOf(fmt.Header)]);
     header.* = .{
-        .magic = fmt.MAGIC,
-        .version = fmt.VERSION,
         .node_count = NC,
         .values_count = values_total,
         .child_keys_total = child_total,
         .child_indices_total = child_total,
         .strings_total = @intCast(strings.items.len),
-        ._reserved = 0,
+        .frontier_cap = frontier_cap,
+        .path_buf_cap = path_buf_cap,
     };
 
     const nodes_dst = std.mem.bytesAsSlice(fmt.Node, buf[offsets.nodes..][0 .. NC * @sizeOf(fmt.Node)]);
@@ -404,10 +455,10 @@ pub fn buildBlob(
 /// child-indices); u8 fields (`Node.values_len`, child keys, strings) and
 /// padding bytes are left untouched.
 fn byteSwapBlob(buf: []align(4) u8, current_endian: std.builtin.Endian) void {
-    const node_count = std.mem.readInt(u32, buf[8..12], current_endian);
-    const values_count = std.mem.readInt(u32, buf[12..16], current_endian);
-    const child_keys_total = std.mem.readInt(u32, buf[16..20], current_endian);
-    const child_indices_total = std.mem.readInt(u32, buf[20..24], current_endian);
+    const node_count = std.mem.readInt(u32, buf[0..4], current_endian);
+    const values_count = std.mem.readInt(u32, buf[4..8], current_endian);
+    const child_keys_total = std.mem.readInt(u32, buf[8..12], current_endian);
+    const child_indices_total = std.mem.readInt(u32, buf[12..16], current_endian);
 
     const offsets = fmt.PoolOffsets.compute(
         node_count,
@@ -416,8 +467,8 @@ fn byteSwapBlob(buf: []align(4) u8, current_endian: std.builtin.Endian) void {
         child_keys_total,
     );
 
-    // Header: 8 u32 fields starting at offset 0.
-    for (0..8) |i| swap32At(buf, i * 4);
+    // Header: 7 u32 fields starting at offset 0.
+    for (0..7) |i| swap32At(buf, i * 4);
 
     // Nodes: 3 u32 fields per Node (count_and_width, values_start,
     // children_start); the trailing u8 + padding doesn't need swapping.

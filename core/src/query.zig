@@ -4,11 +4,18 @@ const testing = std.testing;
 const trie_mod = @import("trie");
 const Trie = trie_mod.Trie;
 const Node = trie_mod.Trie.Node;
-const NodePagination = @import("./pagination.zig").NodePagination;
-const QueryOption = @import("./pagination.zig").QueryOption;
+const pagination = @import("./pagination.zig");
+const NodePagination = pagination.NodePagination;
+const QueryOption = pagination.QueryOption;
 const buildTestTrie = @import("./trie_test_data.zig").buildTestTrie;
 
-const ArrayList = std.ArrayList;
+/// Inline-buffer sizes. `MAX_PRESSED_KEYS` is a domain invariant
+/// (dictionary entries have ≤ 6 letters; `buildBlob` asserts it).
+/// `COMMIT_SCRATCH_BYTES` covers any in-place commit composition; the
+/// largest is a two-value concatenation (case E1 in `pressKey`), bounded
+/// by the same build-time assert in `buildBlob`.
+pub const MAX_PRESSED_KEYS: usize = 6;
+pub const COMMIT_SCRATCH_BYTES: usize = 128;
 
 pub const InitOptions = struct {
     trie: *const Trie,
@@ -26,141 +33,141 @@ pub const QueryResult = extern struct {
 pub const Context = struct {
     const Self = @This();
 
-    allocator: std.mem.Allocator,
-    commit_allocator: std.heap.ArenaAllocator,
+    /// Pre-allocated buffers borrowed from the caller. In production these
+    /// come from `jd_init`'s carved tail; in tests, separately allocated.
+    pub const Buffers = struct {
+        frontier: []pagination.FrontierEntry,
+        path_buf: []u8,
+        page_buf: []u8,
+    };
+
+    /// The backing allocation handed to `shared_allocator.free` in
+    /// `jd_deinit`. In production this is the entire `jd_init` allocation
+    /// (including the Context struct itself); in tests it's unused.
+    /// Alignment is `@alignOf(usize)` because that's the max alignment
+    /// of any field on Context (Self-referential @alignOf isn't allowed).
+    raw: []align(@alignOf(usize)) u8,
+
+    /// Scratch for commit-string composition (synth single byte, value+key,
+    /// value+';', value+value). Returned to C as a sentinel-terminated
+    /// pointer; the caller consumes before the next jd_* call.
+    commit_scratch: [COMMIT_SCRATCH_BYTES]u8,
+
+    /// One entry per descended trie key; bounded by max key length.
+    pressed_keys: [MAX_PRESSED_KEYS]usize,
+    pressed_keys_len: u8,
+
+    /// Backs the per-page `QueryOption` arrays and their hint strings
+    /// inside `NodePagination`. Reset on every page materialization.
+    page_fba: std.heap.FixedBufferAllocator,
+
+    /// BFS frontier + path bytes for any active `NodePagination`. Shared
+    /// across successive paginators on this context (each new `pager`
+    /// re-uses the same backing memory).
+    frontier_buf: []pagination.FrontierEntry,
+    path_buf: []u8,
+
     trie: *const Trie,
     root_node: *const Node,
     page_size: u8,
     node: *const Node,
     pager: ?NodePagination,
-    pressed_key_indexes: ArrayList(usize),
 
-    pub fn init(allocator: std.mem.Allocator, options: InitOptions) Self {
+    /// Constructs a Context from pre-allocated buffers. The caller (jd_init
+    /// or a test harness) provides storage for the three variable-sized
+    /// regions; the inline fields (commit_scratch, pressed_keys, page_fba)
+    /// live inside the returned struct. `raw` is left undefined — jd_init
+    /// sets it explicitly after the carved layout is known; tests don't
+    /// touch it.
+    pub fn init(buffers: Buffers, options: InitOptions) Self {
         const root_node = options.trie.root();
         return .{
-            .allocator = allocator,
-            .commit_allocator = std.heap.ArenaAllocator.init(allocator),
+            .raw = undefined,
+            .commit_scratch = undefined,
+            .pressed_keys = undefined,
+            .pressed_keys_len = 0,
+            .page_fba = std.heap.FixedBufferAllocator.init(buffers.page_buf),
+            .frontier_buf = buffers.frontier,
+            .path_buf = buffers.path_buf,
             .trie = options.trie,
             .root_node = root_node,
             .page_size = options.page_size,
             .node = root_node,
             .pager = null,
-            .pressed_key_indexes = ArrayList(usize).initCapacity(allocator, 6) catch unreachable,
         };
     }
 
-    pub fn deinit(self: *Self) void {
-        self.commit_allocator.deinit();
-        if (self.pager) |*pager| pager.*.deinit();
-        self.pressed_key_indexes.deinit(self.allocator);
+    fn paginationBuffers(self: *Self) pagination.Buffers {
+        return .{
+            .frontier = self.frontier_buf,
+            .path_buf = self.path_buf,
+            .page_fba = &self.page_fba,
+        };
+    }
+
+    /// Writes `len` bytes already filled in `commit_scratch[0..len]` plus a
+    /// trailing 0 sentinel, and returns the scratch pointer typed for C.
+    inline fn scratchCommit(self: *Self, len: usize) [*:0]const u8 {
+        self.commit_scratch[len] = 0;
+        return @ptrCast(&self.commit_scratch);
     }
 
     pub fn reset(self: *Self) void {
         self.node = self.root_node;
-        if (self.pager) |*pager| pager.*.deinit();
         self.pager = null;
-        self.pressed_key_indexes.clearRetainingCapacity();
+        self.pressed_keys_len = 0;
     }
 
     pub fn pressKey(self: *Self, key: u8) QueryResult {
-        // free the previous commit.
-        _ = self.commit_allocator.reset(.free_all);
-
-        const allocator = self.commit_allocator.allocator();
-
-        // If press space, commit the first option.
-        // If there is no option, commit the space.
+        // Case A: space — commit first option (rodata pointer), else synth " ".
         if (key == ' ') {
             if (self.pager) |*pager| {
                 const options = pager.*.getOptions();
-
-                const commit = get_commit: {
-                    if (options.len >= 1) {
-                        const original_commit = std.mem.sliceTo(options[0].value, 0);
-                        const commit = allocator.allocSentinel(u8, original_commit.len, 0) catch unreachable;
-                        @memcpy(commit, original_commit);
-                        break :get_commit commit;
-                    } else {
-                        const commit = allocator.allocSentinel(u8, 1, 0) catch unreachable;
-                        commit[0] = ' ';
-                        break :get_commit commit;
-                    }
-                };
-
-                self.reset();
-
-                return .{
-                    .commit = commit,
-                    .options = null,
-                    .options_count = 0,
-                    .total_pages = 0,
-                    .current_page = 0,
-                };
-            } else {
-                const commit = allocator.allocSentinel(u8, 1, 0) catch unreachable;
-                commit[0] = ' ';
-
-                self.reset();
-
-                return .{
-                    .commit = commit,
-                    .options = null,
-                    .options_count = 0,
-                    .total_pages = 0,
-                    .current_page = 0,
-                };
+                if (options.len >= 1) {
+                    const commit = options[0].value; // rodata
+                    self.reset();
+                    return .{
+                        .commit = commit,
+                        .options = null,
+                        .options_count = 0,
+                        .total_pages = 0,
+                        .current_page = 0,
+                    };
+                }
             }
+            self.commit_scratch[0] = ' ';
+            const commit = self.scratchCommit(1);
+            self.reset();
+            return .{
+                .commit = commit,
+                .options = null,
+                .options_count = 0,
+                .total_pages = 0,
+                .current_page = 0,
+            };
         }
 
-        // When press `;`, jump to the `;` child of the trie,
-        // which is handled in the end of this function.
-        // If the `;` child does not exist, select the 2nd option.
-        // If the 2nd option does not exist,
-        // commit the 1st option with `;` in the end.
+        // Case B: ';' with no ';' child — commit the 2nd option (rodata),
+        // or fall back to option[0] + ';' written into scratch.
         if (key == ';' and self.node.getChild(self.trie, ';') == null) {
             if (self.pager) |*pager| {
                 const options = pager.*.getOptions();
-
-                const commit = get_commit: {
-                    if (options.len >= 2) {
-                        const original_commit = std.mem.sliceTo(options[1].value, 0);
-                        const commit = allocator.allocSentinel(u8, original_commit.len, 0) catch unreachable;
-                        @memcpy(commit, original_commit);
-                        break :get_commit commit;
-                    } else {
-                        const original_commit = std.mem.sliceTo(options[0].value, 0);
-                        const commit = allocator.allocSentinel(u8, original_commit.len + 1, 0) catch unreachable;
-                        @memcpy(commit[0..original_commit.len], original_commit);
-                        commit[commit.len - 1] = ';';
-                        break :get_commit commit;
-                    }
-                };
-
-                self.reset();
-
-                return .{
-                    .commit = commit,
-                    .options = null,
-                    .options_count = 0,
-                    .total_pages = 0,
-                    .current_page = 0,
-                };
-            }
-        }
-
-        // User can press `1` to `9` to select an option.
-        if (key >= '1' and key <= '9') {
-            if (self.pager) |*pager| {
-                const options = pager.*.getOptions();
-                const option_index = key - '1';
-
-                if (option_index < options.len) {
-                    const original_commit = std.mem.sliceTo(options[option_index].value, 0);
-                    const commit = allocator.allocSentinel(u8, original_commit.len, 0) catch unreachable;
-                    @memcpy(commit, original_commit);
-
+                if (options.len >= 2) {
+                    const commit = options[1].value; // rodata
                     self.reset();
-
+                    return .{
+                        .commit = commit,
+                        .options = null,
+                        .options_count = 0,
+                        .total_pages = 0,
+                        .current_page = 0,
+                    };
+                } else {
+                    const original = std.mem.sliceTo(options[0].value, 0);
+                    @memcpy(self.commit_scratch[0..original.len], original);
+                    self.commit_scratch[original.len] = ';';
+                    const commit = self.scratchCommit(original.len + 1);
+                    self.reset();
                     return .{
                         .commit = commit,
                         .options = null,
@@ -172,24 +179,40 @@ pub const Context = struct {
             }
         }
 
+        // Case C: '1'..'9' picks an option by index (rodata pointer).
+        if (key >= '1' and key <= '9') {
+            if (self.pager) |*pager| {
+                const options = pager.*.getOptions();
+                const option_index = key - '1';
+                if (option_index < options.len) {
+                    const commit = options[option_index].value; // rodata
+                    self.reset();
+                    return .{
+                        .commit = commit,
+                        .options = null,
+                        .options_count = 0,
+                        .total_pages = 0,
+                        .current_page = 0,
+                    };
+                }
+            }
+        }
+
+        // Case D: descend into a child of the current node.
         if (self.node.getChild(self.trie, key)) |node| {
             const key_index = self.node.indexOfChild(self.trie, key).?;
 
             self.node = node;
-            if (self.pager) |*pager| pager.*.deinit();
-            self.pager = NodePagination.init(self.allocator, self.trie, node, self.page_size);
-            self.pressed_key_indexes.append(self.allocator, key_index) catch unreachable;
+            self.pager = NodePagination.init(self.paginationBuffers(), self.trie, node, self.page_size);
+            self.pressed_keys[self.pressed_keys_len] = key_index;
+            self.pressed_keys_len += 1;
 
             const options = self.pager.?.getOptions();
 
-            // If there is only one option, and the option has no hint, commit it.
+            // D1: single option with no hint — commit it directly (rodata).
             if (options.len == 1 and options[0].hint == null) {
-                const original_commit = std.mem.sliceTo(options[0].value, 0);
-                const commit = allocator.allocSentinel(u8, original_commit.len, 0) catch unreachable;
-                @memcpy(commit, original_commit);
-
+                const commit = options[0].value; // rodata
                 self.reset();
-
                 return .{
                     .commit = commit,
                     .options = null,
@@ -207,32 +230,32 @@ pub const Context = struct {
                 .current_page = 1,
             };
         } else if (self.root_node.getChild(self.trie, key)) |node| {
-            // If the current node has no child with the key, but the root node does:
-            // jump to the root's child and commit the first option of the previous node.
-            const prev_options = self.pager.?.getOptions();
-            const prev_original_commit = std.mem.sliceTo(prev_options[0].value, 0);
-            const prev_commit = allocator.allocSentinel(u8, prev_original_commit.len, 0) catch unreachable;
-            @memcpy(prev_commit, prev_original_commit);
+            // Case E: current node has no child with `key`, but root does —
+            // commit the previous page's first option (rodata), then jump.
+            //
+            // Both `.value` pointers are into the trie strings pool, so
+            // they remain valid across the page_fba reset triggered by the
+            // new pager's first `getOptions()`. The `QueryOption` array
+            // slice (`prev_options`) does get invalidated, but we capture
+            // the rodata pointer up front.
+            const prev_value = self.pager.?.getOptions()[0].value; // rodata
 
             self.node = node;
-            self.pager.?.deinit();
-            self.pager = NodePagination.init(self.allocator, self.trie, node, self.page_size);
-            self.pressed_key_indexes.clearRetainingCapacity();
-            self.pressed_key_indexes.append(self.allocator, self.root_node.indexOfChild(self.trie, key).?) catch unreachable;
+            self.pager = NodePagination.init(self.paginationBuffers(), self.trie, node, self.page_size);
+            self.pressed_keys_len = 0;
+            self.pressed_keys[self.pressed_keys_len] = self.root_node.indexOfChild(self.trie, key).?;
+            self.pressed_keys_len += 1;
 
             const options = self.pager.?.getOptions();
 
-            // If there is only one option and the option has no hint,
-            // commit it concatenated with prev_commit.
+            // E1: single option no hint — concat prev + new into scratch.
             if (options.len == 1 and options[0].hint == null) {
-                const original_commit = std.mem.sliceTo(options[0].value, 0);
-                const commit = allocator.allocSentinel(u8, prev_original_commit.len + original_commit.len, 0) catch unreachable;
-                @memcpy(commit[0..prev_commit.len], prev_commit);
-                @memcpy(commit[prev_commit.len..], original_commit);
-                allocator.free(prev_commit);
-
+                const prev = std.mem.sliceTo(prev_value, 0);
+                const curr = std.mem.sliceTo(options[0].value, 0);
+                @memcpy(self.commit_scratch[0..prev.len], prev);
+                @memcpy(self.commit_scratch[prev.len..][0..curr.len], curr);
+                const commit = self.scratchCommit(prev.len + curr.len);
                 self.reset();
-
                 return .{
                     .commit = commit,
                     .options = null,
@@ -243,7 +266,7 @@ pub const Context = struct {
             }
 
             return .{
-                .commit = prev_commit,
+                .commit = prev_value, // rodata
                 .options = options.ptr,
                 .options_count = self.node.count(),
                 .total_pages = self.pager.?.total_pages,
@@ -251,16 +274,11 @@ pub const Context = struct {
             };
         }
 
-        // Reached when the key is not a letter, or it is a letter but neither
-        // the current node nor the root has a child with that key. If we're at
-        // the root, commit the key directly; otherwise commit the first option
-        // of the current node with the key appended.
+        // Case F: at root, key has no child — commit the key byte itself.
         if (self.node == self.root_node) {
-            const commit = allocator.allocSentinel(u8, 1, 0) catch unreachable;
-            commit[0] = key;
-
+            self.commit_scratch[0] = key;
+            const commit = self.scratchCommit(1);
             self.reset();
-
             return .{
                 .commit = commit,
                 .options = null,
@@ -269,14 +287,14 @@ pub const Context = struct {
                 .current_page = 0,
             };
         } else {
+            // Case G: deep in the trie, key has no matching descent — commit
+            // the current first option with `key` appended.
             const options = self.pager.?.getOptions();
-            const original_commit = std.mem.sliceTo(options[0].value, 0);
-            const commit = allocator.allocSentinel(u8, original_commit.len + 1, 0) catch unreachable;
-            @memcpy(commit[0..original_commit.len], original_commit);
-            commit[commit.len - 1] = key;
-
+            const original = std.mem.sliceTo(options[0].value, 0);
+            @memcpy(self.commit_scratch[0..original.len], original);
+            self.commit_scratch[original.len] = key;
+            const commit = self.scratchCommit(original.len + 1);
             self.reset();
-
             return .{
                 .commit = commit,
                 .options = null,
@@ -336,21 +354,20 @@ pub const Context = struct {
     }
 
     pub fn backspace(self: *Self) QueryResult {
-        if (self.pressed_key_indexes.items.len != 0) {
-            _ = self.pressed_key_indexes.pop();
+        if (self.pressed_keys_len != 0) {
+            self.pressed_keys_len -= 1;
 
             self.node = self.root_node;
 
-            for (self.pressed_key_indexes.items) |index| {
+            for (self.pressed_keys[0..self.pressed_keys_len]) |index| {
                 self.node = self.node.getChildByIndex(self.trie, index).?;
             }
 
-            self.pager.?.deinit();
             if (self.node == self.root_node) {
                 self.pager = null;
                 return emptyResult();
             } else {
-                self.pager = NodePagination.init(self.allocator, self.trie, self.node, self.page_size);
+                self.pager = NodePagination.init(self.paginationBuffers(), self.trie, self.node, self.page_size);
 
                 return .{
                     .commit = null,
@@ -380,14 +397,48 @@ fn emptyResult() QueryResult {
 // Tests
 // =========================================================================
 
-test "works with initial typing" {
-    const pagination = @import("./pagination.zig");
+/// Wraps the three heap regions a `Context` borrows so each test can build
+/// and tear them down without repeating the boilerplate. In production this
+/// work is done by `jd_init`.
+const ContextHarness = struct {
+    ctx: Context,
+    frontier: []pagination.FrontierEntry,
+    path_buf: []u8,
+    page_buf: []u8,
 
+    fn init(allocator: std.mem.Allocator, trie: *const Trie, page_size: u8) !ContextHarness {
+        // `+1` covers the (test-only) case of paginating from root.
+        const frontier = try allocator.alloc(pagination.FrontierEntry, trie.frontier_cap + 1);
+        const path_buf = try allocator.alloc(u8, trie.path_buf_cap + 1);
+        const page_buf = try allocator.alloc(u8, pagination.pageBufferSize(page_size));
+        var self = ContextHarness{
+            .ctx = undefined,
+            .frontier = frontier,
+            .path_buf = path_buf,
+            .page_buf = page_buf,
+        };
+        self.ctx = Context.init(.{
+            .frontier = frontier,
+            .path_buf = path_buf,
+            .page_buf = page_buf,
+        }, .{ .trie = trie, .page_size = page_size });
+        return self;
+    }
+
+    fn deinit(self: *ContextHarness, allocator: std.mem.Allocator) void {
+        allocator.free(self.frontier);
+        allocator.free(self.path_buf);
+        allocator.free(self.page_buf);
+    }
+};
+
+test "works with initial typing" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     const query_result = context.pressKey('a');
 
@@ -405,13 +456,12 @@ test "works with initial typing" {
 }
 
 test "works with 2nd typing" {
-    const pagination = @import("./pagination.zig");
-
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     const query_result = context.pressKey('c');
@@ -433,8 +483,9 @@ test "commit with manually select" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     const query_result = context.pressKey('2');
@@ -449,8 +500,9 @@ test "select with out of range number" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     const query_result = context.pressKey('4');
@@ -465,8 +517,9 @@ test "press space to commit the 1st option" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     const query_result = context.pressKey(' ');
@@ -481,8 +534,9 @@ test "press space when haven't press any other key" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     const query_result = context.pressKey(' ');
 
@@ -496,8 +550,9 @@ test "press `;` to commit the 2nd option" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     _ = context.pressKey('c');
@@ -513,8 +568,9 @@ test "press `;` to commit the 2nd option 2" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     const query_result = context.pressKey(';');
@@ -526,8 +582,6 @@ test "press `;` to commit the 2nd option 2" {
 }
 
 test "press `;` when there are options start with `'`" {
-    const pagination = @import("./pagination.zig");
-
     var th = try trie_mod.buildTrie(testing.allocator, &.{
         .{ .keys = "a", .value = "甲" },
         .{ .keys = "ab", .value = "乙" },
@@ -538,8 +592,9 @@ test "press `;` when there are options start with `'`" {
     });
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     _ = context.pressKey('e');
@@ -563,8 +618,9 @@ test "press `;` when there is only one option with hint" {
     });
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     _ = context.pressKey('b');
@@ -580,8 +636,9 @@ test "commit when there is only one option and the there is no hint in the optio
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     const query_result = context.pressKey('e');
@@ -593,8 +650,6 @@ test "commit when there is only one option and the there is no hint in the optio
 }
 
 test "should not commit when there is only one option but the option is with hint" {
-    const pagination = @import("./pagination.zig");
-
     var th = try trie_mod.buildTrie(testing.allocator, &.{
         .{ .keys = "a", .value = "A" },
         .{ .keys = "ab", .value = "B" },
@@ -602,8 +657,9 @@ test "should not commit when there is only one option but the option is with hin
     });
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     const query_result = context.pressKey('c');
@@ -620,13 +676,12 @@ test "should not commit when there is only one option but the option is with hin
 }
 
 test "commit when press a key is not in the children of the trie, but the key is in the children of the root trie" {
-    const pagination = @import("./pagination.zig");
-
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     var expected_options_a = [_]QueryOption{
         .{ .value = "甲", .hint = null },
@@ -669,13 +724,12 @@ test "commit when press a key is not in the children of the trie, but the key is
 }
 
 test "next page" {
-    const pagination = @import("./pagination.zig");
-
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     const query_result = context.nextPage();
@@ -694,13 +748,12 @@ test "next page" {
 }
 
 test "last page" {
-    const pagination = @import("./pagination.zig");
-
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     _ = context.nextPage();
@@ -720,13 +773,12 @@ test "last page" {
 }
 
 test "previous page" {
-    const pagination = @import("./pagination.zig");
-
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
     _ = context.nextPage();
@@ -747,13 +799,12 @@ test "previous page" {
 }
 
 test "jump to page" {
-    const pagination = @import("./pagination.zig");
-
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     _ = context.pressKey('a');
 
@@ -788,8 +839,9 @@ test "jump to page with no composition" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     const r = context.jumpToPage(2);
     try testing.expectEqual(@as(?[*:0]const u8, null), r.commit);
@@ -801,8 +853,9 @@ test "press the first key, and the key is not in the root node children" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     const query_result = context.pressKey('x');
 
@@ -814,13 +867,12 @@ test "press the first key, and the key is not in the root node children" {
 }
 
 test "backspace works" {
-    const pagination = @import("./pagination.zig");
-
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     var expected_options_a = [_]QueryOption{
         .{ .value = "甲", .hint = null },
@@ -855,13 +907,12 @@ test "backspace works" {
 }
 
 test "backspace to root" {
-    const pagination = @import("./pagination.zig");
-
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     var expected_options = [_]QueryOption{
         .{ .value = "甲", .hint = null },
@@ -885,13 +936,12 @@ test "backspace to root" {
 }
 
 test "backspace should do nothing when at root" {
-    const pagination = @import("./pagination.zig");
-
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     // pressKey('a') first to get a page, then backspace once to root,
     // then another backspace must be a no-op.
@@ -913,13 +963,12 @@ test "backspace should do nothing when at root" {
 }
 
 test "commit when press a key is not in the children of the trie, and the key is not in the children of the root trie" {
-    const pagination = @import("./pagination.zig");
-
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
-    var context = Context.init(testing.allocator, .{ .trie = &th.trie, .page_size = 3 });
-    defer context.deinit();
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
 
     var expected_options_a = [_]QueryOption{
         .{ .value = "甲", .hint = null },

@@ -22,15 +22,13 @@
 
 const std = @import("std");
 
-pub const MAGIC: u32 = 0x4A445452; // "JDTR" in little-endian byte order
-pub const VERSION: u32 = 1;
-
-/// 32-byte fixed header at offset 0 of the blob.
+/// 28-byte fixed header at offset 0 of the blob.
 /// Pool offsets are computed at runtime from the counts here.
+///
+/// No magic/version fields: the blob is regenerated from source every build
+/// (`scripts/gen_trie.zig` → `trie.bin` → `@embedFile`), so generator and
+/// runtime are always in lockstep within this monorepo.
 pub const Header = extern struct {
-    magic: u32,
-    version: u32,
-
     node_count: u32,
     values_count: u32,
 
@@ -39,7 +37,12 @@ pub const Header = extern struct {
     child_indices_total: u32,
     strings_total: u32,
 
-    _reserved: u32,
+    // Worst-case BFS state sizes — computed in `buildBlob`, consumed by
+    // `jd_init` to size the per-context buffer. `frontier_cap` is the max
+    // node count in any non-root subtree; `path_buf_cap` is the max sum of
+    // (depth − start_depth) across nodes in any non-root subtree.
+    frontier_cap: u32,
+    path_buf_cap: u32,
 };
 
 /// 16-byte fixed-layout node. `_pad` is unused but keeps the struct

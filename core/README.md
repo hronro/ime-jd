@@ -36,6 +36,8 @@ At build time, `scripts/gen_trie.zig` runs on the host: it parses every `src/tab
 
 At runtime, `jd_init` reinterprets the embedded bytes as a `Trie` view in O(1) — no parsing, no copying. All trie pointers (`*const Node`, value strings) point directly into the embedded blob.
 
+The blob header also carries worst-case sizes for the BFS frontier and path buffer used during pagination — `gen_trie` computes them with one bottom-up pass over the trie. `jd_init` reads those caps and allocates one per-context buffer big enough to hold the `Context` struct plus every internal container. After that one allocation, the library never touches the allocator again until `jd_deinit`.
+
 Multi-byte fields in the blob are written in **target** endianness. The generator detects a mismatch with the host at build time and byte-swaps every u32 field, so the runtime can always read fields directly through `@ptrCast` in its native byte order — including when cross-compiling from LE to BE (or vice versa).
 
 ## Build & test

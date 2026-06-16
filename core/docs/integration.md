@@ -105,8 +105,9 @@ visible = (current_page == total_pages)
 
 Every pointer in a returned `query_result` is **borrowed**. Lifetimes are per-context — invalidation triggers are calls into the same `ctx`:
 
-- **`commit`** is allocated in a per-keypress arena (per context) and is valid only until the next call into that context: `jd_press_key`, `jd_next_page`, `jd_prev_page`, `jd_jump_to_page`, `jd_backspace`, `jd_reset`, or `jd_deinit`. Copy it out before making any further call if you need it longer.
-- **`options` and each `option.value` / `option.hint`** are valid only until the next state-changing call into the same context (same list as above). Specifically, `option.value` points into the embedded blob (effectively static), but `option.hint` is allocated in the paginator's per-page arena and is invalidated when the user navigates to another page.
+- **`commit`** may point into either the embedded trie strings pool (when the commit *is* an existing candidate value — the common case) or a small per-context scratch buffer (when it's a synthesized or concatenated string). The caller can't and shouldn't distinguish: treat it as valid only until the next call into that context: `jd_press_key`, `jd_next_page`, `jd_prev_page`, `jd_jump_to_page`, `jd_backspace`, `jd_reset`, or `jd_deinit`. Copy it out before making any further call if you need it longer.
+- **`options` and each `option.hint`** are valid only until the next state-changing call into the same context (same list as above). The `options` array and the hint strings live in the paginator's per-page buffer; either may be overwritten when the user navigates to another page or starts a new query.
+- **`option.value`** always points into the embedded blob and is effectively static.
 
 Treat the rule simply as: **don't hold any pointer returned for a context across the next call into that context.** Pointers from one context are unaffected by calls into a different context.
 
@@ -117,7 +118,9 @@ ctx = jd_init(...)  ──►  (jd_press_key   | jd_next_page | jd_prev_page |
                           jd_jump_to_page | jd_backspace | jd_reset)*  ──►  jd_deinit(ctx)
 ```
 
-Each `jd_init` call returns an independent context owned by the caller. Contexts share the embedded trie (parsed lazily on the first call from any thread, then immutable for the rest of the process), but their query state is fully separate — pages, in-flight key indexes, the per-keypress arena, etc.
+Each `jd_init` call returns an independent context owned by the caller. Contexts share the embedded trie (parsed lazily on the first call from any thread, then immutable for the rest of the process), but their query state is fully separate — pages, in-flight key indexes, scratch and pagination buffers, etc.
+
+`jd_init` performs exactly one heap allocation (sized from caps embedded in the trie blob) and `jd_deinit` performs exactly one matching free; nothing in between calls the allocator. Per-context resident memory for the bundled dictionary is around 240 KB at the default page size.
 
 ### Thread-safety
 
@@ -200,8 +203,8 @@ on_key_down(key, ctx):
 
 The page-prev / page-next / candidate-selector lines are where the per-platform bindings live; everything else is identical across platforms.
 
-## Debug builds
+## Allocator
 
-A `Debug` build gives each context its own `DebugAllocator`. When you call `jd_deinit(ctx)`, the allocator's leak detector runs against that context's allocations and prints any unfreed blocks to stderr — independently for every context.
+All builds use `std.heap.smp_allocator` — pure Zig, thread-safe, no libc dependency — and only ever touch it twice per context: one `alignedAlloc` inside `jd_init`, one matching `free` inside `jd_deinit`. Everything else (commit composition, BFS state, per-page candidate arrays, hint strings) lives in fixed-size regions carved from the per-context buffer at init time.
 
-`Release` builds use `std.heap.smp_allocator` across all contexts — pure Zig, thread-safe, no libc dependency. That keeps the library zero-dep for distribution.
+Because there is no runtime allocator traffic, there is no per-context leak detection to enable in Debug builds — leaks would only ever come from a misuse of `jd_init` / `jd_deinit` on the caller's side, which any standard heap-checker (Valgrind, AddressSanitizer, etc.) will surface against the one alloc/free pair.
