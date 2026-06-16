@@ -1,4 +1,5 @@
 use std::io::{Result, Write};
+use std::time::Instant;
 
 use crossterm::{event, terminal};
 
@@ -9,7 +10,11 @@ where
     W: Write,
 {
     terminal::enable_raw_mode()?;
+    let init_start = Instant::now();
     let mut jd = core::JdContext::new(core::InitOptions { page_size: 4 });
+    let init_elapsed = init_start.elapsed();
+    write!(w, "Initialized in {:?}\n\r", init_elapsed)?;
+    w.flush()?;
 
     loop {
         if let event::Event::Key(event::KeyEvent {
@@ -25,9 +30,15 @@ where
                         break;
                     }
                     _ => {
+                        let press_start = Instant::now();
                         let query_result = jd.press_key(c as u8);
+                        let press_elapsed = press_start.elapsed();
 
-                        write!(w, "Pressed `{}`:\n{:?}\n\n\n\r", c, query_result)?;
+                        write!(
+                            w,
+                            "Pressed `{}` (handled in {:?}):\n{:?}\n\n\n\r",
+                            c, press_elapsed, query_result
+                        )?;
                     }
                 },
                 event::KeyCode::Backspace => {

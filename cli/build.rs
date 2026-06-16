@@ -8,7 +8,11 @@ fn main() {
 
     // On Windows, build.zig names the static archive `jd_static.lib` to avoid
     // colliding with the DLL's import library `jd.lib`. Unix uses `libjd.a`.
-    let static_lib_name = if is_windows { "jd_static.lib" } else { "libjd.a" };
+    let static_lib_name = if is_windows {
+        "jd_static.lib"
+    } else {
+        "libjd.a"
+    };
 
     // Where the libs live. Either supplied via LIBJD_PATH, or we build the
     // core ourselves and use core/zig-out/lib.
