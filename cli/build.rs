@@ -26,12 +26,16 @@ fn main() {
             p
         };
 
-        // Always build the core with ReleaseSmall. We don't pair it with
-        // cargo's debug/release split because the trie blob + small library
-        // code are tiny — a Debug-optimized core would slow every Rust dev
-        // run with no benefit.
+        // Pair the core's optimize mode with cargo's debug/release split:
+        // Debug for cargo debug (enables the core's per-context DebugAllocator
+        // leak detection), ReleaseFast for cargo release.
+        let optimize_flag = if cfg!(debug_assertions) {
+            "-Doptimize=Debug"
+        } else {
+            "-Doptimize=ReleaseFast"
+        };
         if !Command::new("zig")
-            .args(["build", "-Doptimize=ReleaseSmall"])
+            .args(["build", optimize_flag])
             .current_dir(&core_dir)
             .status()
             .unwrap()
