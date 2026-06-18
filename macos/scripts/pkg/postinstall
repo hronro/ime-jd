@@ -1,0 +1,32 @@
+#!/bin/sh
+# Register the freshly-installed IME with Launch Services so Text Input Sources
+# can enumerate it.
+#
+# The bundle is ad-hoc signed (no Apple Developer ID). That's fine for TIS as
+# long as (a) it carries no `get-task-allow` entitlement and (b) it isn't
+# quarantined. The build is configured for (a); we handle (b) here.
+#
+# NOTE: macOS only re-scans /Library/Input Methods/ at the start of a login
+# session, so the user must log out and back in before JD appears in the
+# input-source list. The installer's conclusion screen tells them to do this.
+
+set +e
+
+APP="/Library/Input Methods/JdIME.app"
+[ -d "$APP" ] || exit 0
+
+# Strip the quarantine xattr so Gatekeeper doesn't block first launch of an
+# ad-hoc-signed bundle.
+/usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+
+# Re-index with Launch Services so it knows about the new bundle.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister"
+[ -x "$LSREGISTER" ] && "$LSREGISTER" -f -R "$APP" 2>/dev/null || true
+
+# Best-effort: bounce the input-source agents so they re-read the source list
+# on the next login (does not remove the log-out/in requirement above), and
+# kill any running JdIME so an upgrade's new binary is loaded on next use.
+/usr/bin/killall TextInputMenuAgent TextInputSwitcher cfprefsd 2>/dev/null || true
+/usr/bin/killall JdIME 2>/dev/null || true
+
+exit 0

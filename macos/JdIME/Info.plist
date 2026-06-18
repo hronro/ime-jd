@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>键道</string>
+    <key>CFBundleExecutable</key>
+    <string>JdIME</string>
+    <key>CFBundleIconFile</key>
+    <string>jd</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.hronro.jd-ime</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>键道</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSBackgroundOnly</key>
+    <false/>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 hronro. All rights reserved.</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSSupportsSuddenTermination</key>
+    <true/>
+
+    <!-- Single-source IME registration (the style used by working third-party
+         IMEs on macOS 26). NOTE: do NOT use ComponentInputModeDict / a mode
+         dictionary here — the simple top-level form below is what TIS actually
+         enumerates on Tahoe. -->
+    <key>InputMethodType</key>
+    <string>keyboard</string>
+    <key>InputMethodConnectionName</key>
+    <string>JdIME_Connection</string>
+    <key>InputMethodServerControllerClass</key>
+    <string>JdIME_InputController</string>
+    <key>InputMethodServerDelegateClass</key>
+    <string>JdIME_InputController</string>
+    <key>TISInputSourceID</key>
+    <string>com.hronro.jd-ime</string>
+    <key>TISIntendedLanguage</key>
+    <string>zh-Hans</string>
+    <key>tsInputMethodCharacterRepertoireKey</key>
+    <array>
+        <string>Hans</string>
+    </array>
+</dict>
+</plist>

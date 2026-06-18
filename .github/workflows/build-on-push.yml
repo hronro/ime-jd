@@ -20,9 +20,9 @@ jobs:
           - libs_key: linux-aarch64
             zig_target: aarch64-linux
           - libs_key: macos-x86_64
-            zig_target: x86_64-macos
+            zig_target: x86_64-macos.12.0
           - libs_key: macos-aarch64
-            zig_target: aarch64-macos
+            zig_target: aarch64-macos.12.0
           - libs_key: windows-x86_64
             zig_target: x86_64-windows-msvc
           - libs_key: windows-aarch64
@@ -211,6 +211,56 @@ jobs:
           cp windows/unregister.bat "$out/"
 
       - name: Upload IME bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: jd-ime-${{ matrix.target }}
+          path: dist/jd-ime-${{ matrix.target }}
+          if-no-files-found: error
+
+  # One IME build per macOS arch, built natively on its own runner. Reuses the
+  # prebuilt libjd matching the target arch:
+  # build-pkg.sh links it via --libjd instead of rebuilding with zig, so the
+  # job needs only xcodegen. build-pkg.sh builds for the runner's native arch by default.
+  build-macos-ime:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    needs: build-libs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            libs_key: macos-aarch64
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            libs_key: macos-x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Download prebuilt libs
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-${{ matrix.libs_key }}
+          path: prebuilt-libs
+
+      - name: Build .pkg installer
+        working-directory: macos
+        run: scripts/build-pkg.sh --libjd "${{ github.workspace }}/prebuilt-libs/lib/libjd.a"
+
+      - name: Stage .pkg installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="dist/jd-ime-${{ matrix.target }}"
+          mkdir -p "$out"
+          cp macos/build/pkg/*.pkg "$out/"
+
+      - name: Upload IME installer
         uses: actions/upload-artifact@v7
         with:
           name: jd-ime-${{ matrix.target }}

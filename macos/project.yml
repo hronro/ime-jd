@@ -1,0 +1,94 @@
+name: JdIME
+options:
+  bundleIdPrefix: com.hronro
+  deploymentTarget:
+    macOS: "12.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "12.0"
+    # Ad-hoc sign. Manual style + no injected base entitlements means the
+    # binary carries NO `get-task-allow` (the debug entitlement that makes
+    # Launch Services flag the bundle `launch-disabled` and hides it from TIS
+    # on macOS 26). This is the configuration proven to enumerate on Tahoe.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+    ENABLE_HARDENED_RUNTIME: NO
+    DEVELOPMENT_TEAM: ""
+    # Disable Xcode 16+'s SwiftUI preview dylib — we have no SwiftUI and the
+    # default scheme tries to link SwiftUICore which is not an allowed client.
+    ENABLE_DEBUG_DYLIB: NO
+    ENABLE_PREVIEWS: NO
+    # The "Build libjd" Run Script Phase shells out to `zig` and reads ../core;
+    # script sandboxing would block both. Keep it off (also what CI relies on).
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  JdIME:
+    type: application
+    platform: macOS
+    deploymentTarget: "12.0"
+    sources:
+      - path: JdIME
+        excludes:
+          - "Info.plist"
+    settings:
+      base:
+        INFOPLIST_FILE: JdIME/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime
+        PRODUCT_NAME: JdIME
+        EXECUTABLE_NAME: JdIME
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/../core/include"
+        LIBRARY_SEARCH_PATHS: "$(DERIVED_FILE_DIR)/libjd-universal"
+        OTHER_LDFLAGS: "-ljd"
+        ENABLE_TESTABILITY: YES
+        SKIP_INSTALL: NO
+    preBuildScripts:
+      - name: Build libjd
+        script: |
+          set -e
+          bash "$SRCROOT/scripts/build-libjd.sh"
+        outputFiles:
+          - "$(DERIVED_FILE_DIR)/libjd-universal/libjd.a"
+    dependencies:
+      - sdk: InputMethodKit.framework
+      - sdk: Cocoa.framework
+
+  JdIMETests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "12.0"
+    sources: JdIMETests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime.tests
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/../core/include"
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: JdIME
+
+schemes:
+  JdIME:
+    build:
+      targets:
+        JdIME: all
+        JdIMETests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - JdIMETests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

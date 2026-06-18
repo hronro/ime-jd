@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>键道输入法</title>
+    <organization>com.hronro</organization>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <options customize="never" require-scripts="true" hostArchitectures="@ARCHS@"/>
+    <domains enable_currentUserHome="false" enable_anywhere="false" enable_localSystem="true"/>
+    <pkg-ref id="@IDENT@" version="@VERSION@" onConclusion="none">JdIME-component.pkg</pkg-ref>
+    <choices-outline>
+        <line choice="default">
+            <line choice="@IDENT@"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="@IDENT@" visible="false">
+        <pkg-ref id="@IDENT@"/>
+    </choice>
+</installer-gui-script>
