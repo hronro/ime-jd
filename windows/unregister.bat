@@ -1,5 +1,6 @@
 @echo off
 setlocal enableextensions
+chcp 65001 >nul
 
 set "INSTALL_DIR=%ProgramFiles%\jd-ime"
 set "DLL_NAME=jd_ime.dll"
@@ -38,13 +39,13 @@ rmdir "%INSTALL_DIR%" >nul 2>&1
 
 if exist "%INSTALL_DIR%" (
     echo.
-    echo JD IME unregistered, but %INSTALL_DIR% still contains files —
+    echo 键道输入法 unregistered, but %INSTALL_DIR% still contains files —
     echo the DLL is loaded into one or more running processes. Sign out
     echo and back in (or reboot) to release it, then re-run this script
     echo or delete the folder by hand.
 ) else (
     echo.
-    echo JD IME fully removed.
+    echo 键道输入法 fully removed.
 )
 echo.
 pause

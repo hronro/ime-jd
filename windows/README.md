@@ -1,6 +1,6 @@
-# JD IME for Windows
+# 键道输入法 for Windows
 
-Rust implementation of the JD input method as a Windows TSF Text Input Processor.
+Rust implementation of 键道输入法 as a Windows TSF Text Input Processor.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ The DLL ends up at `windows\target\release\jd_ime.dll`. The build script invokes
 
 1. Right-click `register.bat` → **Run as administrator**.
 2. The script copies the DLL to `C:\Program Files\jd-ime\`, grants AppContainer read access (so UWP apps can load it), and runs `regsvr32`.
-3. Add JD to your keyboard list: **Settings → Time & language → Language → Chinese (Simplified) → Options → Add a keyboard → JD**.
+3. Add 键道 to your keyboard list: **Settings → Time & language → Language → Chinese (Simplified) → Options → Add a keyboard → 键道**.
 
 `register.bat` works in two layouts:
 - Run from the repo (uses `target\release\jd_ime.dll` next to itself).
@@ -40,9 +40,9 @@ The script unregisters the COM/TSF entries and tries to delete `C:\Program Files
 
 `cargo build --release` rebuilds the DLL. Re-running `register.bat` handles the rest — it unregisters the old copy, renames the locked file out of the way (Windows allows rename-while-loaded), copies the new DLL, and re-registers.
 
-If you've selected JD in a running app (Notepad, browser, etc.) you'll need to **close that app and reopen it** before the new code takes effect: Windows doesn't reload a DLL inside a process that already mapped it.
+If you've selected 键道 in a running app (Notepad, browser, etc.) you'll need to **close that app and reopen it** before the new code takes effect: Windows doesn't reload a DLL inside a process that already mapped it.
 
-## Keys (when JD is the active IME)
+## Keys (when 键道 is the active IME)
 
 | Key | Action |
 |---|---|
@@ -79,12 +79,3 @@ windows/
   tests/
     engine.rs         exercises the FFI layer without TSF
 ```
-
-## Known limitations
-
-- **Single composition per process.** The Zig core uses one global state; `jd.rs` serializes access with a `Mutex`. Multi-UI-thread hosts work but can't compose in two threads simultaneously. The core is planned to grow a handle-based multi-context API.
-- **No modifier-key handling.** Ctrl+A, Shift+letter etc. are consumed as plain letters when a composition is active. Pressing those while composing produces unexpected behavior.
-- **No layered-window styling.** The candidate popup is a plain `WS_POPUP | WS_BORDER` — no rounded corners or translucency.
-- **No `ITfCandidateListUIElement` integration.** The popup is purely a Win32 window; accessibility tools (Narrator) and TSF-aware UWP hosts don't see the candidates as a UI element.
-- **US layout only.** Punctuation is mapped from US-layout virtual-key codes; non-US layouts will produce different bytes than the user typed.
-- **No icon.** The DLL has no embedded `.ico` resource — Settings shows JD without an icon.

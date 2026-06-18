@@ -1,5 +1,6 @@
 @echo off
 setlocal enableextensions
+chcp 65001 >nul
 
 set "SCRIPT_DIR=%~dp0"
 set "DLL_NAME=jd_ime.dll"
@@ -72,10 +73,10 @@ if errorlevel 1 (
 )
 
 echo.
-echo JD IME registered.
+echo 键道输入法 registered.
 echo Add it to your keyboard list via:
 echo     Settings ^> Time ^& language ^> Language ^> Chinese (Simplified) ^>
-echo     Options ^> Add a keyboard ^> JD
+echo     Options ^> Add a keyboard ^> 键道
 echo.
 pause
 endlocal

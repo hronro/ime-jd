@@ -5,7 +5,7 @@
     name="JD.IME"
     version="1.0.0.0"
     processorArchitecture="amd64"/>
-  <description>键道 Input Method Editor</description>
+  <description>键道输入法</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
