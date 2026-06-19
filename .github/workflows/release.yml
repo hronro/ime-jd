@@ -1,16 +1,62 @@
-name: Build Libraries and Executables On Push
+name: Release
 
+# Builds the same matrix as build-on-push.yml, but triggers on a version tag
+# and uploads the packaged artifacts to a GitHub Release instead of the
+# workflow's artifact storage.
 on:
   push:
-    branches: [master]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+# Needed for `gh release create` / `gh release upload`.
+permissions:
+  contents: write
 
 jobs:
-  # Zig cross-compiles everything from one x86_64 Linux runner. libjd doesn't
-  # link libc, so one Linux build per arch covers both glibc and musl CLI
-  # variants — no need to split.
+  # Create (or reuse) the Release up front so the parallel build jobs can all
+  # upload assets into it without racing to create it.
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # The tag drives the asset filenames; core/build.zig.zon drives the
+          # versions embedded in the binaries (Windows DLL, macOS pkg). Fail
+          # fast if they disagree so a release can't ship mismatched versions.
+          core_ver=$(sed -n 's/.*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' core/build.zig.zon | head -n1)
+          if [ "$tag" != "v$core_ver" ]; then
+            echo "Tag $tag does not match core/build.zig.zon version (expected v$core_ver)." >&2
+            exit 1
+          fi
+          if gh release view "$tag" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $tag already exists — reusing it."
+          else
+            gh release create "$tag" -R "${{ github.repository }}" \
+              --title "$tag" \
+              --generate-notes \
+              --verify-tag
+          fi
+
+  # Zig cross-compiles every libjd target from one x86_64 Linux runner, so all
+  # the lib packaging (incl. the Windows .zip) happens here in bash too.
+  #   - non-Windows: a .tar.xz per linkage (libjd.so/.dylib and libjd.a),
+  #     each bundling include/.
+  #   - Windows: one .zip with the DLL, its import lib, the static lib, and
+  #     include/ (jd.dll + jd.lib + jd_static.lib share the .lib/.dll space,
+  #     so they ride together rather than being split by extension).
+  # The intermediate upload-artifact is what the CLI/IME jobs consume.
   build-libs:
     name: libs ${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -56,16 +102,49 @@ jobs:
           cp -R core/zig-out/. "$out/"
           cp -R core/include "$out/include"
 
-      - name: Upload libjd bundle
+      - name: Upload libjd bundle (for CLI/IME jobs)
         uses: actions/upload-artifact@v7
         with:
           name: libjd-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/libjd-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
 
+      - name: Package release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME}"
+          platform="${{ matrix.platform }}"
+          arch="${{ matrix.arch }}"
+          bundle="dist/libjd-$platform-$arch"
+          out_dir="$PWD/release"
+          mkdir -p "$out_dir"
+          stage="$(mktemp -d)"
+          cp -R "$bundle/include" "$stage/include"
+
+          if [[ "$platform" == "windows" ]]; then
+            cp "$bundle/bin/jd.dll" "$bundle/lib/jd.lib" "$bundle/lib/jd_static.lib" "$stage/"
+            ( cd "$stage" && zip -r -9 -q "$out_dir/libjd-$ver-windows-$arch.zip" . )
+          else
+            case "$platform" in
+              linux) dyn="libjd.so";    dynext="so"    ;;
+              macos) dyn="libjd.dylib"; dynext="dylib" ;;
+            esac
+            cp "$bundle/lib/$dyn" "$bundle/lib/libjd.a" "$stage/"
+            # XZ_OPT=-e9 → xz extreme preset, level 9 (smallest output).
+            tar -cf - -C "$stage" "$dyn"  include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-$platform-$arch.$dynext.tar.xz"
+            tar -cf - -C "$stage" libjd.a include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-$platform-$arch.a.tar.xz"
+          fi
+          ls -l "$out_dir"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
+
   # One CLI build per Rust target. Each downloads the matching prebuilt libs
-  # and statically links libjd into jd-cli. Linux gnu and musl variants share
-  # the same libjd.a (it's libc-free) but ship as distinct artifacts.
+  # and statically links libjd into jd-cli. Packaged as a .tar.xz (Unix) or
+  # .zip (Windows). Linux gnu and musl variants ship as distinct assets.
   build-cli:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -173,16 +252,35 @@ jobs:
             cp cli/target/${{ matrix.target }}/release/jd-cli     "$out/"
           fi
 
-      - name: Upload CLI binary
-        uses: actions/upload-artifact@v7
-        with:
-          name: jd-cli-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.suffix }}
-          path: dist/jd-cli-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.suffix }}
-          if-no-files-found: error
+      - name: Package release archive (Unix)
+        if: matrix.os != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME}"
+          stage="jd-cli-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.suffix }}"
+          asset="jd-cli-$ver-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.suffix }}"
+          mkdir -p release
+          tar -cf - -C "dist/$stage" jd-cli | XZ_OPT=-e9 xz -c > "release/$asset.tar.xz"
 
-  # One IME build per Windows Rust target. Reuses the prebuilt libjd bundle
-  # matching the target arch — jd-windows links jd_static.lib the same way
-  # jd-cli does, via LIBJD_PATH.
+      - name: Package release archive (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $ver = $env:GITHUB_REF_NAME
+          $stage = "jd-cli-${{ matrix.platform }}-${{ matrix.arch }}"
+          $asset = "jd-cli-$ver-${{ matrix.platform }}-${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Compress-Archive -Path "dist/$stage/jd-cli.exe" -DestinationPath "release/$asset.zip" -Force
+
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
+
+  # One IME build per Windows Rust target. Shipped as a .zip containing the
+  # IME DLL plus the register/unregister .bat helpers.
   build-windows-ime:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -218,7 +316,7 @@ jobs:
           LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs/lib
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Stage IME DLL
+      - name: Stage IME bundle
         shell: bash
         run: |
           set -euo pipefail
@@ -228,17 +326,23 @@ jobs:
           cp windows/register.bat   "$out/"
           cp windows/unregister.bat "$out/"
 
-      - name: Upload IME bundle
-        uses: actions/upload-artifact@v7
-        with:
-          name: jd-ime-windows-${{ matrix.arch }}
-          path: dist/jd-ime-windows-${{ matrix.arch }}
-          if-no-files-found: error
+      - name: Package release archive
+        shell: pwsh
+        run: |
+          $ver = $env:GITHUB_REF_NAME
+          $stage = "jd-ime-windows-${{ matrix.arch }}"
+          $asset = "jd-ime-$ver-windows-${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Compress-Archive -Path "dist/$stage/*" -DestinationPath "release/$asset.zip" -Force
 
-  # One IME build per macOS arch, built natively on its own runner. Reuses the
-  # prebuilt libjd matching the target arch:
-  # build-pkg.sh links it via --libjd instead of rebuilding with zig, so the
-  # job needs only xcodegen. build-pkg.sh builds for the runner's native arch by default.
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
+
+  # One IME build per macOS arch, built natively on its own runner. The .pkg
+  # installer produced by build-pkg.sh is shipped directly.
   build-macos-ime:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -270,17 +374,16 @@ jobs:
         working-directory: macos
         run: scripts/build-pkg.sh --libjd "${{ github.workspace }}/prebuilt-libs/lib/libjd.a"
 
-      - name: Stage .pkg installer
+      - name: Package release archive
         shell: bash
         run: |
           set -euo pipefail
-          out="dist/jd-ime-macos-${{ matrix.arch }}"
-          mkdir -p "$out"
-          cp macos/build/pkg/*.pkg "$out/"
+          ver="${GITHUB_REF_NAME}"
+          mkdir -p release
+          # build-pkg.sh emits exactly one jd-ime-macos-<arch>.pkg.
+          cp macos/build/pkg/*.pkg "release/jd-ime-$ver-macos-${{ matrix.arch }}.pkg"
 
-      - name: Upload IME installer
-        uses: actions/upload-artifact@v7
-        with:
-          name: jd-ime-macos-${{ matrix.arch }}
-          path: dist/jd-ime-macos-${{ matrix.arch }}
-          if-no-files-found: error
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber

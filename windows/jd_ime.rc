@@ -1,5 +1,0 @@
-// Embeds app.manifest as resource ID 2 (ISOLATIONAWARE_MANIFEST_RESOURCE_ID)
-// which is the standard manifest slot for DLLs (1 is reserved for EXEs).
-#include <winuser.h>
-
-ISOLATIONAWARE_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"

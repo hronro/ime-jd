@@ -14,16 +14,16 @@ Native macOS IME built on Apple's Input Method Kit (IMK), wrapping the same `lib
 `scripts/build-pkg.sh` generates the Xcode project, builds the app, and assembles the installer in one step:
 
 ```sh
-# Native arch (default) → build/pkg/JdIME-<version>-<arch>.pkg
+# Native arch (default) → build/pkg/jd-ime-macos-<arch>.pkg
 scripts/build-pkg.sh
 
-# Universal (arm64 + x86_64) → build/pkg/JdIME-<version>-universal.pkg
+# Universal (arm64 + x86_64) → build/pkg/jd-ime-macos-universal.pkg
 scripts/build-pkg.sh --universal
 ```
 
 ## Install
 
-Double-click `JdIME-<version>.pkg` and walk through the installer. It copies the bundle into `/Library/Input Methods/` (system-wide, available to all users; admin password required at install time — standard for macOS IMEs).
+Double-click `jd-ime-macos-<arch>.pkg` and walk through the installer. It copies the bundle into `/Library/Input Methods/` (system-wide, available to all users; admin password required at install time — standard for macOS IMEs).
 
 On a **first-time install**, macOS only re-scans for new input methods at the start of a login session, so you must **log out and back in** (a full restart also works) before enabling it:
 

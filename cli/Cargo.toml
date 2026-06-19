@@ -1,6 +1,8 @@
 [package]
 name = "jd-cli"
-version = "0.1.0"
+# Placeholder. The real project version lives in core/build.zig.zon; this
+# 0.0.0 is intentionally not a real version.
+version = "0.0.0"
 edition = "2024"
 
 [profile.release]

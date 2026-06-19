@@ -9,7 +9,10 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "0.1.0"
+    # Placeholder — the real version is core/build.zig.zon's `.version`, which
+    # build-pkg.sh passes as MARKETING_VERSION at build time. A plain Xcode/IDE
+    # build (not via build-pkg.sh) shows this 0.0.0 so it's clearly not real.
+    MARKETING_VERSION: "0.0.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"
     MACOSX_DEPLOYMENT_TARGET: "12.0"

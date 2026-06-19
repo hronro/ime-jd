@@ -59,9 +59,10 @@ If you've selected 键道 in a running app (Notepad, browser, etc.) you'll need 
 ```
 windows/
   Cargo.toml          cdylib, depends on `windows` 0.62 and `windows-core`
-  build.rs            invokes `zig build` for the core and links libjd_static.lib
+  build.rs            invokes `zig build` for the core, links libjd_static.lib,
+                      and generates the .rc (RT_MANIFEST + VERSIONINFO, the
+                      version read from core/build.zig.zon)
   app.manifest        embedded Win32 manifest (asInvoker, Win 10/11 supportedOS)
-  jd_ime.rc           embeds app.manifest as RT_MANIFEST resource
   register.bat        admin installer
   unregister.bat      admin uninstaller
   src/
