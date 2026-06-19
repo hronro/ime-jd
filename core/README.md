@@ -48,9 +48,10 @@ Multi-byte fields in both blobs are written in **target** endianness. Each gener
 ## Build & test
 
 ```sh
-zig build              # produces zig-out/lib/libjd.{a,so,dylib,dll}
-zig build test         # runs unit tests
-zig build -Doptimize=ReleaseSmall   # smallest binary
+zig build                          # produces zig-out/lib/libjd.{a,so,dylib,dll}
+zig build test                     # runs unit tests
+zig build -Doptimize=ReleaseFast   # fastest binary
+zig build -Doptimize=ReleaseSmall  # smallest binary
 ```
 
 The `-Dtables_eol=lf|crlf` option controls how the build-time generator splits table files. Defaults to `lf`; pass `crlf` on Windows checkouts that may have CRLF endings.

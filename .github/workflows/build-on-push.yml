@@ -44,7 +44,7 @@ jobs:
 
       - name: Build static + dynamic libraries
         working-directory: core
-        run: zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.zig_target }}
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
 
       - name: Stage libjd bundle
         shell: bash
