@@ -190,8 +190,12 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
                     ui_element::end();
                     return Ok(BOOL(1));
                 }
-                // No candidate at that slot — fall through to the engine so
-                // the digit becomes literal trailing text via commit+append.
+                // No candidate at that slot — fall through to the engine
+                // with the digit as a literal byte. The engine treats
+                // `1`-`9` as ordinary literal input (it does NOT pick from
+                // candidates; that's our job — see
+                // core/docs/integration.md), so the current top candidate
+                // gets committed with the digit appended.
             }
             // Space is no longer special-cased here. It maps to b' ' via
             // translate, falls through to the engine, and the engine's own
@@ -214,9 +218,12 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
         if let Some(byte) = translated {
             let result = jd::press_key(byte);
 
-            // Engine-driven auto-commit (rare in practice): replace
-            // composition with `commit` text, then optionally restart with
-            // the just-pressed key if it triggered new options.
+            // Engine-driven commit: the engine returned a commit string —
+            // common for Chinese-punctuation auto-commit, space-commit, or
+            // when the typed key jumped to a different root child (drilled
+            // in). Replace the composition with `commit` text, then
+            // optionally restart with the just-pressed key if it also
+            // triggered new options.
             if let Some(commit) = &result.commit {
                 if composition::is_active() {
                     let _ = composition::commit_text(ctx, tid, commit);

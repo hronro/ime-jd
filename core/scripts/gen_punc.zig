@@ -34,15 +34,15 @@ const ReservedKey = struct {
 const RESERVED_KEYS = [_]ReservedKey{
     .{ .key = ' ', .why = "reserved by pressKey Case A (space commits first option)" },
     .{ .key = ';', .why = "reserved by pressKey Case B (';' commits second option)" },
-    .{ .key = '1', .why = "reserved by pressKey Case C (digit option selection)" },
-    .{ .key = '2', .why = "reserved by pressKey Case C (digit option selection)" },
-    .{ .key = '3', .why = "reserved by pressKey Case C (digit option selection)" },
-    .{ .key = '4', .why = "reserved by pressKey Case C (digit option selection)" },
-    .{ .key = '5', .why = "reserved by pressKey Case C (digit option selection)" },
-    .{ .key = '6', .why = "reserved by pressKey Case C (digit option selection)" },
-    .{ .key = '7', .why = "reserved by pressKey Case C (digit option selection)" },
-    .{ .key = '8', .why = "reserved by pressKey Case C (digit option selection)" },
-    .{ .key = '9', .why = "reserved by pressKey Case C (digit option selection)" },
+    .{ .key = '1', .why = "reserved as IME-side candidate-selector key (see docs/integration.md)" },
+    .{ .key = '2', .why = "reserved as IME-side candidate-selector key (see docs/integration.md)" },
+    .{ .key = '3', .why = "reserved as IME-side candidate-selector key (see docs/integration.md)" },
+    .{ .key = '4', .why = "reserved as IME-side candidate-selector key (see docs/integration.md)" },
+    .{ .key = '5', .why = "reserved as IME-side candidate-selector key (see docs/integration.md)" },
+    .{ .key = '6', .why = "reserved as IME-side candidate-selector key (see docs/integration.md)" },
+    .{ .key = '7', .why = "reserved as IME-side candidate-selector key (see docs/integration.md)" },
+    .{ .key = '8', .why = "reserved as IME-side candidate-selector key (see docs/integration.md)" },
+    .{ .key = '9', .why = "reserved as IME-side candidate-selector key (see docs/integration.md)" },
 };
 
 fn isReservedKey(key: u8) ?[]const u8 {

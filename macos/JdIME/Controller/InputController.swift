@@ -140,8 +140,12 @@ final class InputController: IMKInputController {
                 lastSnapshot = .empty
                 return true
             }
-            // Fall through to engine with the digit as a literal — matches
-            // windows/src/tip.rs:183-195 behavior.
+            // No candidate at that slot — fall through to the engine with
+            // the digit as a literal byte. The engine treats `1`-`9` as
+            // ordinary literal input (it does NOT pick from candidates;
+            // that's our job — see core/docs/integration.md), so we end
+            // up with the current top candidate + digit appended via the
+            // engine's commit-and-append path. Matches windows/src/tip.rs.
             let digitByte = UInt8(0x31 + idx)
             return dispatchEngineKey(byte: digitByte, client: client)
 

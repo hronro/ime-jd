@@ -46,10 +46,11 @@ If you've selected 键道 in a running app (Notepad, browser, etc.) you'll need 
 
 | Key | Action |
 |---|---|
-| `a`-`z`, `;`, `.`, `,`, etc. | Feed into the engine; starts/extends a composition |
-| Digits `1`-`9` | Commit the candidate at that index from the popup |
+| `a`-`z`, `;` | Feed into the engine; starts/extends a composition |
+| `.` `,` `?` `!` `[` `]` `"` `'` `(` etc. | Feed into the engine, which may auto-convert to Chinese punctuation (e.g. `.` → `。`, `"` → `“`/`”` alternating) or open a punctuation candidate window (e.g. `[` → `「`/`【`/`〔`/`［`) |
+| Digits `1`-`9` | IME-side: commit the candidate at that index from the popup; falls through to literal input if no candidate at that slot |
 | Space | Commit candidate #1 (or the raw buffer if no candidates) |
-| PgUp / PgDn | Navigate candidate pages within the same composition |
+| PgUp / PgDn / `-` / `=` | Navigate candidate pages within the same composition |
 | Backspace | Remove the last typed key (shrinks composition + engine) |
 | Esc | Cancel the in-flight composition |
 

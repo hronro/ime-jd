@@ -290,8 +290,8 @@ pub const NodePagination = struct {
 /// NUL-separated strings in a flat pool, the count is known up-front
 /// (`NormalEntry.candidates_count`), and there is no BFS. Paired-toggle
 /// logic does NOT live here — paired punctuation is handled inline in
-/// `query.zig` Case P. This paginator strictly serves multi-candidate
-/// normal lookups (the `[` → `「`/`【`/`〔`/`［` case).
+/// `query.zig` Case C. This paginator strictly serves multi-candidate
+/// normal lookups (Case D — the `[` → `「`/`【`/`〔`/`［` case).
 pub const PuncPagination = struct {
     const Self = @This();
 
@@ -449,7 +449,7 @@ pub const Pager = union(enum) {
 
     /// Pick option `i` from the CURRENT page and return its commit-bytes
     /// pointer. No side effects in either variant — paired-toggle flipping
-    /// lives in `query.zig` Case P (paired branch), not here.
+    /// lives in `query.zig` Case C (paired punctuation), not here.
     pub fn commitAtIndex(self: *Pager, i: usize) [*:0]const u8 {
         return switch (self.*) {
             .trie => |*p| p.getOptions()[i].value,

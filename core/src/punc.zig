@@ -107,8 +107,9 @@ pub const Punc = struct {
 ///
 /// Within each input list, keys must be unique (caller-checked at build
 /// time). The two lists may share keys, but the runtime semantics in
-/// `query.zig` Case P treat the paired branch as taking precedence — the
-/// generator enforces disjointness as a build-time error.
+/// `query.zig` (Case C paired, then Case D normal) treat the paired
+/// branch as taking precedence — the generator enforces disjointness as
+/// a build-time error.
 pub fn buildBlob(
     allocator: std.mem.Allocator,
     normals: []const NormalInput,

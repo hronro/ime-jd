@@ -17,7 +17,7 @@ const buildTestTrie = @import("./trie_test_data.zig").buildTestTrie;
 /// Inline-buffer sizes. `MAX_PRESSED_KEYS` is a domain invariant
 /// (dictionary entries have ≤ 6 letters; `buildBlob` asserts it).
 /// `COMMIT_SCRATCH_BYTES` covers any in-place commit composition; the
-/// largest is a two-value concatenation (case E1 in `pressKey`), bounded
+/// largest is a two-value concatenation (case F1 in `pressKey`), bounded
 /// by the same build-time assert in `buildBlob`.
 pub const MAX_PRESSED_KEYS: usize = 6;
 pub const COMMIT_SCRATCH_BYTES: usize = 128;
@@ -227,19 +227,12 @@ pub const Context = struct {
             }
         }
 
-        // Case C: '1'..'9' picks an option by index. Works for both pager
-        // kinds via commitAtIndex.
-        if (key >= '1' and key <= '9') {
-            if (self.pager) |*p| {
-                const options = p.getOptions();
-                const option_index = key - '1';
-                if (option_index < options.len) {
-                    const commit = p.commitAtIndex(option_index);
-                    self.reset();
-                    return commitOnly(commit);
-                }
-            }
-        }
+        // Numeric candidate-selector bindings (`1`-`9` and the like) are
+        // intentionally NOT handled here. Picking a non-first candidate
+        // from a candidate window is the IME's responsibility — see
+        // docs/integration.md. Digits reaching this function therefore
+        // fall through to the trie/fallback cases, where they get
+        // appended literally to any in-flight commit.
 
         // ============================================================
         // From here, the key didn't pick from the current pager.
@@ -258,7 +251,7 @@ pub const Context = struct {
         }
 
         // ============================================================
-        // Case P1: paired punctuation. Single-press commit with toggle.
+        // Case C: paired punctuation. Single-press commit with toggle.
         // ============================================================
         if (self.punc.lookupPaired(key)) |paired_entry| {
             if (prev_commit == null) {
@@ -277,7 +270,7 @@ pub const Context = struct {
         }
 
         // ============================================================
-        // Case P2: normal punctuation. Auto-commit if single candidate,
+        // Case D: normal punctuation. Auto-commit if single candidate,
         // otherwise open a candidate window.
         // ============================================================
         if (self.punc.lookupNormal(key)) |normal_entry| {
@@ -313,11 +306,11 @@ pub const Context = struct {
         }
 
         // ============================================================
-        // Trie descent cases (D, E, F, G). `prev_commit` may be set if
+        // Trie descent cases (E, F, G, H). `prev_commit` may be set if
         // the user was in a punc window and pressed a non-punc key.
         // ============================================================
 
-        // Case D: descend into a child of the current node.
+        // Case E: descend into a child of the current node.
         if (self.node.getChild(self.trie, key)) |node| {
             const key_index = self.node.indexOfChild(self.trie, key).?;
 
@@ -328,7 +321,7 @@ pub const Context = struct {
 
             const options = self.pager.?.getOptions();
 
-            // D1: single option no hint — auto-commit. If prev_commit is set,
+            // E1: single option no hint — auto-commit. If prev_commit is set,
             // concat into scratch; otherwise return the rodata pointer.
             if (options.len == 1 and options[0].hint == null) {
                 if (prev_commit) |_| {
@@ -350,7 +343,7 @@ pub const Context = struct {
                 .current_page = 1,
             };
         } else if (self.root_node.getChild(self.trie, key)) |node| {
-            // Case E: current node has no child with `key`, but root does —
+            // Case F: current node has no child with `key`, but root does —
             // commit the previous page's first option (rodata), then jump.
             //
             // prev_commit cannot be set here: it's set only when we exited a
@@ -369,7 +362,7 @@ pub const Context = struct {
 
             const options = self.pager.?.getOptions();
 
-            // E1: single option no hint — concat prev + new into scratch.
+            // F1: single option no hint — concat prev + new into scratch.
             if (options.len == 1 and options[0].hint == null) {
                 const prev = std.mem.sliceTo(prev_value, 0);
                 const curr = std.mem.sliceTo(options[0].value, 0);
@@ -389,7 +382,7 @@ pub const Context = struct {
             };
         }
 
-        // Case F: at root, key has no child — commit (prev_commit if any +) the key byte.
+        // Case G: at root, key has no child — commit (prev_commit if any +) the key byte.
         if (self.node == self.root_node) {
             var total_len: usize = 0;
             if (prev_commit) |pc| {
@@ -403,7 +396,7 @@ pub const Context = struct {
             self.reset();
             return commitOnly(commit);
         } else {
-            // Case G: deep in the trie, key has no matching descent — commit
+            // Case H: deep in the trie, key has no matching descent — commit
             // the current first option with `key` appended.
             // prev_commit cannot be set here (would require self.node == root).
             std.debug.assert(prev_commit == null);
@@ -632,7 +625,9 @@ test "works with 2nd typing" {
     try testing.expectEqual(@as(u32, 1), query_result.current_page);
 }
 
-test "commit with manually select" {
+test "digit after composition commits first option + literal digit" {
+    // The engine does NOT pick from '1'-'9' — that's the IME's job per
+    // docs/integration.md. Digits fall through to the literal-append path.
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
 
@@ -643,24 +638,7 @@ test "commit with manually select" {
     _ = context.pressKey('a');
     const query_result = context.pressKey('2');
 
-    try testing.expectEqualStrings("乙", std.mem.sliceTo(query_result.commit.?, 0));
-    try testing.expectEqual(@as(u32, 0), query_result.options_count);
-    try testing.expectEqual(@as(u32, 0), query_result.total_pages);
-    try testing.expectEqual(@as(u32, 0), query_result.current_page);
-}
-
-test "select with out of range number" {
-    var th = try buildTestTrie(testing.allocator);
-    defer th.deinit(testing.allocator);
-
-    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
-    defer harness.deinit(testing.allocator);
-    const context = &harness.ctx;
-
-    _ = context.pressKey('a');
-    const query_result = context.pressKey('4');
-
-    try testing.expectEqualStrings("甲4", std.mem.sliceTo(query_result.commit.?, 0));
+    try testing.expectEqualStrings("甲2", std.mem.sliceTo(query_result.commit.?, 0));
     try testing.expectEqual(@as(u32, 0), query_result.options_count);
     try testing.expectEqual(@as(u32, 0), query_result.total_pages);
     try testing.expectEqual(@as(u32, 0), query_result.current_page);
@@ -1219,9 +1197,8 @@ test "multi-candidate punc opens window" {
     try testing.expectEqualStrings("「", std.mem.sliceTo(r.options.?[0].value, 0));
     try testing.expectEqualStrings("【", std.mem.sliceTo(r.options.?[1].value, 0));
     try testing.expectEqualStrings("〔", std.mem.sliceTo(r.options.?[2].value, 0));
-
-    const r2 = context.pressKey('2');
-    try testing.expectEqualStrings("【", std.mem.sliceTo(r2.commit.?, 0));
+    // Picking a non-first candidate (e.g. `【` at index 1) is the IME's
+    // job — the engine doesn't handle `1`-`9` as candidate selectors.
 }
 
 test "punc window: next page" {

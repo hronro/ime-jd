@@ -15,11 +15,14 @@ enum KeyCode {
 }
 
 // Maps a key event to an action, following the engine's key-routing policy
-// (core/docs/integration.md): while composing, every printable ASCII byte goes
-// to the engine — it extends the trie, or commits the current state and appends
-// the byte (punctuation/uppercase), or commits and appends nothing (space). The
-// only keys the IME keeps for itself are our chosen bindings (digit select,
-// `-`/`=` paging) and the navigation/cancel/commit keys.
+// (core/docs/integration.md): while composing, every printable ASCII byte
+// goes to the engine. The engine then either extends the trie (a-z, `;`),
+// resolves a Chinese-punctuation mapping (auto-commit, or open a punc
+// candidate window), commits the current state and appends the byte
+// literally (uppercase / unmapped punctuation), or commits and appends
+// nothing (space). The only keys the IME keeps for itself are our chosen
+// bindings (digit select, `-`/`=` paging) and the navigation/cancel/commit
+// keys.
 func keyAction(event: NSEvent, isComposing: Bool) -> KeyAction {
     let flags = event.modifierFlags
 
@@ -77,7 +80,10 @@ func keyAction(event: NSEvent, isComposing: Bool) -> KeyAction {
             }
         }
         // Everything else printable → engine: a-z extend the trie; space
-        // commits the top candidate; punctuation/uppercase commit and append.
+        // commits the top candidate; punctuation may resolve to Chinese
+        // punctuation (auto-commit or open a punc candidate window) or
+        // fall through to commit-and-append; uppercase / unmapped bytes
+        // commit and append literally.
         return .engineKey(b)
     }
 
