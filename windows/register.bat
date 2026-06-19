@@ -13,11 +13,11 @@ set "SOURCE_DLL="
 if exist "%SCRIPT_DIR%%DLL_NAME%" set "SOURCE_DLL=%SCRIPT_DIR%%DLL_NAME%"
 if not defined SOURCE_DLL if exist "%SCRIPT_DIR%target\release\%DLL_NAME%" set "SOURCE_DLL=%SCRIPT_DIR%target\release\%DLL_NAME%"
 if not defined SOURCE_DLL (
-    echo Could not find %DLL_NAME%. Looked in:
+    echo 未找到 %DLL_NAME%，已在以下位置查找：
     echo     %SCRIPT_DIR%
     echo     %SCRIPT_DIR%target\release\
     echo.
-    echo Build first: cd windows ^&^& cargo build --release
+    echo 请先编译：cd windows ^&^& cargo build --release
     pause
     exit /b 1
 )
@@ -27,19 +27,19 @@ REM Files and running icacls need admin up-front; if we're not elevated the
 REM directory create silently fails.
 net session >nul 2>&1
 if errorlevel 1 (
-    echo This script needs to run as Administrator.
-    echo Right-click register.bat and choose "Run as administrator".
+    echo 此脚本需要以管理员身份运行。
+    echo 请右键点击 register.bat 并选择「以管理员身份运行」。
     pause
     exit /b 1
 )
 
-echo Installing %DLL_NAME%
-echo     from: %SOURCE_DLL%
-echo     to:   %INSTALL_DIR%
+echo 正在安装 %DLL_NAME%
+echo     源路径：%SOURCE_DLL%
+echo     目标：  %INSTALL_DIR%
 
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 if errorlevel 1 (
-    echo Failed to create install directory.
+    echo 创建安装目录失败。
     pause
     exit /b 1
 )
@@ -55,7 +55,7 @@ if exist "%INSTALL_DIR%\%DLL_NAME%" (
 
 copy /Y "%SOURCE_DLL%" "%INSTALL_DIR%\" >nul
 if errorlevel 1 (
-    echo Failed to copy DLL.
+    echo 复制 DLL 失败。
     pause
     exit /b 1
 )
@@ -67,16 +67,16 @@ icacls "%INSTALL_DIR%" /grant "*S-1-15-2-2:(OI)(CI)(RX)" /T >nul
 
 regsvr32 /s "%INSTALL_DIR%\%DLL_NAME%"
 if errorlevel 1 (
-    echo regsvr32 failed.
+    echo regsvr32 注册失败。
     pause
     exit /b 1
 )
 
 echo.
-echo 键道输入法 registered.
-echo Add it to your keyboard list via:
-echo     Settings ^> Time ^& language ^> Language ^> Chinese (Simplified) ^>
-echo     Options ^> Add a keyboard ^> 键道
+echo 键道输入法注册成功。
+echo 通过以下路径将其添加到键盘列表：
+echo     设置 ^> 时间和语言 ^> 语言 ^> 中文（简体） ^>
+echo     选项 ^> 添加键盘 ^> 键道
 echo.
 pause
 endlocal
