@@ -1,0 +1,15 @@
+# 链接等
+
+http://	http
+https://keytao.vercel.app/phrases	ocx
+https://keytao.vercel.app	ogw
+https://keytao.rea.ink	ogw
+https://github.com/xkinput/KeyTao/releases	ogx
+https://keytao.vercel.app	ojc
+https://keytao.rea.ink	ojc
+https://github.com/xkinput/KeyTao	orj
+https://github.com/lyserenity/rime_xkjd	orx
+http://daniushuangpin.ys168.com/	owp
+http://xxjd.ys168.com/	owp
+http://xxjd.ys168.com/	oxx
+https://keytao.vercel.app	oyb

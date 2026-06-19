@@ -57,14 +57,13 @@ pub fn build(b: *std.Build) void {
     gen_trie_run.addArg(target_endian_arg);
     // Add every table file as an explicit input so cache invalidation works.
     const tables = [_][]const u8{
-        "src/tables/1.danzi.txt",
-        "src/tables/2.cizu.txt",
-        "src/tables/3.fuhao.txt",
-        "src/tables/4.buchong.txt",
-        "src/tables/5.lianjie.txt",
-        "src/tables/6.yingwen.txt",
-        "src/tables/7.chaojizici.txt",
-        "src/tables/8.wxw.txt",
+        "src/tables/1.single.txt",
+        "src/tables/2.phrase.txt",
+        "src/tables/3.symbol.txt",
+        "src/tables/4.supplement.txt",
+        "src/tables/5.link.txt",
+        "src/tables/6.english.txt",
+        "src/tables/7.css.txt",
     };
     for (tables) |t| gen_trie_run.addFileArg(b.path(t));
 
