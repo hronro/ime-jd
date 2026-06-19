@@ -18,9 +18,36 @@
 //! the consumer module imports it.
 
 const std = @import("std");
+const testing = std.testing;
 // `trie` is wired in by build.zig as a named module so this script doesn't
 // need to reach across the package boundary into ../src/.
 const trie = @import("trie");
+
+/// Parse the contents of a single table file. Split from `parseTables` so
+/// the parsing logic can be unit-tested without touching the filesystem.
+fn parseTable(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(trie.Entry),
+    data: []const u8,
+    eol: []const u8,
+    path: []const u8,
+) !void {
+    var it = std.mem.splitSequence(u8, data, eol);
+    while (it.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        const tab = std.mem.indexOfScalar(u8, trimmed, '\t') orelse {
+            std.debug.print("error: line without TAB in {s}: {s}\n", .{ path, trimmed });
+            return error.MalformedTableLine;
+        };
+        const value = std.mem.trim(u8, trimmed[0..tab], " ");
+        const keys = std.mem.trim(u8, trimmed[tab + 1 ..], " ");
+        if (keys.len == 0) continue;
+
+        try out.append(arena, .{ .keys = keys, .value = value });
+    }
+}
 
 fn parseTables(
     arena: std.mem.Allocator,
@@ -33,22 +60,7 @@ fn parseTables(
 
     for (paths) |path| {
         const data = try cwd.readFileAlloc(io, path, arena, .limited(1 << 30));
-
-        var it = std.mem.splitSequence(u8, data, eol);
-        while (it.next()) |raw_line| {
-            const trimmed = std.mem.trim(u8, raw_line, " \r");
-            if (trimmed.len == 0 or trimmed[0] == '#') continue;
-
-            const tab = std.mem.indexOfScalar(u8, trimmed, '\t') orelse {
-                std.debug.print("error: line without TAB in {s}: {s}\n", .{ path, trimmed });
-                return error.MalformedTableLine;
-            };
-            const value = std.mem.trim(u8, trimmed[0..tab], " ");
-            const keys = std.mem.trim(u8, trimmed[tab + 1 ..], " ");
-            if (keys.len == 0) continue;
-
-            try entries.append(arena, .{ .keys = keys, .value = value });
-        }
+        try parseTable(arena, &entries, data, eol, path);
     }
 
     return entries.toOwnedSlice(arena);
@@ -117,4 +129,115 @@ pub fn main(init: std.process.Init.Minimal) !void {
         "gen_trie: {d} entries → {d} bytes blob (frontier_cap={d}, path_buf_cap={d})\n",
         .{ entries.len, blob.len, t.frontier_cap, t.path_buf_cap },
     );
+}
+
+// =========================================================================
+// Tests
+// =========================================================================
+
+const ParseFixture = struct {
+    arena_state: std.heap.ArenaAllocator,
+    entries: std.ArrayList(trie.Entry),
+
+    fn init() ParseFixture {
+        return .{
+            .arena_state = std.heap.ArenaAllocator.init(testing.allocator),
+            .entries = .empty,
+        };
+    }
+
+    fn deinit(self: *ParseFixture) void {
+        self.arena_state.deinit();
+    }
+
+    fn arena(self: *ParseFixture) std.mem.Allocator {
+        return self.arena_state.allocator();
+    }
+};
+
+test "parseTable: single line parses value\\tkeys" {
+    var f = ParseFixture.init();
+    defer f.deinit();
+
+    try parseTable(f.arena(), &f.entries, "甲\ta\n", "\n", "test.txt");
+    try testing.expectEqual(@as(usize, 1), f.entries.items.len);
+    try testing.expectEqualStrings("甲", f.entries.items[0].value);
+    try testing.expectEqualStrings("a", f.entries.items[0].keys);
+}
+
+test "parseTable: multiple lines" {
+    var f = ParseFixture.init();
+    defer f.deinit();
+
+    try parseTable(f.arena(), &f.entries, "甲\ta\n乙\tab\n丙\tabc\n", "\n", "test.txt");
+    try testing.expectEqual(@as(usize, 3), f.entries.items.len);
+    try testing.expectEqualStrings("乙", f.entries.items[1].value);
+    try testing.expectEqualStrings("ab", f.entries.items[1].keys);
+}
+
+test "parseTable: skips comments and blank lines" {
+    var f = ParseFixture.init();
+    defer f.deinit();
+
+    try parseTable(
+        f.arena(),
+        &f.entries,
+        "# header comment\n" ++
+            "\n" ++
+            "甲\ta\n" ++
+            "# mid comment\n" ++
+            "\n" ++
+            "乙\tab\n",
+        "\n",
+        "test.txt",
+    );
+    try testing.expectEqual(@as(usize, 2), f.entries.items.len);
+}
+
+test "parseTable: line without TAB is an error" {
+    var f = ParseFixture.init();
+    defer f.deinit();
+
+    try testing.expectError(error.MalformedTableLine, parseTable(f.arena(), &f.entries, "no-tab-here\n", "\n", "test.txt"));
+}
+
+test "parseTable: empty keys silently skipped" {
+    var f = ParseFixture.init();
+    defer f.deinit();
+
+    // A line like "value\t" (or "value\t   ") has empty trimmed keys and is dropped.
+    try parseTable(f.arena(), &f.entries, "甲\ta\n乙\t   \n丙\tc\n", "\n", "test.txt");
+    try testing.expectEqual(@as(usize, 2), f.entries.items.len);
+    try testing.expectEqualStrings("甲", f.entries.items[0].value);
+    try testing.expectEqualStrings("丙", f.entries.items[1].value);
+}
+
+test "parseTable: trims surrounding spaces" {
+    var f = ParseFixture.init();
+    defer f.deinit();
+
+    try parseTable(f.arena(), &f.entries, "  甲  \t  a  \n", "\n", "test.txt");
+    try testing.expectEqual(@as(usize, 1), f.entries.items.len);
+    try testing.expectEqualStrings("甲", f.entries.items[0].value);
+    try testing.expectEqualStrings("a", f.entries.items[0].keys);
+}
+
+test "parseTable: CRLF line endings" {
+    var f = ParseFixture.init();
+    defer f.deinit();
+
+    try parseTable(f.arena(), &f.entries, "甲\ta\r\n乙\tab\r\n", "\r\n", "test.txt");
+    try testing.expectEqual(@as(usize, 2), f.entries.items.len);
+    try testing.expectEqualStrings("ab", f.entries.items[1].keys);
+}
+
+test "parseTable: appends to existing entries" {
+    var f = ParseFixture.init();
+    defer f.deinit();
+
+    try parseTable(f.arena(), &f.entries, "甲\ta\n", "\n", "first.txt");
+    try parseTable(f.arena(), &f.entries, "乙\tb\n", "\n", "second.txt");
+    try testing.expectEqual(@as(usize, 2), f.entries.items.len);
+    try testing.expectEqualStrings("甲", f.entries.items[0].value);
+    try testing.expectEqualStrings("乙", f.entries.items[1].value);
 }

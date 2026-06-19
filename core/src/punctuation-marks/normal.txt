@@ -1,0 +1,35 @@
+# Normal (non-paired) punctuation mappings.
+# Format: <key>\t<value>[\t<value>...]
+#   Single ASCII byte key, NOT one of: space, ';', '1'..'9'.
+#   Multiple values on the same line produce a candidate window in source
+#   order (the first value is the default).
+
+`	｀
+~	～
+!	！
+@	＠
+# 	＃
+$	＄
+%	％
+^	……
+&	＆
+*	＊
+(	（
+)	）
+-	－
+=	＝
+_	＿
++	＋
+[	「	【	〔	［
+{	『	〖	｛
+]	」	】	〕	］
+}	』	〗	｝
+\	、
+|	·	｜	¦	＼
+:	：
+,	，
+<	《
+.	。
+>	》
+/	／
+?	？

@@ -8,9 +8,17 @@ pub fn build(b: *std.Build) void {
     // checkout has CRLF endings on Windows.
     const tables_eol_option = b.option([]const u8, "tables_eol", "EOL for src/tables/*.txt files (default: lf)") orelse "lf";
 
-    // ---- Shared format module (host + target) ----
-    // blob_format.zig defines the on-disk layout. Both the generator (host)
-    // and the library (target) compile against it.
+    // Pass the target's endianness so the generators can byte-swap fields
+    // when the host and target differ. They run on the host, so they can't
+    // infer this on their own.
+    const target_endian_arg: []const u8 = switch (target.result.cpu.arch.endian()) {
+        .little => "le",
+        .big => "be",
+    };
+
+    // ========== Trie blob (existing) ==========
+
+    // Shared format module (host + target).
     const blob_format_target_mod = b.createModule(.{
         .root_source_file = b.path("src/blob_format.zig"),
         .target = target,
@@ -20,45 +28,33 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
     });
 
-    // ---- Trie module (target side, embedded in the lib) ----
-    // Has to be its own module so the host-side gen_trie can also import it,
-    // using a separate host-targeted copy below.
+    // Trie module (target side, embedded in the lib).
     const trie_target_mod = b.createModule(.{
         .root_source_file = b.path("src/trie.zig"),
         .target = target,
     });
     trie_target_mod.addImport("blob_format", blob_format_target_mod);
 
-    // ---- Host-side generator ----
-    // gen_trie is a normal Zig executable that runs at build time. It needs
-    // its own host-targeted copy of trie.zig (which it uses for buildBlob).
+    // Host-side gen_trie.
     const trie_host_mod = b.createModule(.{
         .root_source_file = b.path("src/trie.zig"),
         .target = b.graph.host,
     });
     trie_host_mod.addImport("blob_format", blob_format_host_mod);
 
-    const gen_mod = b.createModule(.{
+    const gen_trie_mod = b.createModule(.{
         .root_source_file = b.path("scripts/gen_trie.zig"),
         .target = b.graph.host,
         .optimize = .ReleaseFast,
     });
-    gen_mod.addImport("trie", trie_host_mod);
+    gen_trie_mod.addImport("trie", trie_host_mod);
 
-    const gen_exe = b.addExecutable(.{ .name = "gen_trie", .root_module = gen_mod });
+    const gen_trie_exe = b.addExecutable(.{ .name = "gen_trie", .root_module = gen_trie_mod });
 
-    // ---- gen_trie run step: produces trie.bin + trie_blob_module.zig ----
-    const gen_run = b.addRunArtifact(gen_exe);
-    const trie_out_dir = gen_run.addOutputDirectoryArg("trie_data");
-    gen_run.addArg(tables_eol_option);
-    // Pass the target's endianness so the generator can byte-swap u32 fields
-    // when the host and target differ. gen_trie itself always runs on the
-    // host, so it can't infer this on its own.
-    const target_endian_arg: []const u8 = switch (target.result.cpu.arch.endian()) {
-        .little => "le",
-        .big => "be",
-    };
-    gen_run.addArg(target_endian_arg);
+    const gen_trie_run = b.addRunArtifact(gen_trie_exe);
+    const trie_out_dir = gen_trie_run.addOutputDirectoryArg("trie_data");
+    gen_trie_run.addArg(tables_eol_option);
+    gen_trie_run.addArg(target_endian_arg);
     // Add every table file as an explicit input so cache invalidation works.
     const tables = [_][]const u8{
         "src/tables/1.danzi.txt",
@@ -70,15 +66,64 @@ pub fn build(b: *std.Build) void {
         "src/tables/7.chaojizici.txt",
         "src/tables/8.wxw.txt",
     };
-    for (tables) |t| gen_run.addFileArg(b.path(t));
+    for (tables) |t| gen_trie_run.addFileArg(b.path(t));
 
-    // ---- Blob module: wraps trie.bin via @embedFile, exposed as `trie_blob`. ----
-    const blob_module = b.createModule(.{
+    // Blob module wrapping trie.bin via @embedFile, exposed as `trie_blob`.
+    const trie_blob_module = b.createModule(.{
         .root_source_file = trie_out_dir.path(b, "trie_blob_module.zig"),
         .target = target,
     });
 
-    // ---- Library root module ----
+    // ========== Punctuation-marks blob ==========
+
+    // Shared format module (host + target).
+    const punc_format_target_mod = b.createModule(.{
+        .root_source_file = b.path("src/punc_format.zig"),
+        .target = target,
+    });
+    const punc_format_host_mod = b.createModule(.{
+        .root_source_file = b.path("src/punc_format.zig"),
+        .target = b.graph.host,
+    });
+
+    // Punc module (target side).
+    const punc_target_mod = b.createModule(.{
+        .root_source_file = b.path("src/punc.zig"),
+        .target = target,
+    });
+    punc_target_mod.addImport("punc_format", punc_format_target_mod);
+
+    // Host-side gen_punc.
+    const punc_host_mod = b.createModule(.{
+        .root_source_file = b.path("src/punc.zig"),
+        .target = b.graph.host,
+    });
+    punc_host_mod.addImport("punc_format", punc_format_host_mod);
+
+    const gen_punc_mod = b.createModule(.{
+        .root_source_file = b.path("scripts/gen_punc.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseFast,
+    });
+    gen_punc_mod.addImport("punc", punc_host_mod);
+
+    const gen_punc_exe = b.addExecutable(.{ .name = "gen_punc", .root_module = gen_punc_mod });
+
+    const gen_punc_run = b.addRunArtifact(gen_punc_exe);
+    const punc_out_dir = gen_punc_run.addOutputDirectoryArg("punc_data");
+    gen_punc_run.addArg(tables_eol_option);
+    gen_punc_run.addArg(target_endian_arg);
+    gen_punc_run.addFileArg(b.path("src/punctuation-marks/normal.txt"));
+    gen_punc_run.addFileArg(b.path("src/punctuation-marks/paired.txt"));
+
+    // Blob module wrapping punc.bin via @embedFile, exposed as `punc_blob`.
+    const punc_blob_module = b.createModule(.{
+        .root_source_file = punc_out_dir.path(b, "punc_blob_module.zig"),
+        .target = target,
+    });
+
+    // ========== Library root module ==========
+
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -86,7 +131,9 @@ pub fn build(b: *std.Build) void {
     });
     lib_mod.addImport("trie", trie_target_mod);
     lib_mod.addImport("blob_format", blob_format_target_mod);
-    lib_mod.addImport("trie_blob", blob_module);
+    lib_mod.addImport("trie_blob", trie_blob_module);
+    lib_mod.addImport("punc_format", punc_format_target_mod);
+    lib_mod.addImport("punc_blob", punc_blob_module);
 
     // On Windows, both a static lib and a DLL's import lib are named `<name>.lib`,
     // so installing both as "jd" would overwrite one. Rename the static archive
@@ -119,8 +166,8 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(dynamic_lib);
     }
 
-    // ---- Tests ----
-    // We run the trie tests, plus the query/pagination tests via tests.zig.
+    // ========== Tests ==========
+    // We run the trie tests, plus the query/pagination/punc tests via tests.zig.
     // Each test module gets the same module wiring as the lib so imports work.
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
@@ -129,10 +176,32 @@ pub fn build(b: *std.Build) void {
     });
     test_mod.addImport("trie", trie_target_mod);
     test_mod.addImport("blob_format", blob_format_target_mod);
+    test_mod.addImport("punc_format", punc_format_target_mod);
 
     const main_tests = b.addTest(.{ .root_module = test_mod });
     const run_main_tests = b.addRunArtifact(main_tests);
 
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&run_main_tests.step);
+
+    // Generator scripts have their own test blocks (parser unit tests).
+    // They live in host-targeted modules so they share the host-side
+    // `trie` / `punc` imports used by the executables.
+    const gen_trie_test_mod = b.createModule(.{
+        .root_source_file = b.path("scripts/gen_trie.zig"),
+        .target = b.graph.host,
+    });
+    gen_trie_test_mod.addImport("trie", trie_host_mod);
+    const gen_trie_tests = b.addTest(.{ .root_module = gen_trie_test_mod });
+    const run_gen_trie_tests = b.addRunArtifact(gen_trie_tests);
+    test_step.dependOn(&run_gen_trie_tests.step);
+
+    const gen_punc_test_mod = b.createModule(.{
+        .root_source_file = b.path("scripts/gen_punc.zig"),
+        .target = b.graph.host,
+    });
+    gen_punc_test_mod.addImport("punc", punc_host_mod);
+    const gen_punc_tests = b.addTest(.{ .root_module = gen_punc_test_mod });
+    const run_gen_punc_tests = b.addRunArtifact(gen_punc_tests);
+    test_step.dependOn(&run_gen_punc_tests.step);
 }

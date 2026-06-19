@@ -1,0 +1,7 @@
+# Paired punctuation mappings — first press emits the open half, second
+# press emits the close half. Toggle state is per-Context and persists
+# across other commits; cleared only by jd_deinit.
+# Format: <key>\t<open>\t<close>
+
+'	‘	’
+"	“	”

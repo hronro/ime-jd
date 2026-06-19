@@ -145,7 +145,7 @@ The table below is the recommended dispatch policy across all platforms. Followi
 |---|---|---|
 | Modifier chords (Ctrl / Cmd / Alt / Win+anything) | IME | pass through to the host — these are host shortcuts (select-all, copy/paste, menu accelerators, system commands) |
 | `a`–`z`, `;` | engine | `jd_press_key(byte)` |
-| Other printable ASCII (`.` `,` `'` `[` `]` `=` uppercase letters, `Shift`/`Caps Lock`-modified bytes …) | engine | `jd_press_key(byte)` — engine commits the current state and appends the byte. The IME must translate to the **actually-typed byte** (e.g. `Shift+/` → `?`, `Shift+1` → `!`, `Shift+K` → `K`), not the unshifted virtual key — the engine appends the byte literally, so `?` and `/` produce different commit strings |
+| Other printable ASCII (`.` `,` `'` `[` `]` `=` uppercase letters, `Shift`/`Caps Lock`-modified bytes …) | engine | `jd_press_key(byte)`. The engine may resolve the byte to a **Chinese punctuation mark** (auto-commit, or open a candidate window — see "Punctuation handling" below); any byte not in the punctuation table commits the current state and appends the byte literally. The IME must translate to the **actually-typed byte** (e.g. `Shift+/` → `?`, `Shift+1` → `!`, `Shift+K` → `K`), not the unshifted virtual key — the engine appends literally on the fallback path, so `?` and `/` produce different commit strings |
 | Space | engine | `jd_press_key(' ')` — engine commits the top candidate and appends nothing |
 | Candidate-selector keys / gestures | IME (bindings up to the implementer) | `commit_text(option_at(N).value)` then `jd_reset()` |
 | Page-navigation keys / gestures | IME (bindings up to the implementer) | `jd_next_page` / `jd_prev_page` — separate functions, not bytes |
@@ -168,6 +168,24 @@ The table below is the recommended dispatch policy across all platforms. Followi
 - **Why Enter commits the raw letters, not via the engine**: it's the escape hatch for typing literal ASCII (URLs, code, English words) without engine conversion. The IME ends the composition with whatever text is currently displayed (the raw typed bytes), bypassing the engine's commit pipeline entirely. `jd_reset()` resets the engine state afterward.
 
 - **Why arrow / nav keys are always consumed while composing**: the engine has no "cursor inside the composition" model — corrections are via `jd_backspace` only. If the IME let arrow keys reach the host, the host would move its caret out of the in-flight composition range, breaking the visual link between what the user is typing and where the text lands. Either bind arrows to page navigation (most natural — users expect ← to move "back" through pages) or no-op them, but never pass them through.
+
+### Punctuation handling
+
+The engine ships a build-time-generated punctuation table that maps selected ASCII bytes to Chinese equivalents. When `jd_press_key(byte)` finds a match, the engine handles it without any IME involvement:
+
+- **Paired** (e.g. `"` → `“` / `”`): single-press commit; consecutive presses of the same key alternate halves. The toggle state is per-context, indexed by ASCII byte, and survives `jd_reset()` — it is cleared only by `jd_deinit`. Different paired keys (`"` vs `'` vs `(`) have independent toggles.
+- **Normal, single candidate** (e.g. `.` → `。`): single-press commit, no window.
+- **Normal, multiple candidates** (e.g. `[` → `「`/`【`/`〔`/`［`): opens a candidate window — `query_result.options` is non-`NULL`. The IME paginates and selects via the usual flow (`jd_next_page` / `jd_prev_page` / `jd_press_key('1'-'9')` / `jd_press_key(' ')` to commit the first option). Pagination honors `page_size` from `jd_init`.
+
+Mixed-state behavior:
+
+- If a trie composition is in flight (some letters typed) when a punctuation key is pressed, the engine commits the trie's first candidate **and** the punctuation in one step (e.g. typing `a` then `.` yields a commit of `甲。`).
+- If a punctuation candidate window is open when the user presses a non-punctuation key, the engine commits the window's first candidate and then processes the new key (e.g. `[` opens the bracket window, pressing `a` commits `「` and starts a fresh trie composition with `a`).
+- `jd_backspace` while a punctuation candidate window is open closes the window without committing.
+
+If a byte isn't in either punctuation table, the engine falls back to the trie behavior described in the dispatch table.
+
+The IME author doesn't have to do anything special for punctuation — just route the actually-typed byte to `jd_press_key` and use whatever `query_result` comes back. The full set of mapped keys is the union of the keys listed in `src/punctuation-marks/normal.txt` and `paired.txt`.
 
 ### Putting it together
 

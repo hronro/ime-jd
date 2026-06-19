@@ -5,5 +5,6 @@ test "jd" {
     // doesn't get pulled into two modules.
     testing.refAllDecls(@import("trie"));
     testing.refAllDecls(@import("./pagination.zig"));
+    testing.refAllDecls(@import("./punc.zig"));
     testing.refAllDecls(@import("./query.zig"));
 }

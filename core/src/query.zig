@@ -5,8 +5,13 @@ const trie_mod = @import("trie");
 const Trie = trie_mod.Trie;
 const Node = trie_mod.Trie.Node;
 const pagination = @import("./pagination.zig");
+const punc_mod = @import("./punc.zig");
+const punc_fmt = @import("punc_format");
+
 const NodePagination = pagination.NodePagination;
+const PuncPagination = pagination.PuncPagination;
 const QueryOption = pagination.QueryOption;
+
 const buildTestTrie = @import("./trie_test_data.zig").buildTestTrie;
 
 /// Inline-buffer sizes. `MAX_PRESSED_KEYS` is a domain invariant
@@ -19,6 +24,7 @@ pub const COMMIT_SCRATCH_BYTES: usize = 128;
 
 pub const InitOptions = struct {
     trie: *const Trie,
+    punc: *const punc_mod.Punc,
     page_size: u8,
 };
 
@@ -29,6 +35,12 @@ pub const QueryResult = extern struct {
     total_pages: u32,
     current_page: u32,
 };
+
+/// One bit per ASCII key, packed into bytes. Bit `k` set ⇒ the next press
+/// of `k` (a paired key) emits the close half. Indexed directly by key.
+/// Sized off `punc_fmt.TABLE_SIZE` so both lookup tables and this bitset
+/// share a single source of truth for "the ASCII keyspace".
+const PAIR_TOGGLE_BYTES: usize = punc_fmt.TABLE_SIZE / 8;
 
 pub const Context = struct {
     const Self = @This();
@@ -57,28 +69,36 @@ pub const Context = struct {
     pressed_keys: [MAX_PRESSED_KEYS]usize,
     pressed_keys_len: u8,
 
+    /// Persistent paired-punctuation toggle state. Bit `k` (for k in
+    /// 0..255) tracks whether the next paired-press of ASCII byte `k`
+    /// should emit the close half. Survives `reset()` so pairs alternate
+    /// across compositions for the lifetime of the `jd_context`; cleared
+    /// only on `jd_deinit`.
+    pair_toggle_bits: [PAIR_TOGGLE_BYTES]u8,
+
     /// Backs the per-page `QueryOption` arrays and their hint strings
-    /// inside `NodePagination`. Reset on every page materialization.
+    /// inside `NodePagination` / `PuncPagination`. Reset on every page
+    /// materialization.
     page_fba: std.heap.FixedBufferAllocator,
 
-    /// BFS frontier + path bytes for any active `NodePagination`. Shared
-    /// across successive paginators on this context (each new `pager`
-    /// re-uses the same backing memory).
+    /// BFS frontier + path bytes for any active trie `NodePagination`.
+    /// Shared across successive paginators on this context.
     frontier_buf: []pagination.FrontierEntry,
     path_buf: []u8,
 
     trie: *const Trie,
+    punc: *const punc_mod.Punc,
     root_node: *const Node,
     page_size: u8,
     node: *const Node,
-    pager: ?NodePagination,
+    pager: ?pagination.Pager,
 
     /// Constructs a Context from pre-allocated buffers. The caller (jd_init
     /// or a test harness) provides storage for the three variable-sized
-    /// regions; the inline fields (commit_scratch, pressed_keys, page_fba)
-    /// live inside the returned struct. `raw` is left undefined — jd_init
-    /// sets it explicitly after the carved layout is known; tests don't
-    /// touch it.
+    /// regions; the inline fields (commit_scratch, pressed_keys, page_fba,
+    /// pair_toggle_bits) live inside the returned struct. `raw` is left
+    /// undefined — jd_init sets it explicitly after the carved layout is
+    /// known; tests don't touch it.
     pub fn init(buffers: Buffers, options: InitOptions) Self {
         const root_node = options.trie.root();
         return .{
@@ -86,10 +106,12 @@ pub const Context = struct {
             .commit_scratch = undefined,
             .pressed_keys = undefined,
             .pressed_keys_len = 0,
+            .pair_toggle_bits = @splat(0),
             .page_fba = std.heap.FixedBufferAllocator.init(buffers.page_buf),
             .frontier_buf = buffers.frontier,
             .path_buf = buffers.path_buf,
             .trie = options.trie,
+            .punc = options.punc,
             .root_node = root_node,
             .page_size = options.page_size,
             .node = root_node,
@@ -112,136 +134,235 @@ pub const Context = struct {
         return @ptrCast(&self.commit_scratch);
     }
 
+    /// Concatenate `prev` (if non-null) and `value` into `commit_scratch`
+    /// and return a sentinel-terminated pointer. Both inputs are read via
+    /// `sliceTo(... ,0)` so they may be rodata pointers from any pool.
+    fn commitWithPrefix(self: *Self, prev: ?[*:0]const u8, value: [*:0]const u8) [*:0]const u8 {
+        var total_len: usize = 0;
+        if (prev) |pc| {
+            const prev_bytes = std.mem.sliceTo(pc, 0);
+            @memcpy(self.commit_scratch[0..prev_bytes.len], prev_bytes);
+            total_len = prev_bytes.len;
+        }
+        const value_bytes = std.mem.sliceTo(value, 0);
+        @memcpy(self.commit_scratch[total_len..][0..value_bytes.len], value_bytes);
+        total_len += value_bytes.len;
+        return self.scratchCommit(total_len);
+    }
+
+    /// Reads the toggle bit for `key` and atomically flips it. Returns
+    /// the PRE-flip value (true ⇒ this commit should emit the close half).
+    fn flipPairToggle(self: *Self, key: u8) bool {
+        const byte_idx: usize = key / 8;
+        const bit_mask: u8 = @as(u8, 1) << @intCast(key % 8);
+        const was_set = (self.pair_toggle_bits[byte_idx] & bit_mask) != 0;
+        self.pair_toggle_bits[byte_idx] ^= bit_mask;
+        return was_set;
+    }
+
+    /// If a trie pager is currently active, commit its first option and
+    /// fully reset the trie composition state. Returns the committed bytes
+    /// (a rodata pointer) or null if no trie pager was active.
+    fn commitTriePagerIfActive(self: *Self) ?[*:0]const u8 {
+        if (self.pager) |*p| {
+            if (p.* == .trie) {
+                const prev = p.commitAtIndex(0);
+                self.pager = null;
+                self.node = self.root_node;
+                self.pressed_keys_len = 0;
+                return prev;
+            }
+        }
+        return null;
+    }
+
     pub fn reset(self: *Self) void {
         self.node = self.root_node;
         self.pager = null;
         self.pressed_keys_len = 0;
+        // pair_toggle_bits intentionally NOT reset — see field docs.
     }
 
     pub fn pressKey(self: *Self, key: u8) QueryResult {
+        // ============================================================
+        // Cases that pick an option from the current pager (any kind).
+        // ============================================================
+
         // Case A: space — commit first option (rodata pointer), else synth " ".
         if (key == ' ') {
-            if (self.pager) |*pager| {
-                const options = pager.*.getOptions();
-                if (options.len >= 1) {
-                    const commit = options[0].value; // rodata
+            if (self.pager) |*p| {
+                const opts = p.getOptions();
+                if (opts.len >= 1) {
+                    const commit = p.commitAtIndex(0);
                     self.reset();
-                    return .{
-                        .commit = commit,
-                        .options = null,
-                        .options_count = 0,
-                        .total_pages = 0,
-                        .current_page = 0,
-                    };
+                    return commitOnly(commit);
                 }
             }
             self.commit_scratch[0] = ' ';
             const commit = self.scratchCommit(1);
             self.reset();
+            return commitOnly(commit);
+        }
+
+        // Case B: ';' with no ';' child of current node — only meaningful
+        // when the active pager is a trie pager (punc pagers don't shadow
+        // ';'). Commits the 2nd option, or option[0] + ';' as fallback.
+        if (key == ';' and self.node.getChild(self.trie, ';') == null) {
+            if (self.pager) |*p| {
+                if (p.* == .trie) {
+                    const options = p.getOptions();
+                    if (options.len >= 2) {
+                        const commit = p.commitAtIndex(1);
+                        self.reset();
+                        return commitOnly(commit);
+                    } else {
+                        const original = std.mem.sliceTo(options[0].value, 0);
+                        @memcpy(self.commit_scratch[0..original.len], original);
+                        self.commit_scratch[original.len] = ';';
+                        const commit = self.scratchCommit(original.len + 1);
+                        self.reset();
+                        return commitOnly(commit);
+                    }
+                }
+            }
+        }
+
+        // Case C: '1'..'9' picks an option by index. Works for both pager
+        // kinds via commitAtIndex.
+        if (key >= '1' and key <= '9') {
+            if (self.pager) |*p| {
+                const options = p.getOptions();
+                const option_index = key - '1';
+                if (option_index < options.len) {
+                    const commit = p.commitAtIndex(option_index);
+                    self.reset();
+                    return commitOnly(commit);
+                }
+            }
+        }
+
+        // ============================================================
+        // From here, the key didn't pick from the current pager.
+        // If a punc (normal-multi-candidate) pager is still active, the
+        // user is abandoning the window — commit its first option and
+        // proceed.
+        // ============================================================
+        var prev_commit: ?[*:0]const u8 = null;
+        if (self.pager) |*p| {
+            if (p.* == .punc) {
+                prev_commit = p.commitAtIndex(0);
+                self.pager = null;
+                self.node = self.root_node;
+                self.pressed_keys_len = 0;
+            }
+        }
+
+        // ============================================================
+        // Case P1: paired punctuation. Single-press commit with toggle.
+        // ============================================================
+        if (self.punc.lookupPaired(key)) |paired_entry| {
+            if (prev_commit == null) {
+                prev_commit = self.commitTriePagerIfActive();
+            }
+
+            const emit_close = self.flipPairToggle(key);
+            const value_ptr = if (emit_close)
+                self.punc.closeValue(paired_entry)
+            else
+                self.punc.openValue(paired_entry);
+
+            const commit = self.commitWithPrefix(prev_commit, value_ptr);
+            self.reset();
+            return commitOnly(commit);
+        }
+
+        // ============================================================
+        // Case P2: normal punctuation. Auto-commit if single candidate,
+        // otherwise open a candidate window.
+        // ============================================================
+        if (self.punc.lookupNormal(key)) |normal_entry| {
+            if (prev_commit == null) {
+                prev_commit = self.commitTriePagerIfActive();
+            }
+
+            if (normal_entry.candidates_count == 1) {
+                const value_ptr: [*:0]const u8 =
+                    @ptrCast(&self.punc.strings[normal_entry.values_offset]);
+                const commit = self.commitWithPrefix(prev_commit, value_ptr);
+                self.reset();
+                return commitOnly(commit);
+            }
+
+            self.pager = .{ .punc = PuncPagination.init(
+                normal_entry,
+                self.punc.strings,
+                &self.page_fba,
+                self.page_size,
+            ) };
+            self.node = self.root_node;
+            self.pressed_keys_len = 0;
+
+            const options = self.pager.?.getOptions();
             return .{
-                .commit = commit,
-                .options = null,
-                .options_count = 0,
-                .total_pages = 0,
-                .current_page = 0,
+                .commit = prev_commit,
+                .options = options.ptr,
+                .options_count = self.pager.?.totalOptions(),
+                .total_pages = self.pager.?.totalPages(),
+                .current_page = 1,
             };
         }
 
-        // Case B: ';' with no ';' child — commit the 2nd option (rodata),
-        // or fall back to option[0] + ';' written into scratch.
-        if (key == ';' and self.node.getChild(self.trie, ';') == null) {
-            if (self.pager) |*pager| {
-                const options = pager.*.getOptions();
-                if (options.len >= 2) {
-                    const commit = options[1].value; // rodata
-                    self.reset();
-                    return .{
-                        .commit = commit,
-                        .options = null,
-                        .options_count = 0,
-                        .total_pages = 0,
-                        .current_page = 0,
-                    };
-                } else {
-                    const original = std.mem.sliceTo(options[0].value, 0);
-                    @memcpy(self.commit_scratch[0..original.len], original);
-                    self.commit_scratch[original.len] = ';';
-                    const commit = self.scratchCommit(original.len + 1);
-                    self.reset();
-                    return .{
-                        .commit = commit,
-                        .options = null,
-                        .options_count = 0,
-                        .total_pages = 0,
-                        .current_page = 0,
-                    };
-                }
-            }
-        }
-
-        // Case C: '1'..'9' picks an option by index (rodata pointer).
-        if (key >= '1' and key <= '9') {
-            if (self.pager) |*pager| {
-                const options = pager.*.getOptions();
-                const option_index = key - '1';
-                if (option_index < options.len) {
-                    const commit = options[option_index].value; // rodata
-                    self.reset();
-                    return .{
-                        .commit = commit,
-                        .options = null,
-                        .options_count = 0,
-                        .total_pages = 0,
-                        .current_page = 0,
-                    };
-                }
-            }
-        }
+        // ============================================================
+        // Trie descent cases (D, E, F, G). `prev_commit` may be set if
+        // the user was in a punc window and pressed a non-punc key.
+        // ============================================================
 
         // Case D: descend into a child of the current node.
         if (self.node.getChild(self.trie, key)) |node| {
             const key_index = self.node.indexOfChild(self.trie, key).?;
 
             self.node = node;
-            self.pager = NodePagination.init(self.paginationBuffers(), self.trie, node, self.page_size);
+            self.pager = .{ .trie = NodePagination.init(self.paginationBuffers(), self.trie, node, self.page_size) };
             self.pressed_keys[self.pressed_keys_len] = key_index;
             self.pressed_keys_len += 1;
 
             const options = self.pager.?.getOptions();
 
-            // D1: single option with no hint — commit it directly (rodata).
+            // D1: single option no hint — auto-commit. If prev_commit is set,
+            // concat into scratch; otherwise return the rodata pointer.
             if (options.len == 1 and options[0].hint == null) {
-                const commit = options[0].value; // rodata
-                self.reset();
-                return .{
-                    .commit = commit,
-                    .options = null,
-                    .options_count = 0,
-                    .total_pages = 0,
-                    .current_page = 0,
-                };
+                if (prev_commit) |_| {
+                    const commit = self.commitWithPrefix(prev_commit, options[0].value);
+                    self.reset();
+                    return commitOnly(commit);
+                } else {
+                    const commit = options[0].value;
+                    self.reset();
+                    return commitOnly(commit);
+                }
             }
 
             return .{
-                .commit = null,
+                .commit = prev_commit,
                 .options = options.ptr,
-                .options_count = self.node.count(),
-                .total_pages = self.pager.?.total_pages,
+                .options_count = self.pager.?.totalOptions(),
+                .total_pages = self.pager.?.totalPages(),
                 .current_page = 1,
             };
         } else if (self.root_node.getChild(self.trie, key)) |node| {
             // Case E: current node has no child with `key`, but root does —
             // commit the previous page's first option (rodata), then jump.
             //
-            // Both `.value` pointers are into the trie strings pool, so
-            // they remain valid across the page_fba reset triggered by the
-            // new pager's first `getOptions()`. The `QueryOption` array
-            // slice (`prev_options`) does get invalidated, but we capture
-            // the rodata pointer up front.
+            // prev_commit cannot be set here: it's set only when we exited a
+            // punc window (which resets self.node to root_node and
+            // pressed_keys_len to 0). If self.node == root_node, the
+            // `self.node.getChild(...)` branch above would have matched.
+            std.debug.assert(prev_commit == null);
+
             const prev_value = self.pager.?.getOptions()[0].value; // rodata
 
             self.node = node;
-            self.pager = NodePagination.init(self.paginationBuffers(), self.trie, node, self.page_size);
+            self.pager = .{ .trie = NodePagination.init(self.paginationBuffers(), self.trie, node, self.page_size) };
             self.pressed_keys_len = 0;
             self.pressed_keys[self.pressed_keys_len] = self.root_node.indexOfChild(self.trie, key).?;
             self.pressed_keys_len += 1;
@@ -256,104 +377,99 @@ pub const Context = struct {
                 @memcpy(self.commit_scratch[prev.len..][0..curr.len], curr);
                 const commit = self.scratchCommit(prev.len + curr.len);
                 self.reset();
-                return .{
-                    .commit = commit,
-                    .options = null,
-                    .options_count = 0,
-                    .total_pages = 0,
-                    .current_page = 0,
-                };
+                return commitOnly(commit);
             }
 
             return .{
                 .commit = prev_value, // rodata
                 .options = options.ptr,
-                .options_count = self.node.count(),
-                .total_pages = self.pager.?.total_pages,
+                .options_count = self.pager.?.totalOptions(),
+                .total_pages = self.pager.?.totalPages(),
                 .current_page = 1,
             };
         }
 
-        // Case F: at root, key has no child — commit the key byte itself.
+        // Case F: at root, key has no child — commit (prev_commit if any +) the key byte.
         if (self.node == self.root_node) {
-            self.commit_scratch[0] = key;
-            const commit = self.scratchCommit(1);
+            var total_len: usize = 0;
+            if (prev_commit) |pc| {
+                const prev_bytes = std.mem.sliceTo(pc, 0);
+                @memcpy(self.commit_scratch[0..prev_bytes.len], prev_bytes);
+                total_len = prev_bytes.len;
+            }
+            self.commit_scratch[total_len] = key;
+            total_len += 1;
+            const commit = self.scratchCommit(total_len);
             self.reset();
-            return .{
-                .commit = commit,
-                .options = null,
-                .options_count = 0,
-                .total_pages = 0,
-                .current_page = 0,
-            };
+            return commitOnly(commit);
         } else {
             // Case G: deep in the trie, key has no matching descent — commit
             // the current first option with `key` appended.
+            // prev_commit cannot be set here (would require self.node == root).
+            std.debug.assert(prev_commit == null);
             const options = self.pager.?.getOptions();
             const original = std.mem.sliceTo(options[0].value, 0);
             @memcpy(self.commit_scratch[0..original.len], original);
             self.commit_scratch[original.len] = key;
             const commit = self.scratchCommit(original.len + 1);
             self.reset();
-            return .{
-                .commit = commit,
-                .options = null,
-                .options_count = 0,
-                .total_pages = 0,
-                .current_page = 0,
-            };
+            return commitOnly(commit);
         }
     }
 
     pub fn nextPage(self: *Self) QueryResult {
-        if (self.pager) |*pager| {
-            pager.*.nextPage();
-
+        if (self.pager) |*p| {
+            p.nextPage();
             return .{
                 .commit = null,
-                .options = pager.*.getOptions().ptr,
-                .options_count = self.node.count(),
-                .total_pages = pager.*.total_pages,
-                .current_page = pager.*.current_page,
+                .options = p.getOptions().ptr,
+                .options_count = p.totalOptions(),
+                .total_pages = p.totalPages(),
+                .current_page = p.currentPage(),
             };
-        } else {
-            return emptyResult();
         }
+        return emptyResult();
     }
 
     pub fn prevPage(self: *Self) QueryResult {
-        if (self.pager) |*pager| {
-            pager.*.prevPage();
-
+        if (self.pager) |*p| {
+            p.prevPage();
             return .{
                 .commit = null,
-                .options = pager.*.getOptions().ptr,
-                .options_count = self.node.count(),
-                .total_pages = pager.*.total_pages,
-                .current_page = pager.*.current_page,
+                .options = p.getOptions().ptr,
+                .options_count = p.totalOptions(),
+                .total_pages = p.totalPages(),
+                .current_page = p.currentPage(),
             };
-        } else {
-            return emptyResult();
         }
+        return emptyResult();
     }
 
     pub fn jumpToPage(self: *Self, page: u32) QueryResult {
-        if (self.pager) |*pager| {
-            pager.*.jumpToPage(page);
-
+        if (self.pager) |*p| {
+            p.jumpToPage(page);
             return .{
                 .commit = null,
-                .options = pager.*.getOptions().ptr,
-                .options_count = self.node.count(),
-                .total_pages = pager.*.total_pages,
-                .current_page = pager.*.current_page,
+                .options = p.getOptions().ptr,
+                .options_count = p.totalOptions(),
+                .total_pages = p.totalPages(),
+                .current_page = p.currentPage(),
             };
-        } else {
-            return emptyResult();
         }
+        return emptyResult();
     }
 
     pub fn backspace(self: *Self) QueryResult {
+        // If we're in a punc candidate window, backspace just closes it.
+        if (self.pager) |*p| {
+            if (p.* == .punc) {
+                self.pager = null;
+                self.pressed_keys_len = 0;
+                self.node = self.root_node;
+                return emptyResult();
+            }
+        }
+
         if (self.pressed_keys_len != 0) {
             self.pressed_keys_len -= 1;
 
@@ -367,13 +483,13 @@ pub const Context = struct {
                 self.pager = null;
                 return emptyResult();
             } else {
-                self.pager = NodePagination.init(self.paginationBuffers(), self.trie, self.node, self.page_size);
+                self.pager = .{ .trie = NodePagination.init(self.paginationBuffers(), self.trie, self.node, self.page_size) };
 
                 return .{
                     .commit = null,
                     .options = self.pager.?.getOptions().ptr,
-                    .options_count = self.node.count(),
-                    .total_pages = self.pager.?.total_pages,
+                    .options_count = self.pager.?.totalOptions(),
+                    .total_pages = self.pager.?.totalPages(),
                     .current_page = 1,
                 };
             }
@@ -382,6 +498,16 @@ pub const Context = struct {
         }
     }
 };
+
+inline fn commitOnly(commit: [*:0]const u8) QueryResult {
+    return .{
+        .commit = commit,
+        .options = null,
+        .options_count = 0,
+        .total_pages = 0,
+        .current_page = 0,
+    };
+}
 
 fn emptyResult() QueryResult {
     return .{
@@ -397,31 +523,56 @@ fn emptyResult() QueryResult {
 // Tests
 // =========================================================================
 
-/// Wraps the three heap regions a `Context` borrows so each test can build
-/// and tear them down without repeating the boilerplate. In production this
+/// Wraps the heap regions a `Context` borrows so each test can build and
+/// tear them down without repeating the boilerplate. In production this
 /// work is done by `jd_init`.
+///
+/// The PuncHandle is heap-allocated so its `punc` field's address stays
+/// stable when this struct is returned-by-value from `init` (the ctx
+/// holds a pointer to it).
 const ContextHarness = struct {
     ctx: Context,
     frontier: []pagination.FrontierEntry,
     path_buf: []u8,
     page_buf: []u8,
+    punc_handle: *punc_mod.PuncHandle,
 
-    fn init(allocator: std.mem.Allocator, trie: *const Trie, page_size: u8) !ContextHarness {
-        // `+1` covers the (test-only) case of paginating from root.
+    fn init(
+        allocator: std.mem.Allocator,
+        trie: *const Trie,
+        page_size: u8,
+    ) !ContextHarness {
+        return ContextHarness.initWithPunc(allocator, trie, page_size, &.{}, &.{});
+    }
+
+    fn initWithPunc(
+        allocator: std.mem.Allocator,
+        trie: *const Trie,
+        page_size: u8,
+        normals: []const punc_mod.NormalInput,
+        paireds: []const punc_mod.PairedInput,
+    ) !ContextHarness {
         const frontier = try allocator.alloc(pagination.FrontierEntry, trie.frontier_cap + 1);
+        errdefer allocator.free(frontier);
         const path_buf = try allocator.alloc(u8, trie.path_buf_cap + 1);
+        errdefer allocator.free(path_buf);
         const page_buf = try allocator.alloc(u8, pagination.pageBufferSize(page_size));
+        errdefer allocator.free(page_buf);
+        const punc_handle = try allocator.create(punc_mod.PuncHandle);
+        errdefer allocator.destroy(punc_handle);
+        punc_handle.* = try punc_mod.buildPunc(allocator, normals, paireds);
         var self = ContextHarness{
             .ctx = undefined,
             .frontier = frontier,
             .path_buf = path_buf,
             .page_buf = page_buf,
+            .punc_handle = punc_handle,
         };
         self.ctx = Context.init(.{
             .frontier = frontier,
             .path_buf = path_buf,
             .page_buf = page_buf,
-        }, .{ .trie = trie, .page_size = page_size });
+        }, .{ .trie = trie, .punc = &punc_handle.punc, .page_size = page_size });
         return self;
     }
 
@@ -429,6 +580,8 @@ const ContextHarness = struct {
         allocator.free(self.frontier);
         allocator.free(self.path_buf);
         allocator.free(self.page_buf);
+        self.punc_handle.deinit(allocator);
+        allocator.destroy(self.punc_handle);
     }
 };
 
@@ -943,8 +1096,6 @@ test "backspace should do nothing when at root" {
     defer harness.deinit(testing.allocator);
     const context = &harness.ctx;
 
-    // pressKey('a') first to get a page, then backspace once to root,
-    // then another backspace must be a no-op.
     _ = context.pressKey('a');
     _ = context.backspace();
 
@@ -952,7 +1103,6 @@ test "backspace should do nothing when at root" {
     try testing.expectEqual(@as(?[*:0]const u8, null), query_result.commit);
     try testing.expectEqual(@as(?[*]const QueryOption, null), query_result.options);
 
-    // Verify we can still press 'a' and see the same options.
     const query_result_a = context.pressKey('a');
     var expected_options = [_]QueryOption{
         .{ .value = "甲", .hint = null },
@@ -1008,4 +1158,234 @@ test "commit when press a key is not in the children of the trie, and the key is
     try testing.expectEqual(@as(u32, 11), query_result4.options_count);
     try testing.expectEqual(@as(u32, 4), query_result4.total_pages);
     try testing.expectEqual(@as(u32, 1), query_result4.current_page);
+}
+
+// =========================================================================
+// Tests — punctuation integration
+// =========================================================================
+
+test "single-candidate normal punc commits directly from root" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const candidates = [_][]const u8{"。"};
+    const normals = [_]punc_mod.NormalInput{
+        .{ .key = '.', .candidates = &candidates },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &normals, &.{});
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    const r = context.pressKey('.');
+    try testing.expectEqualStrings("。", std.mem.sliceTo(r.commit.?, 0));
+    try testing.expectEqual(@as(?[*]const QueryOption, null), r.options);
+}
+
+test "single-candidate punc commits trie + punc after composition" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const candidates = [_][]const u8{"。"};
+    const normals = [_]punc_mod.NormalInput{
+        .{ .key = '.', .candidates = &candidates },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &normals, &.{});
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    _ = context.pressKey('a');
+    const r = context.pressKey('.');
+    try testing.expectEqualStrings("甲。", std.mem.sliceTo(r.commit.?, 0));
+    try testing.expectEqual(@as(?[*]const QueryOption, null), r.options);
+}
+
+test "multi-candidate punc opens window" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const candidates = [_][]const u8{ "「", "【", "〔", "［" };
+    const normals = [_]punc_mod.NormalInput{
+        .{ .key = '[', .candidates = &candidates },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &normals, &.{});
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    const r = context.pressKey('[');
+    try testing.expectEqual(@as(?[*:0]const u8, null), r.commit);
+    try testing.expectEqual(@as(u32, 4), r.options_count);
+    try testing.expectEqual(@as(u32, 2), r.total_pages);
+    try testing.expectEqual(@as(u32, 1), r.current_page);
+    try testing.expectEqualStrings("「", std.mem.sliceTo(r.options.?[0].value, 0));
+    try testing.expectEqualStrings("【", std.mem.sliceTo(r.options.?[1].value, 0));
+    try testing.expectEqualStrings("〔", std.mem.sliceTo(r.options.?[2].value, 0));
+
+    const r2 = context.pressKey('2');
+    try testing.expectEqualStrings("【", std.mem.sliceTo(r2.commit.?, 0));
+}
+
+test "punc window: next page" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const candidates = [_][]const u8{ "「", "【", "〔", "［" };
+    const normals = [_]punc_mod.NormalInput{
+        .{ .key = '[', .candidates = &candidates },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 2, &normals, &.{});
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    _ = context.pressKey('[');
+    const r = context.nextPage();
+    try testing.expectEqual(@as(u32, 2), r.current_page);
+    try testing.expectEqualStrings("〔", std.mem.sliceTo(r.options.?[0].value, 0));
+    try testing.expectEqualStrings("［", std.mem.sliceTo(r.options.?[1].value, 0));
+}
+
+test "paired punc toggles on consecutive presses" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const paireds = [_]punc_mod.PairedInput{
+        .{ .key = '"', .open = "“", .close = "”" },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &.{}, &paireds);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    const r1 = context.pressKey('"');
+    try testing.expectEqualStrings("“", std.mem.sliceTo(r1.commit.?, 0));
+
+    const r2 = context.pressKey('"');
+    try testing.expectEqualStrings("”", std.mem.sliceTo(r2.commit.?, 0));
+
+    const r3 = context.pressKey('"');
+    try testing.expectEqualStrings("“", std.mem.sliceTo(r3.commit.?, 0));
+}
+
+test "paired toggle survives non-paired commits in between" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const paireds = [_]punc_mod.PairedInput{
+        .{ .key = '"', .open = "“", .close = "”" },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &.{}, &paireds);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    _ = context.pressKey('"'); // commits “, toggle for '"' → 1
+    _ = context.pressKey('a');
+    _ = context.pressKey(' '); // commit 甲
+    const r = context.pressKey('"');
+    try testing.expectEqualStrings("”", std.mem.sliceTo(r.commit.?, 0));
+}
+
+test "two paired keys have independent toggles" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const paireds = [_]punc_mod.PairedInput{
+        .{ .key = '"', .open = "“", .close = "”" },
+        .{ .key = '\'', .open = "‘", .close = "’" },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &.{}, &paireds);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    _ = context.pressKey('"'); // “
+    _ = context.pressKey('\''); // ‘
+    const r1 = context.pressKey('"'); // ”
+    try testing.expectEqualStrings("”", std.mem.sliceTo(r1.commit.?, 0));
+    const r2 = context.pressKey('\''); // ’
+    try testing.expectEqualStrings("’", std.mem.sliceTo(r2.commit.?, 0));
+}
+
+test "punc window: backspace closes window" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const candidates = [_][]const u8{ "「", "【" };
+    const normals = [_]punc_mod.NormalInput{
+        .{ .key = '[', .candidates = &candidates },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &normals, &.{});
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    _ = context.pressKey('[');
+    const r = context.backspace();
+    try testing.expectEqual(@as(?[*:0]const u8, null), r.commit);
+    try testing.expectEqual(@as(?[*]const QueryOption, null), r.options);
+}
+
+test "punc window: pressing a trie key commits punc[0] and starts trie composition" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const candidates = [_][]const u8{ "「", "【" };
+    const normals = [_]punc_mod.NormalInput{
+        .{ .key = '[', .candidates = &candidates },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &normals, &.{});
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    _ = context.pressKey('[');
+    const r = context.pressKey('a');
+    try testing.expectEqualStrings("「", std.mem.sliceTo(r.commit.?, 0));
+    try testing.expectEqual(@as(u32, 11), r.options_count);
+    try testing.expectEqualStrings("甲", std.mem.sliceTo(r.options.?[0].value, 0));
+}
+
+test "punc window: pressing space commits the displayed first option" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const candidates = [_][]const u8{ "「", "【" };
+    const normals = [_]punc_mod.NormalInput{
+        .{ .key = '[', .candidates = &candidates },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &normals, &.{});
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    _ = context.pressKey('[');
+    const r = context.pressKey(' ');
+    try testing.expectEqualStrings("「", std.mem.sliceTo(r.commit.?, 0));
+}
+
+test "punc window: pressing punc key again commits and re-opens window" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const candidates = [_][]const u8{ "「", "【" };
+    const normals = [_]punc_mod.NormalInput{
+        .{ .key = '[', .candidates = &candidates },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &normals, &.{});
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    _ = context.pressKey('[');
+    const r = context.pressKey('[');
+    try testing.expectEqualStrings("「", std.mem.sliceTo(r.commit.?, 0));
+    try testing.expectEqual(@as(u32, 2), r.options_count);
+}
+
+test "trie composition + paired key commits both" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const paireds = [_]punc_mod.PairedInput{
+        .{ .key = '"', .open = "“", .close = "”" },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &.{}, &paireds);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    _ = context.pressKey('a');
+    const r = context.pressKey('"');
+    try testing.expectEqualStrings("甲“", std.mem.sliceTo(r.commit.?, 0));
 }
