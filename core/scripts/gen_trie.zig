@@ -18,10 +18,20 @@
 //! the consumer module imports it.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 // `trie` is wired in by build.zig as a named module so this script doesn't
 // need to reach across the package boundary into ../src/.
 const trie = @import("trie");
+
+/// Diagnostic print that stays silent under `zig build test`. The unit tests
+/// below intentionally exercise the parse-error branches; without this gate,
+/// each `expectError` would push an `error: ...` line onto the test runner's
+/// captured stderr, which Zig 0.16's build runner then renders as a (bogus)
+/// "failed command" block — even when every test passes.
+fn diag(comptime fmt: []const u8, args: anytype) void {
+    if (!builtin.is_test) std.debug.print(fmt, args);
+}
 
 /// Parse the contents of a single table file. Split from `parseTables` so
 /// the parsing logic can be unit-tested without touching the filesystem.
@@ -38,7 +48,7 @@ fn parseTable(
         if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
         const tab = std.mem.indexOfScalar(u8, trimmed, '\t') orelse {
-            std.debug.print("error: line without TAB in {s}: {s}\n", .{ path, trimmed });
+            diag("error: line without TAB in {s}: {s}\n", .{ path, trimmed });
             return error.MalformedTableLine;
         };
         const value = std.mem.trim(u8, trimmed[0..tab], " ");
@@ -124,11 +134,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // Re-parse the blob locally to surface the worst-case caps it embedded.
     // These dictate per-context memory in `jd_init`; logging them gives early
     // visibility into the per-context resident size.
+    //
+    // Write to stdout (not stderr): zig build's Run step captures stderr when
+    // a step has output args and the build runner then renders it as a "failed
+    // command" even on exit 0. Informational lines belong on stdout.
     const t = try trie.Trie.fromBytes(blob);
-    std.debug.print(
+    const msg = try std.fmt.allocPrint(
+        arena,
         "gen_trie: {d} entries → {d} bytes blob (frontier_cap={d}, path_buf_cap={d})\n",
         .{ entries.len, blob.len, t.frontier_cap, t.path_buf_cap },
     );
+    try std.Io.File.stdout().writeStreamingAll(io, msg);
 }
 
 // =========================================================================

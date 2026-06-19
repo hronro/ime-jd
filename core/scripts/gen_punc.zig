@@ -23,8 +23,18 @@
 //!                                     `pub const bytes = @embedFile("punc.bin");`
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const punc = @import("punc");
+
+/// Diagnostic print that stays silent under `zig build test`. The unit tests
+/// below intentionally exercise the parse-error branches; without this gate,
+/// each `expectError` would push an `error: ...` line onto the test runner's
+/// captured stderr, which Zig 0.16's build runner then renders as a (bogus)
+/// "failed command" block — even when every test passes.
+fn diag(comptime fmt: []const u8, args: anytype) void {
+    if (!builtin.is_test) std.debug.print(fmt, args);
+}
 
 const ReservedKey = struct {
     key: u8,
@@ -52,16 +62,16 @@ fn isReservedKey(key: u8) ?[]const u8 {
 
 fn parseKeyField(field: []const u8, path: []const u8, line: []const u8) !u8 {
     if (field.len != 1) {
-        std.debug.print("error: punc key must be exactly one ASCII byte, got {d} bytes in {s}: {s}\n", .{ field.len, path, line });
+        diag("error: punc key must be exactly one ASCII byte, got {d} bytes in {s}: {s}\n", .{ field.len, path, line });
         return error.MalformedPuncKey;
     }
     const k = field[0];
     if (k >= 128) {
-        std.debug.print("error: punc key must be ASCII (< 128), got byte 0x{x} in {s}: {s}\n", .{ k, path, line });
+        diag("error: punc key must be ASCII (< 128), got byte 0x{x} in {s}: {s}\n", .{ k, path, line });
         return error.NonAsciiPuncKey;
     }
     if (isReservedKey(k)) |why| {
-        std.debug.print("error: punc key '{c}' (0x{x}) is reserved — {s} (in {s})\n", .{ k, k, why, path });
+        diag("error: punc key '{c}' (0x{x}) is reserved — {s} (in {s})\n", .{ k, k, why, path });
         return error.ReservedPuncKey;
     }
     return k;
@@ -87,14 +97,14 @@ fn parseNormal(
         var fields = std.mem.splitScalar(u8, trimmed, '\t');
         const key_field = std.mem.trim(u8, fields.first(), " ");
         if (key_field.len == 0) {
-            std.debug.print("error: missing key in {s}: {s}\n", .{ path, trimmed });
+            diag("error: missing key in {s}: {s}\n", .{ path, trimmed });
             return error.MalformedNormalLine;
         }
 
         const key = try parseKeyField(key_field, path, trimmed);
 
         if (seen[key]) {
-            std.debug.print("error: duplicate key '{c}' (0x{x}) in {s}\n", .{ key, key, path });
+            diag("error: duplicate key '{c}' (0x{x}) in {s}\n", .{ key, key, path });
             return error.DuplicateNormalKey;
         }
         seen[key] = true;
@@ -107,7 +117,7 @@ fn parseNormal(
             try candidates.append(arena, value_copy);
         }
         if (candidates.items.len == 0) {
-            std.debug.print("error: no values for key in {s}: {s}\n", .{ path, trimmed });
+            diag("error: no values for key in {s}: {s}\n", .{ path, trimmed });
             return error.MalformedNormalLine;
         }
 
@@ -138,15 +148,15 @@ fn parsePaired(
         var fields = std.mem.splitScalar(u8, trimmed, '\t');
         const key_field = fields.first();
         const open_field = fields.next() orelse {
-            std.debug.print("error: paired line needs <key>\\t<open>\\t<close> in {s}: {s}\n", .{ path, trimmed });
+            diag("error: paired line needs <key>\\t<open>\\t<close> in {s}: {s}\n", .{ path, trimmed });
             return error.MalformedPairedLine;
         };
         const close_field = fields.next() orelse {
-            std.debug.print("error: paired line needs <key>\\t<open>\\t<close> in {s}: {s}\n", .{ path, trimmed });
+            diag("error: paired line needs <key>\\t<open>\\t<close> in {s}: {s}\n", .{ path, trimmed });
             return error.MalformedPairedLine;
         };
         if (fields.next() != null) {
-            std.debug.print("error: paired line has too many fields in {s}: {s}\n", .{ path, trimmed });
+            diag("error: paired line has too many fields in {s}: {s}\n", .{ path, trimmed });
             return error.MalformedPairedLine;
         }
 
@@ -154,14 +164,14 @@ fn parsePaired(
         const open = std.mem.trim(u8, open_field, " ");
         const close = std.mem.trim(u8, close_field, " ");
         if (key_str.len == 0 or open.len == 0 or close.len == 0) {
-            std.debug.print("error: empty field in paired line in {s}: {s}\n", .{ path, trimmed });
+            diag("error: empty field in paired line in {s}: {s}\n", .{ path, trimmed });
             return error.MalformedPairedLine;
         }
 
         const key = try parseKeyField(key_str, path, trimmed);
 
         if (seen[key]) {
-            std.debug.print("error: duplicate key '{c}' (0x{x}) in {s}\n", .{ key, key, path });
+            diag("error: duplicate key '{c}' (0x{x}) in {s}\n", .{ key, key, path });
             return error.DuplicatePairedKey;
         }
         seen[key] = true;
@@ -185,7 +195,7 @@ fn assertNoCrossFileConflicts(
     for (paireds) |p| seen_paired[p.key] = true;
     for (normals) |n| {
         if (seen_paired[n.key]) {
-            std.debug.print(
+            diag(
                 "error: punc key '{c}' (0x{x}) appears in both normal.txt and paired.txt — choose one\n",
                 .{ n.key, n.key },
             );
@@ -229,7 +239,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const target_endian: std.builtin.Endian = blk: {
         if (std.mem.eql(u8, endian_arg, "le")) break :blk .little;
         if (std.mem.eql(u8, endian_arg, "be")) break :blk .big;
-        std.debug.print("error: unknown target endianness {s} (expected \"le\" or \"be\")\n", .{endian_arg});
+        diag("error: unknown target endianness {s} (expected \"le\" or \"be\")\n", .{endian_arg});
         return error.BadEndianArg;
     };
 
@@ -263,10 +273,15 @@ pub fn main(init: std.process.Init.Minimal) !void {
         ,
     });
 
-    std.debug.print(
+    // Write to stdout (not stderr): zig build's Run step captures stderr when
+    // a step has output args and the build runner then renders it as a "failed
+    // command" even on exit 0. Informational lines belong on stdout.
+    const msg = try std.fmt.allocPrint(
+        arena,
         "gen_punc: {d} normal + {d} paired → {d} bytes blob\n",
         .{ normals.items.len, paireds.items.len, blob.len },
     );
+    try std.Io.File.stdout().writeStreamingAll(io, msg);
 }
 
 // =========================================================================
