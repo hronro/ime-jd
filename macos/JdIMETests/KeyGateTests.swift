@@ -30,14 +30,18 @@ final class KeyGateTests: XCTestCase {
         XCTAssertEqual(keyAction(event: e, isComposing: false), .engineKey(0x61))
     }
 
-    func testUppercasePassesThroughWhenNotComposing() {
+    func testUppercaseGoesToEngineWhenNotComposing() {
+        // Routed to the engine, which echoes it as a literal commit ('A'),
+        // so the visible output is unchanged.
         let e = event(keyCode: 0, characters: "A", modifiers: .shift)
-        XCTAssertEqual(keyAction(event: e, isComposing: false), .passthrough)
+        XCTAssertEqual(keyAction(event: e, isComposing: false), .engineKey(0x41))
     }
 
-    func testDigitNotComposingPassesThrough() {
+    func testDigitGoesToEngineWhenNotComposing() {
+        // Digits aren't candidate selectors when not composing; the engine
+        // echoes them as literal commits ('1').
         let e = event(keyCode: 0, characters: "1")
-        XCTAssertEqual(keyAction(event: e, isComposing: false), .passthrough)
+        XCTAssertEqual(keyAction(event: e, isComposing: false), .engineKey(0x31))
     }
 
     func testCommandChordPassesThrough() {
@@ -99,9 +103,12 @@ final class KeyGateTests: XCTestCase {
         XCTAssertEqual(keyAction(event: e, isComposing: true), .engineKey(0x2C))
     }
 
-    func testPeriodWhileNotComposingPassesThrough() {
+    func testPeriodWhileNotComposingGoesToEngine() {
+        // Regression: pressing '.' outside a composition must reach the engine
+        // so it resolves to the Chinese full stop '。', rather than passing
+        // through as a literal '.'.
         let e = event(keyCode: 47, characters: ".")
-        XCTAssertEqual(keyAction(event: e, isComposing: false), .passthrough)
+        XCTAssertEqual(keyAction(event: e, isComposing: false), .engineKey(0x2E))
     }
 
     func testEscapeCancels() {

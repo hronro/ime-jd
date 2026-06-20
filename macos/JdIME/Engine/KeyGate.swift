@@ -15,14 +15,14 @@ enum KeyCode {
 }
 
 // Maps a key event to an action, following the engine's key-routing policy
-// (core/docs/integration.md): while composing, every printable ASCII byte
-// goes to the engine. The engine then either extends the trie (a-z, `;`),
-// resolves a Chinese-punctuation mapping (auto-commit, or open a punc
-// candidate window), commits the current state and appends the byte
-// literally (uppercase / unmapped punctuation), or commits and appends
+// (core/docs/integration.md): every printable ASCII byte goes to the engine,
+// whether or not a composition is in flight. The engine then either extends
+// the trie (a-z, `;`), resolves a Chinese-punctuation mapping (auto-commit,
+// or open a punc candidate window), commits the current state and appends the
+// byte literally (uppercase / unmapped punctuation), or commits and appends
 // nothing (space). The only keys the IME keeps for itself are our chosen
 // bindings (digit select, `-`/`=` paging) and the navigation/cancel/commit
-// keys.
+// keys — and those only matter while composing.
 func keyAction(event: NSEvent, isComposing: Bool) -> KeyAction {
     let flags = event.modifierFlags
 
@@ -87,10 +87,13 @@ func keyAction(event: NSEvent, isComposing: Bool) -> KeyAction {
         return .engineKey(b)
     }
 
-    // Not composing: only a lowercase letter starts a composition. Everything
-    // else (digits, punctuation, uppercase) is literal — let the host insert it.
-    if (0x61...0x7A).contains(b) {
-        return .engineKey(b)
-    }
-    return .passthrough
+    // Not composing: route every printable byte to the engine, which is the
+    // single source of truth for what each byte means. Lowercase letters (a-z)
+    // start a trie composition; punctuation resolves to its Chinese equivalent
+    // (auto-commit — e.g. `.` → `。` — or open a punc candidate window — e.g.
+    // `[` → 「/【/〔/［); every other byte (digits, uppercase, unmapped symbols,
+    // space) is echoed back as a literal commit, so the visible output is
+    // unchanged. Chinese punctuation therefore works even outside an active
+    // composition — pressing `.` yields `。`, not `.`.
+    return .engineKey(b)
 }
