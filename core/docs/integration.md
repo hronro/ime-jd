@@ -179,8 +179,8 @@ The engine ships a build-time-generated punctuation table that maps selected ASC
 
 Mixed-state behavior:
 
-- If a trie composition is in flight (some letters typed) when a punctuation key is pressed, the engine commits the trie's first candidate **and** the punctuation in one step (e.g. typing `a` then `.` yields a commit of `甲。`).
-- If a punctuation candidate window is open when the user presses a non-punctuation key, the engine commits the window's first candidate and then processes the new key (e.g. `[` opens the bracket window, pressing `a` commits `「` and starts a fresh trie composition with `a`).
+- If a trie composition is in flight (some letters typed) when a punctuation key is pressed, the engine commits the trie's first candidate **and** the punctuation in one step (e.g. typing `n` then `.` yields a commit of `你。`).
+- If a punctuation candidate window is open when the user presses a non-punctuation key, the engine commits the window's first candidate and then processes the new key (e.g. `[` opens the bracket window, pressing `n` commits `「` and starts a fresh trie composition with `n`).
 - `jd_backspace` while a punctuation candidate window is open closes the window without committing.
 
 If a byte isn't in either punctuation table, the engine falls back to the trie behavior described in the dispatch table.
@@ -189,7 +189,22 @@ The IME author doesn't have to do anything special for punctuation — just rout
 
 ### Putting it together
 
-A minimal IME key handler looks like:
+A minimal IME key handler starts by picking its own candidate-selector and
+page-navigation bindings. These are the only keys it claims from the engine,
+and only while composing — everything else reaches the engine. They are
+platform-specific:
+
+```text
+# A desktop IME binds keys:
+candidate_selectors = '1'..'9'        # press N to pick the Nth candidate
+page_prev / page_next = PgUp / PgDn   # (or ←/→, or '-'/'=')
+
+# A mobile IME selects by tap and paginates by swipe, so it binds NO keys:
+candidate_selectors = {}              # '1'-'9' are not selectors here
+page_prev / page_next = (gestures)    # not keys at all
+```
+
+The handler then dispatches each key against those bindings:
 
 ```text
 on_key_down(key, ctx):
@@ -198,28 +213,51 @@ on_key_down(key, ctx):
     byte = translate_to_ascii(key, current keyboard state)
               # shift/caps-aware; e.g. Shift+/ → '?', Shift+K → 'K'
 
-    if not composing:
-        if byte is a lowercase letter (a-z): start composition; jd_press_key(ctx, byte)
-        else: pass through to host (host inserts literal `K`, `?`, `1`, etc.)
-
-    else (composing):
+    if composing:
+        # IME-owned keys, intercepted before the engine. They only matter
+        # while a composition / candidate window is live.
         match key:
-            backspace      → jd_backspace(ctx); shrink composition; redraw
-            escape         → jd_reset(ctx); end composition; hide candidates
-            enter          → commit raw composition text; jd_reset(ctx); hide candidates
-            page-prev gesture → result = jd_prev_page(ctx); redraw candidates
-            page-next gesture → result = jd_next_page(ctx); redraw candidates
-            candidate-selector for N → commit option_at(N).value; jd_reset(ctx); hide
-            other nav (home/end/etc.)→ consume but no-op (engine has no cursor)
-            otherwise (any byte the engine accepts):
-                result = jd_press_key(ctx, byte)
-                if result.commit: insert it, end composition
-                if result.options: extend composition, show candidates
-                if both: drilled-in — insert commit, restart composition with byte
-                if neither: don't consume (let the host see the key)
+            backspace      → jd_backspace(ctx); shrink composition; redraw; done
+            escape         → jd_reset(ctx); end composition; hide candidates; done
+            enter          → commit raw composition text; jd_reset(ctx); hide candidates; done
+            a page_prev / page_next binding → jd_prev_page / jd_next_page(ctx); redraw; done
+            a candidate_selector for slot N:
+                if a candidate exists at slot N → commit option_at(N).value; jd_reset(ctx); hide; done
+                else → fall through to the engine (treat the key as a literal byte)
+            other nav (home/end/etc.) → consume but no-op (engine has no cursor); done
+            otherwise: fall through to the engine dispatch below
+
+    # Engine dispatch — runs whether or not a composition is in flight, for
+    # every byte not claimed above. Because the selector/page bindings are
+    # IME-defined, '1'-'9' reach here on a mobile IME (never claimed) but on a
+    # desktop IME only when no candidate fills that slot. Every printable byte
+    # the engine accepts: lowercase letters (a-z) start a composition;
+    # punctuation resolves to Chinese (auto-commit, e.g. '.' → '。', or opens a
+    # candidate window); every other byte (digits, uppercase, unmapped symbols,
+    # space) is committed back literally, so its visible output is unchanged.
+    # Chinese punctuation therefore works even with no composition in flight.
+    if byte is printable ASCII (0x20–0x7E):
+        result = jd_press_key(ctx, byte)
+        if result.commit: insert it (ending the composition if one was active)
+        if result.options: start / extend composition, show candidates
+        if both: drilled-in — insert commit, restart composition with byte
+        if neither: don't consume (let the host see the key)
+    else:
+        pass through to host  # control chars, non-ASCII, function/media keys
 ```
 
-The page-prev / page-next / candidate-selector lines are where the per-platform bindings live; everything else is identical across platforms.
+The candidate-selector and page-prev / page-next lines are where the
+per-platform bindings live; everything else is identical across platforms.
+Two consequences worth restating:
+
+- A bound candidate selector or page-nav key is consumed *before* the engine
+  and never reaches `jd_press_key`. So a desktop IME's `1`-`9` pick candidates
+  while composing, whereas a mobile IME (which binds no selector keys) sends
+  `1`-`9` straight to the engine as literal digits.
+- The engine dispatch is reached whether or not a composition is active — so a
+  bare `.` commits `。` exactly as `n` then `.` commits `你。`. The only keys
+  that ever bypass the engine are the modifier chords and the IME-owned keys
+  above (and the latter only while composing).
 
 ## Allocator
 
