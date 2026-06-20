@@ -359,11 +359,11 @@ fn should_consume(vk: u16) -> bool {
         return false;
     }
 
-    let composing = composition::is_active();
-    if composing {
+    if composition::is_active() {
         // Nav / cancel / finish keys we own while composing. Arrow keys must
         // be consumed even apart from the page-nav binding — letting them
         // through would move the host's caret out of the composition range.
+        // These have no printable translation, so they need an explicit list.
         if matches!(
             vk,
             VK_RETURN
@@ -378,15 +378,16 @@ fn should_consume(vk: u16) -> bool {
         ) {
             return true;
         }
-        // Any printable byte the engine accepts (letters, digits, punctuation,
-        // space, shifted variants).
-        return translate(vk).is_some();
     }
 
-    // Not composing: only a LOWERCASE letter starts a composition. Uppercase
-    // letters (Shift / Caps Lock), digits, punctuation, and space pass
-    // through so the host inserts them literally.
-    matches!(translate(vk), Some(b'a'..=b'z'))
+    // Every printable byte routes to the engine — per core/docs/integration.md
+    // lowercase letters start a composition, punctuation auto-commits to its
+    // Chinese equivalent (e.g. `.` → `。`), and other bytes either commit
+    // literally through the engine or return nothing and fall through. This
+    // mirrors OnKeyDown's own gate (`if let Some(byte) = translated`); the
+    // authoritative pass-through decision happens there when the engine
+    // returns neither a commit nor options (see tip.rs:257).
+    translate(vk).is_some()
 }
 
 /// Snapshot of the standalone-modifier state at the moment of the keystroke.
