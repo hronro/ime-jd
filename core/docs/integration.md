@@ -35,7 +35,6 @@ zig build -Dtarget=powerpc-linux-musl   # big-endian target
 ```
 
 The blob's multi-byte fields are written in the target's endianness — the build-time generator runs on the host and, when the host and target differ, byte-swaps every u32 field before embedding the blob. Cross-compiling between little-endian and big-endian platforms is fully supported.
-
 ## The C API
 
 From `include/jd.h`:
@@ -144,8 +143,9 @@ The table below is the recommended dispatch policy across all platforms. Followi
 | Key class | Dispatch | API call |
 |---|---|---|
 | Modifier chords (Ctrl / Cmd / Alt / Win+anything) | IME | pass through to the host — these are host shortcuts (select-all, copy/paste, menu accelerators, system commands) |
-| `a`–`z`, `;` | engine | `jd_press_key(byte)` |
-| Other printable ASCII (`.` `,` `'` `[` `]` `=` uppercase letters, `Shift`/`Caps Lock`-modified bytes …) | engine | `jd_press_key(byte)`. The engine may resolve the byte to a **Chinese punctuation mark** (auto-commit, or open a candidate window — see "Punctuation handling" below); any byte not in the punctuation table commits the current state and appends the byte literally. The IME must translate to the **actually-typed byte** (e.g. `Shift+/` → `?`, `Shift+1` → `!`, `Shift+K` → `K`), not the unshifted virtual key — the engine appends literally on the fallback path, so `?` and `/` produce different commit strings |
+| `a`–`z` | engine | `jd_press_key(byte)` — descends the trie / starts a composition |
+| Punctuation (the keys mapped in `src/punctuation-marks/normal.txt` + `paired.txt`, plus `;`) | engine **or** IME — implementer's choice | **Delegate to the engine**: `jd_press_key(byte)` resolves the byte to a Chinese mark (auto-commit, paired-toggle, or a candidate window — see "Punctuation handling" below). **Or bypass the engine** and insert the mark in the IME yourself, replicating the engine's semantics: if a composition is in flight, commit the top candidate first, then append the mark; otherwise insert the mark directly. **Desktop IMEs usually delegate** (the hardware key already shows the ASCII glyph); **mobile IMEs usually bypass**, so the on-screen keyboard shows the Chinese marks directly and the user taps the exact one. Either way, dispatch the **actually-typed byte** (`Shift+/` → `?`, `Shift+1` → `!`). **`;` is a special case**: the engine routes it through its trie *symbol scheme* (`;`→`；`, `;;`→`：`, `;e`→`（`, … — opening a candidate window when not composing) rather than the punctuation tables, and reuses it as the built-in **2nd-candidate selector** while composing (it picks option 1, not commit-then-append). A delegating desktop IME gets both behaviors for free; a bypassing mobile IME usually omits the `;` key, since a candidate tap already selects the 2nd one. |
+| Other printable ASCII (digits `0`-`9`, uppercase letters, other `Shift`/`Caps Lock`-modified bytes not in the punctuation tables …) | engine | `jd_press_key(byte)` — commits the current state and appends the byte literally, so `Shift+K` → `K` yields `…K`. |
 | Space | engine | `jd_press_key(' ')` — engine commits the top candidate and appends nothing |
 | Candidate-selector keys / gestures | IME (bindings up to the implementer) | `commit_text(option_at(N).value)` then `jd_reset()` |
 | Page-navigation keys / gestures | IME (bindings up to the implementer) | `jd_next_page` / `jd_prev_page` — separate functions, not bytes |
@@ -185,23 +185,30 @@ Mixed-state behavior:
 
 If a byte isn't in either punctuation table, the engine falls back to the trie behavior described in the dispatch table.
 
-The IME author doesn't have to do anything special for punctuation — just route the actually-typed byte to `jd_press_key` and use whatever `query_result` comes back. The full set of mapped keys is the union of the keys listed in `src/punctuation-marks/normal.txt` and `paired.txt`.
+If the IME **delegates** punctuation to the engine, it doesn't have to do anything special — just route the actually-typed byte to `jd_press_key` and use whatever `query_result` comes back. The full set of mapped keys is the union of the keys listed in `src/punctuation-marks/normal.txt` and `paired.txt`.
+
+**Bypassing the engine (recommended for mobile IMEs).** Instead of routing punctuation to `jd_press_key`, a mobile IME typically shows the Chinese marks *directly* on the on-screen keyboard and inserts the tapped mark itself — the pressed key already *is* the mark, with no ASCII byte or table lookup involved. This is more intuitive on touch: the user sees and taps the exact mark, and paired marks (`“`/`”`, `‘`/`’`) become two separate keys rather than a press-toggle. To stay consistent with the delegating path, replicate the engine's commit-then-append rule:
+
+- **Composing**: commit the current top candidate — `query_result.options[0].value`, which the IME already has from the last result — then `jd_reset(ctx)` and insert the mark. No engine call is needed: option 0 is exactly what the engine would have committed.
+- **Not composing**: insert the mark directly.
+
+In this mode the engine's punctuation table goes unused; the engine still owns the trie and the candidate list, and the IME just commits option 0 of the current result to flush an in-flight candidate — so behavior stays identical to a delegating IME, mark for mark.
 
 ### Putting it together
 
-A minimal IME key handler starts by picking its own candidate-selector and
-page-navigation bindings. These are the only keys it claims from the engine,
-and only while composing — everything else reaches the engine. They are
-platform-specific:
+A minimal IME key handler starts by picking its own candidate-selector and page-navigation bindings, and deciding whether it handles punctuation itself (bypassing the engine) or delegates it. The selector / page bindings are claimed only while composing; punctuation, if the IME owns it, is claimed whether or not a composition is in flight. These choices are platform-specific:
 
 ```text
-# A desktop IME binds keys:
+# A desktop IME binds keys and lets the engine convert punctuation:
 candidate_selectors = '1'..'9'        # press N to pick the Nth candidate
 page_prev / page_next = PgUp / PgDn   # (or ←/→, or '-'/'=')
+handles_punctuation   = false         # route punctuation bytes to the engine
 
-# A mobile IME selects by tap and paginates by swipe, so it binds NO keys:
+# A mobile IME selects by tap and paginates by swipe, so it binds NO keys, and
+# owns punctuation so it can show the Chinese marks directly on the keyboard:
 candidate_selectors = {}              # '1'-'9' are not selectors here
 page_prev / page_next = (gestures)    # not keys at all
+handles_punctuation   = true          # insert the tapped Chinese mark directly
 ```
 
 The handler then dispatches each key against those bindings:
@@ -225,7 +232,20 @@ on_key_down(key, ctx):
                 if a candidate exists at slot N → commit option_at(N).value; jd_reset(ctx); hide; done
                 else → fall through to the engine (treat the key as a literal byte)
             other nav (home/end/etc.) → consume but no-op (engine has no cursor); done
+            handles_punctuation and the key is a punctuation key:
+                # IME owns punctuation (typical on mobile, where the on-screen key
+                # already IS the Chinese mark). Commit the current top candidate —
+                # the IME already has it from the last result, so no engine call —
+                # then insert the mark on the pressed key:
+                commit option_at(0).value; jd_reset(ctx); hide candidates
+                insert the pressed key's mark; done
             otherwise: fall through to the engine dispatch below
+
+    # IME-handled punctuation with NO composition in flight — just insert the mark
+    # on the pressed key (the composing case is handled in the match above). When
+    # handles_punctuation is off, punctuation reaches the engine dispatch below.
+    if handles_punctuation and the key is a punctuation key:
+        insert the pressed key's mark; done
 
     # Engine dispatch — runs whether or not a composition is in flight, for
     # every byte not claimed above. Because the selector/page bindings are
@@ -233,9 +253,10 @@ on_key_down(key, ctx):
     # desktop IME only when no candidate fills that slot. Every printable byte
     # the engine accepts: lowercase letters (a-z) start a composition;
     # punctuation resolves to Chinese (auto-commit, e.g. '.' → '。', or opens a
-    # candidate window); every other byte (digits, uppercase, unmapped symbols,
-    # space) is committed back literally, so its visible output is unchanged.
-    # Chinese punctuation therefore works even with no composition in flight.
+    # candidate window) — unless the IME already handled it above; every other
+    # byte (digits, uppercase, unmapped symbols, space) is committed back
+    # literally, so its visible output is unchanged. Chinese punctuation
+    # therefore works even with no composition in flight.
     if byte is printable ASCII (0x20–0x7E):
         result = jd_press_key(ctx, byte)
         if result.commit: insert it (ending the composition if one was active)
@@ -246,18 +267,10 @@ on_key_down(key, ctx):
         pass through to host  # control chars, non-ASCII, function/media keys
 ```
 
-The candidate-selector and page-prev / page-next lines are where the
-per-platform bindings live; everything else is identical across platforms.
-Two consequences worth restating:
+The candidate-selector and page-prev / page-next lines are where the per-platform bindings live; everything else is identical across platforms. Two consequences worth restating:
 
-- A bound candidate selector or page-nav key is consumed *before* the engine
-  and never reaches `jd_press_key`. So a desktop IME's `1`-`9` pick candidates
-  while composing, whereas a mobile IME (which binds no selector keys) sends
-  `1`-`9` straight to the engine as literal digits.
-- The engine dispatch is reached whether or not a composition is active — so a
-  bare `.` commits `。` exactly as `n` then `.` commits `你。`. The only keys
-  that ever bypass the engine are the modifier chords and the IME-owned keys
-  above (and the latter only while composing).
+- A bound candidate selector or page-nav key is consumed *before* the engine and never reaches `jd_press_key`. So a desktop IME's `1`-`9` pick candidates while composing, whereas a mobile IME (which binds no selector keys) sends `1`-`9` straight to the engine as literal digits.
+- The engine dispatch is reached whether or not a composition is active — so a bare `.` commits `。` exactly as `n` then `.` commits `你。`, whether the engine resolves the punctuation or the IME does it itself. The keys that bypass the engine dispatch are the modifier chords, the IME-owned selector / page / nav keys (only while composing), and — when `handles_punctuation` is on — punctuation keys (the IME inserts the mark directly, still flushing any in-flight candidate by committing option 0 of the current result first).
 
 ## Allocator
 
