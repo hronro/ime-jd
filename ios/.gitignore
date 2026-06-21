@@ -1,0 +1,13 @@
+# Xcode build output
+build/
+DerivedData/
+
+# XcodeGen-generated project — regenerate from project.yml
+JdIME-iOS.xcodeproj/
+
+# macOS metadata
+.DS_Store
+
+# User-specific Xcode state (if .xcodeproj is ever committed locally)
+*.xcuserstate
+xcuserdata/

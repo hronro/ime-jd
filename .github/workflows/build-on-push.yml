@@ -33,6 +33,10 @@ jobs:
           - platform: windows
             arch: arm64
             zig_target: aarch64-windows-msvc
+          # iOS device slice, consumed by build-ios to link the .ipa.
+          - platform: ios
+            arch: arm64
+            zig_target: aarch64-ios.13.0
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -283,4 +287,55 @@ jobs:
         with:
           name: jd-ime-macos-${{ matrix.arch }}
           path: dist/jd-ime-macos-${{ matrix.arch }}
+          if-no-files-found: error
+
+  # iOS app + keyboard extension, reusing the prebuilt device libjd from build-libs
+  # (LIBJD_A, like build-macos-ime / build-windows-ime) to link an UNSIGNED .ipa,
+  # uploaded as a workflow artifact. (A signed build needs Apple credentials, out of
+  # CI scope; the .ipa installs via a sideloading tool that re-signs.)
+  build-ios:
+    name: ios .ipa
+    runs-on: macos-15
+    needs: build-libs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Download device libjd
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-ios-arm64
+          path: prebuilt-device
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build unsigned app (device)
+        working-directory: ios
+        run: >
+          xcodebuild build
+          -project JdIME-iOS.xcodeproj -scheme JdIME-iOS
+          -sdk iphoneos -configuration Release
+          -derivedDataPath build/DD
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          LIBJD_A="$GITHUB_WORKSPACE/prebuilt-device/lib/libjd.a"
+
+      - name: Package .ipa
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="ios/build/DD/Build/Products/Release-iphoneos/JdIME.app"
+          mkdir -p dist ipa/Payload
+          cp -R "$app" ipa/Payload/
+          ( cd ipa && zip -r -9 -q "$GITHUB_WORKSPACE/dist/jd-ime-ios.ipa" Payload )
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v7
+        with:
+          name: jd-ime-ios-ipa
+          path: dist/jd-ime-ios.ipa
           if-no-files-found: error

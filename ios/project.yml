@@ -1,0 +1,116 @@
+name: JdIME-iOS
+options:
+  bundleIdPrefix: com.hronro
+  deploymentTarget:
+    iOS: "13.0"          # floor for clean dark-mode theming (userInterfaceStyle)
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    # Placeholder — the real version comes from core/build.zig.zon's `.version`,
+    # passed as MARKETING_VERSION at build/archive time (matching the macOS flow).
+    MARKETING_VERSION: "0.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+    TARGETED_DEVICE_FAMILY: "1,2"   # iPhone + iPad
+    # The "Build libjd" Run Script Phase shells out to `zig` and reads ../core;
+    # script sandboxing would block both. Keep it off (also what CI relies on).
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  JdIME-iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - "Info.plist"
+      # Compile the shared engine + keyboard UI into the app too, so the in-app
+      # preview drives the exact same KeyboardView/InputSession as the extension.
+      - path: Keyboard/Engine
+      - path: Keyboard/UI
+    settings:
+      base:
+        INFOPLIST_FILE: App/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime
+        PRODUCT_NAME: JdIME
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/../core/include"
+        LIBRARY_SEARCH_PATHS: "$(DERIVED_FILE_DIR)/libjd-thin"
+        OTHER_LDFLAGS: "-ljd"
+    preBuildScripts:
+      - name: Build libjd
+        script: |
+          set -e
+          bash "$SRCROOT/scripts/build-libjd.sh"
+        outputFiles:
+          - "$(DERIVED_FILE_DIR)/libjd-thin/libjd.a"
+    dependencies:
+      - target: JdKeyboard
+        embed: true
+
+  JdKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Keyboard
+        excludes:
+          - "Info.plist"
+    settings:
+      base:
+        INFOPLIST_FILE: Keyboard/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime.keyboard
+        PRODUCT_NAME: JdKeyboard
+        # libjd: header/modulemap (`import Libjd`) + the thin static lib produced
+        # per-platform by the prebuild script. Mirrors the macOS target.
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/../core/include"
+        LIBRARY_SEARCH_PATHS: "$(DERIVED_FILE_DIR)/libjd-thin"
+        OTHER_LDFLAGS: "-ljd"
+    preBuildScripts:
+      - name: Build libjd
+        script: |
+          set -e
+          bash "$SRCROOT/scripts/build-libjd.sh"
+        outputFiles:
+          - "$(DERIVED_FILE_DIR)/libjd-thin/libjd.a"
+
+  # Hostless logic tests: compile the engine + session sources directly and link
+  # libjd, so InputSession dispatch is verified without the keyboard-enable flow.
+  JdKeyboardTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: KeyboardTests
+      - path: Keyboard/Engine
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime.keyboard.tests
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/../core/include"
+        LIBRARY_SEARCH_PATHS: "$(DERIVED_FILE_DIR)/libjd-thin"
+        OTHER_LDFLAGS: "-ljd"
+    preBuildScripts:
+      - name: Build libjd
+        script: |
+          set -e
+          bash "$SRCROOT/scripts/build-libjd.sh"
+        outputFiles:
+          - "$(DERIVED_FILE_DIR)/libjd-thin/libjd.a"
+
+schemes:
+  JdIME-iOS:
+    build:
+      targets:
+        JdIME-iOS: all
+        JdKeyboardTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - JdKeyboardTests
+    archive:
+      config: Release

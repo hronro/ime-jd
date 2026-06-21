@@ -79,6 +79,11 @@ jobs:
           - platform: windows
             arch: arm64
             zig_target: aarch64-windows-msvc
+          # iOS device slice — consumed by build-ios to link the .ipa. (iOS only
+          # produces a static lib; the simulator slice is a build-on-push concern.)
+          - platform: ios
+            arch: arm64
+            zig_target: aarch64-ios.13.0
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -125,6 +130,10 @@ jobs:
           if [[ "$platform" == "windows" ]]; then
             cp "$bundle/bin/jd.dll" "$bundle/lib/jd.lib" "$bundle/lib/jd_static.lib" "$stage/"
             ( cd "$stage" && zip -r -9 -q "$out_dir/libjd-$ver-windows-$arch.zip" . )
+          elif [[ "$platform" == "ios" ]]; then
+            # iOS ships only the static lib (no dynamic lib for the App Store sandbox).
+            cp "$bundle/lib/libjd.a" "$stage/"
+            tar -cf - -C "$stage" libjd.a include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-ios-$arch.a.tar.xz"
           else
             case "$platform" in
               linux) dyn="libjd.so";    dynext="so"    ;;
@@ -382,6 +391,57 @@ jobs:
           mkdir -p release
           # build-pkg.sh emits exactly one jd-ime-macos-<arch>.pkg.
           cp macos/build/pkg/*.pkg "release/jd-ime-$ver-macos-${{ matrix.arch }}.pkg"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
+
+  # The iOS app + keyboard extension, packaged as an UNSIGNED .ipa. Reuses the
+  # prebuilt device libjd from build-libs (LIBJD_A, exactly like build-macos-ime).
+  # The .ipa is unsigned (public CI has no Apple signing credentials), so users
+  # install it with a sideloading tool (AltStore / Sideloadly / TrollStore) that
+  # re-signs with their own Apple ID — not by double-clicking.
+  build-ios:
+    name: ios .ipa
+    runs-on: macos-15
+    needs: build-libs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Download prebuilt libs
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-ios-arm64
+          path: prebuilt-libs
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build unsigned app (device)
+        working-directory: ios
+        run: >
+          xcodebuild build
+          -project JdIME-iOS.xcodeproj -scheme JdIME-iOS
+          -sdk iphoneos -configuration Release
+          -derivedDataPath build/DD
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          LIBJD_A="${{ github.workspace }}/prebuilt-libs/lib/libjd.a"
+
+      - name: Package unsigned .ipa
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME}"
+          app="ios/build/DD/Build/Products/Release-iphoneos/JdIME.app"
+          mkdir -p release ipa/Payload
+          cp -R "$app" ipa/Payload/
+          ( cd ipa && zip -r -9 -q "$GITHUB_WORKSPACE/release/jd-ime-$ver-ios.ipa" Payload )
 
       - name: Upload to release
         env:
