@@ -166,8 +166,19 @@ pub fn build(b: *std.Build) void {
     }
 
     // ========== Tests ==========
-    // We run the trie tests, plus the query/pagination/punc tests via tests.zig.
-    // Each test module gets the same module wiring as the lib so imports work.
+    // trie.zig has its own test artifact because its test blocks can't be
+    // collected via a named-module `refAllDecls` in tests.zig — Zig only
+    // runs test blocks reachable through relative-path `@import` from a
+    // test root. pagination/punc/query are pulled in by relative path from
+    // tests.zig, so their tests run there.
+    const trie_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/trie.zig"),
+        .target = target,
+    });
+    trie_test_mod.addImport("blob_format", blob_format_target_mod);
+    const trie_tests = b.addTest(.{ .root_module = trie_test_mod });
+    const run_trie_tests = b.addRunArtifact(trie_tests);
+
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/tests.zig"),
         .target = target,
@@ -181,6 +192,7 @@ pub fn build(b: *std.Build) void {
     const run_main_tests = b.addRunArtifact(main_tests);
 
     const test_step = b.step("test", "Run library tests");
+    test_step.dependOn(&run_trie_tests.step);
     test_step.dependOn(&run_main_tests.step);
 
     // Generator scripts have their own test blocks (parser unit tests).

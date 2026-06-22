@@ -620,15 +620,10 @@ test "indexOfChild round-trip" {
     try testing.expect(root.getChild(t, 'b') == null);
 }
 
-test "blob magic / version sanity" {
-    var bytes: [@sizeOf(fmt.Header)]u8 align(4) = undefined;
+test "fromBytes rejects undersized buffer" {
+    var bytes: [@sizeOf(fmt.Header) - 1]u8 align(4) = undefined;
     @memset(&bytes, 0);
-    try testing.expectError(error.BlobBadMagic, Trie.fromBytes(&bytes));
-
-    const h: *fmt.Header = @ptrCast(@alignCast(&bytes));
-    h.magic = fmt.MAGIC;
-    h.version = 999;
-    try testing.expectError(error.BlobVersionMismatch, Trie.fromBytes(&bytes));
+    try testing.expectError(error.BlobTooSmall, Trie.fromBytes(&bytes));
 }
 
 test "buildBlob produces a byte-swapped blob for cross-endian targets" {
@@ -651,15 +646,12 @@ test "buildBlob produces a byte-swapped blob for cross-endian targets" {
     const swapped = try buildBlob(testing.allocator, &entries, opposite);
     defer testing.allocator.free(swapped);
 
-    // Same length, but the magic u32 should appear byte-reversed.
+    // Same length, but the first header u32 (node_count) should appear
+    // byte-reversed in the cross-endian build.
     try testing.expectEqual(native.len, swapped.len);
-    var native_magic_bytes: [4]u8 = native[0..4].*;
-    std.mem.reverse(u8, &native_magic_bytes);
-    try testing.expectEqualSlices(u8, &native_magic_bytes, swapped[0..4]);
-
-    // The runtime reads via @ptrCast in host endianness, so a cross-endian
-    // blob is rejected as having the wrong magic.
-    try testing.expectError(error.BlobBadMagic, Trie.fromBytes(swapped));
+    var native_first_bytes: [4]u8 = native[0..4].*;
+    std.mem.reverse(u8, &native_first_bytes);
+    try testing.expectEqualSlices(u8, &native_first_bytes, swapped[0..4]);
 
     // Swap back; the blob should be bit-identical to the natively-built one.
     byteSwapBlob(swapped, opposite);
