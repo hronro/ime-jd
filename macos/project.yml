@@ -48,6 +48,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime
         PRODUCT_NAME: JdIME
         EXECUTABLE_NAME: JdIME
+        # Forward-declares IMKCandidates' private setWindowLevel: (see the
+        # header) so Candidates.swift can raise the panel above Spotlight.
+        SWIFT_OBJC_BRIDGING_HEADER: JdIME/JdIME-Bridging-Header.h
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/../core/include"
         LIBRARY_SEARCH_PATHS: "$(DERIVED_FILE_DIR)/libjd-universal"
         OTHER_LDFLAGS: "-ljd"

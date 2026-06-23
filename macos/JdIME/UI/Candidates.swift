@@ -43,6 +43,14 @@ final class Candidates {
         panel.update()
         if !panel.isVisible() {
             panel.show(kIMKLocateCandidatesBelowHint)
+            // The native panel's default window level sits below high-level
+            // system UI (Spotlight, the menu bar, fullscreen apps), which then
+            // paints over our candidates. Raise it to the shielding level —
+            // the level macOS uses to cover the screen, above any normal
+            // window — once the window exists (i.e. after show()).
+            // setWindowLevel: is a private IMKCandidates selector declared in
+            // the bridging header.
+            panel.setWindowLevel(Int(CGShieldingWindowLevel()))
         }
     }
 
