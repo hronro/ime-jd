@@ -1,0 +1,8 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+# Native artifacts produced by scripts/build-libjd.sh (zig core + NDK-linked shim).
+app/src/main/jniLibs/

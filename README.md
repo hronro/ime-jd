@@ -7,6 +7,7 @@
 - **macOS** — 基于 Input Method Kit (IMK) 的原生输入法
 - **Windows** — 基于 Text Services Framework (TSF) 的原生输入法
 - **iOS / iPadOS** — 基于键盘扩展（Keyboard Extension）的原生输入法，**完全无需「完全访问权限」（Full Access）**，离线运行、保护隐私
+- **Android** — 基于输入法服务（InputMethodService）的原生输入法，原生 Material 风格界面、支持深色／浅色模式，**无需任何特殊权限**，离线运行、保护隐私
 - **CLI** — 用于调试和体验的终端前端
 
 ## 特点

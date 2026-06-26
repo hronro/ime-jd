@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- IME metadata. settingsActivity points at the container app's landing screen. -->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="com.hronro.jdime.app.MainActivity">
+    <subtype
+        android:label="@string/ime_subtype_zh"
+        android:imeSubtypeLocale="zh_CN"
+        android:imeSubtypeMode="keyboard" />
+</input-method>
