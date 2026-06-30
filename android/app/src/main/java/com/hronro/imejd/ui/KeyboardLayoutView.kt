@@ -1,13 +1,13 @@
 // Port of ios/Keyboard/UI/KeyboardLayoutView.swift. The key plane: rows of
 // KeyButtons laid out by proportional weights (so one model fits any width and
 // orientation). A `.Spacer` spec reserves width without a button, to center rows.
-package com.hronro.jdime.ui
+package com.hronro.imejd.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
-import com.hronro.jdime.R
+import com.hronro.imejd.R
 import kotlin.math.roundToInt
 
 enum class ShiftState { OFF, ONE_SHOT, LOCKED }

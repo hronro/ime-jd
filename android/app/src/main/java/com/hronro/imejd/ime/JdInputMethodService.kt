@@ -1,17 +1,17 @@
 // The IME service — the role played by ios/Keyboard/KeyboardViewController.swift.
 // Owns the engine session, hosts the reusable KeyboardView, forwards committed
 // text to the host via the InputConnection, and keeps theme / return key in sync.
-package com.hronro.jdime.ime
+package com.hronro.imejd.ime
 
 import android.content.res.Configuration
 import android.inputmethodservice.InputMethodService
 import android.view.View
 import android.view.inputmethod.EditorInfo
-import com.hronro.jdime.engine.InputSession
-import com.hronro.jdime.engine.KeyAction
-import com.hronro.jdime.engine.KeyboardHost
-import com.hronro.jdime.ui.KeyboardTheme
-import com.hronro.jdime.ui.KeyboardView
+import com.hronro.imejd.engine.InputSession
+import com.hronro.imejd.engine.KeyAction
+import com.hronro.imejd.engine.KeyboardHost
+import com.hronro.imejd.ui.KeyboardTheme
+import com.hronro.imejd.ui.KeyboardView
 
 class JdInputMethodService : InputMethodService(), KeyboardHost {
 

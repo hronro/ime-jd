@@ -331,7 +331,7 @@ jobs:
           set -euo pipefail
           out="dist/jd-ime-windows-${{ matrix.arch }}"
           mkdir -p "$out"
-          cp windows/target/${{ matrix.target }}/release/jd_ime.dll "$out/"
+          cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/"
           cp windows/register.bat   "$out/"
           cp windows/unregister.bat "$out/"
 

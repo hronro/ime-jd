@@ -2,8 +2,8 @@
 setlocal enableextensions
 chcp 65001 >nul
 
-set "INSTALL_DIR=%ProgramFiles%\jd-ime"
-set "DLL_NAME=jd_ime.dll"
+set "INSTALL_DIR=%ProgramFiles%\ime-jd"
+set "DLL_NAME=ime_jd.dll"
 
 REM Need admin to delete files under Program Files.
 net session >nul 2>&1

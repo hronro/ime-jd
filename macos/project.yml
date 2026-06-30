@@ -45,7 +45,7 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: JdIME/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.ime-jd
         PRODUCT_NAME: JdIME
         EXECUTABLE_NAME: JdIME
         # Forward-declares IMKCandidates' private setWindowLevel: (see the
@@ -74,7 +74,7 @@ targets:
     sources: JdIMETests
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.ime-jd.tests
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/../core/include"
         GENERATE_INFOPLIST_FILE: YES
     dependencies:

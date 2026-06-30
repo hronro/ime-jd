@@ -15,7 +15,7 @@ android/
     src/main/
       AndroidManifest.xml       # the IME <service> (BIND_INPUT_METHOD + android.view.InputMethod)
       cpp/jd_jni.c              # C JNI shim over libjd's C ABI (marshals query_result → Kotlin)
-      java/com/hronro/jdime/
+      java/com/hronro/imejd/
         engine/                 # Engine (JNI), QuerySnapshot, KeyAction, InputSession (dispatch core)
         ime/JdInputMethodService.kt   # the IME service; InputConnection host; lifecycle
         ui/                     # KeyLayout, KeyboardView, key plane, candidate bar/grid, theme

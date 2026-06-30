@@ -1,6 +1,6 @@
 // Container-app landing screen — port of ios/App/RootViewController.swift.
 // Explains how to enable the keyboard and offers a field to try it.
-package com.hronro.jdime.app
+package com.hronro.imejd.app
 
 import android.content.Intent
 import android.os.Bundle
@@ -12,7 +12,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import com.hronro.jdime.R
+import com.hronro.imejd.R
 
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

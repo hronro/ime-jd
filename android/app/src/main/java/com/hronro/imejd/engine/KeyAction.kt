@@ -1,5 +1,5 @@
 // Port of ios/Keyboard/Engine/KeyAction.swift — the dispatch tagged union.
-package com.hronro.jdime.engine
+package com.hronro.imejd.engine
 
 sealed interface KeyAction {
     data object Passthrough : KeyAction

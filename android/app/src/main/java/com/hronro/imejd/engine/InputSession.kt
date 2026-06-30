@@ -5,7 +5,7 @@
 // draws it in its OWN candidate bar; only committed text reaches the host. No
 // Android-UI imports here on purpose, so this is exercised by instrumented
 // tests with a mock host.
-package com.hronro.jdime.engine
+package com.hronro.imejd.engine
 
 /**
  * The host text field, abstracted to what the session needs. The IME service

@@ -2,7 +2,7 @@
 // in-flight code on the left, a horizontally scrolling row of candidates, and an
 // expand chevron on the right. A dumb renderer — the owner supplies items and
 // handles selection / lazy loading.
-package com.hronro.jdime.ui
+package com.hronro.imejd.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -23,7 +23,7 @@ import android.view.ViewGroup
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.hronro.jdime.engine.Candidate
+import com.hronro.imejd.engine.Candidate
 
 @SuppressLint("ViewConstructor")
 class CandidateBarView(context: Context, private var theme: KeyboardTheme) : LinearLayout(context) {

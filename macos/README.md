@@ -47,7 +47,7 @@ On a **first-time install**, macOS only re-scans for new input methods at the st
 3. (Optional) Forget the installer receipt so the system no longer records the package as installed:
 
    ```sh
-   sudo pkgutil --forget com.hronro.jd-ime.pkg
+   sudo pkgutil --forget com.hronro.ime-jd.pkg
    ```
 
 Then **log out and back in** (or restart) to release the running `JdIME` process and fully clear the input method.

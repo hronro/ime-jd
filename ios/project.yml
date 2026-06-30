@@ -35,7 +35,7 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: App/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.ime-jd
         PRODUCT_NAME: JdIME
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/../core/include"
@@ -62,7 +62,7 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: Keyboard/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime.keyboard
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.ime-jd.keyboard
         PRODUCT_NAME: JdKeyboard
         # libjd: header/modulemap (`import Libjd`) + the thin static lib produced
         # per-platform by the prebuild script. Mirrors the macOS target.
@@ -88,7 +88,7 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.jd-ime.keyboard.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.ime-jd.keyboard.tests
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/../core/include"
         LIBRARY_SEARCH_PATHS: "$(DERIVED_FILE_DIR)/libjd-thin"
         OTHER_LDFLAGS: "-ljd"

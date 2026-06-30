@@ -2,7 +2,7 @@
 // the native side (see app/src/main/cpp/jd_jni.c) with every string deep-copied
 // out of the borrowed query_result, so a snapshot is safe to retain across later
 // engine calls (load-bearing for candidate pagination).
-package com.hronro.jdime.engine
+package com.hronro.imejd.engine
 
 data class Candidate(val value: String, val hint: String?)
 

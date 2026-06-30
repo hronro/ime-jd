@@ -1,7 +1,7 @@
 // A single key, Material-styled: rounded surface with a touch ripple, centered
 // glyph, slide-off cancel, and press-and-hold repeat for backspace. (Logic
 // follows ios/Keyboard/UI/KeyButton.swift; the look is native Android.)
-package com.hronro.jdime.ui
+package com.hronro.imejd.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -18,7 +18,7 @@ import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
 import androidx.core.content.ContextCompat
-import com.hronro.jdime.R
+import com.hronro.imejd.R
 
 @SuppressLint("ViewConstructor")
 class KeyButton(

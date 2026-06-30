@@ -1,4 +1,4 @@
-use jd_ime::jd::{JdContext, PAGE_SIZE};
+use ime_jd::jd::{JdContext, PAGE_SIZE};
 
 #[test]
 fn two_contexts_are_independent() {

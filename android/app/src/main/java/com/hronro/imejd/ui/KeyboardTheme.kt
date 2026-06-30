@@ -1,7 +1,7 @@
 // Material-style keyboard colors (Gboard-like), with light/dark palettes, dynamic
 // color (Material You) on Android 12+, and a return key tinted/labelled from
 // EditorInfo.imeOptions. Dark vs light follows the system night-mode config.
-package com.hronro.jdime.ui
+package com.hronro.imejd.ui
 
 import android.content.Context
 import android.content.res.Configuration

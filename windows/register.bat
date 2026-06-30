@@ -3,8 +3,8 @@ setlocal enableextensions
 chcp 65001 >nul
 
 set "SCRIPT_DIR=%~dp0"
-set "DLL_NAME=jd_ime.dll"
-set "INSTALL_DIR=%ProgramFiles%\jd-ime"
+set "DLL_NAME=ime_jd.dll"
+set "INSTALL_DIR=%ProgramFiles%\ime-jd"
 
 REM Locate the DLL. Two layouts are supported:
 REM   1) Distribution: DLL next to this script.

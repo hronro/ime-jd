@@ -16,25 +16,25 @@ cd windows
 cargo build --release
 ```
 
-The DLL ends up at `windows\target\release\jd_ime.dll`. The build script invokes the Zig core build automatically.
+The DLL ends up at `windows\target\release\ime_jd.dll`. The build script invokes the Zig core build automatically.
 
 ## Install
 
 `register.bat` does the full install:
 
 1. Right-click `register.bat` → **Run as administrator**.
-2. The script copies the DLL to `C:\Program Files\jd-ime\`, grants AppContainer read access (so UWP apps can load it), and runs `regsvr32`.
+2. The script copies the DLL to `C:\Program Files\ime-jd\`, grants AppContainer read access (so UWP apps can load it), and runs `regsvr32`.
 3. Add 键道 to your keyboard list: **Settings → Time & language → Language → Chinese (Simplified) → Options → Add a keyboard → 键道**.
 
 `register.bat` works in two layouts:
-- Run from the repo (uses `target\release\jd_ime.dll` next to itself).
+- Run from the repo (uses `target\release\ime_jd.dll` next to itself).
 - Bundled for distribution (uses the DLL in the same directory as the script).
 
 ## Uninstall
 
 Right-click `unregister.bat` → **Run as administrator**.
 
-The script unregisters the COM/TSF entries and tries to delete `C:\Program Files\jd-ime\` and its contents. If a host process (Explorer, browser, editor, etc.) still has the DLL mapped, the file delete fails for that copy and the directory stays. Sign out and back in (or reboot) to release the DLL, then re-run the script or delete the folder by hand.
+The script unregisters the COM/TSF entries and tries to delete `C:\Program Files\ime-jd\` and its contents. If a host process (Explorer, browser, editor, etc.) still has the DLL mapped, the file delete fails for that copy and the directory stays. Sign out and back in (or reboot) to release the DLL, then re-run the script or delete the folder by hand.
 
 ## Updating during development
 

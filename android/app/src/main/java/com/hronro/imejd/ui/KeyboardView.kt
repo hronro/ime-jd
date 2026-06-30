@@ -1,7 +1,7 @@
 // Port of ios/Keyboard/UI/KeyboardView.swift. The full keyboard surface:
 // candidate bar + key plane, with layer switching, shift state, theming, the
 // expandable candidate grid, and lazy pagination. Driven by an InputSession.
-package com.hronro.jdime.ui
+package com.hronro.imejd.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -10,14 +10,14 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import com.hronro.jdime.engine.Candidate
-import com.hronro.jdime.engine.KeyAction
-import com.hronro.jdime.engine.QuerySnapshot
+import com.hronro.imejd.engine.Candidate
+import com.hronro.imejd.engine.KeyAction
+import com.hronro.imejd.engine.QuerySnapshot
 
 @SuppressLint("ViewConstructor")
 class KeyboardView(
     context: Context,
-    val session: com.hronro.jdime.engine.InputSession,
+    val session: com.hronro.imejd.engine.InputSession,
     private var theme: KeyboardTheme,
 ) : FrameLayout(context) {
 

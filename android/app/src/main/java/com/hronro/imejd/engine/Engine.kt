@@ -5,7 +5,7 @@
 // Thread-safety mirrors libjd's contract: a single context must not be used
 // from multiple threads concurrently. All calls here come from the IME's main
 // thread, so no locking is needed.
-package com.hronro.jdime.engine
+package com.hronro.imejd.engine
 
 import java.io.Closeable
 

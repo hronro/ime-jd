@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "com.hronro.jdime"
+    namespace = "com.hronro.imejd"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.hronro.jdime"
+        applicationId = "com.hronro.imejd"
         minSdk = 24
         targetSdk = 35
         versionCode = 1

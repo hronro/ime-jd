@@ -1,7 +1,7 @@
 // Port of ios/Keyboard/UI/KeyLayout.swift. Proportional key weights so one model
 // lays out across phone/tablet and orientations. Key arrays/weights are copied
 // verbatim — including the Chinese-punctuation rows and the omitted ';'.
-package com.hronro.jdime.ui
+package com.hronro.imejd.ui
 
 /** Which key plane is showing. */
 enum class KeyboardLayer { LETTERS, NUMBERS, SYMBOLS }

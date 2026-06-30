@@ -31,12 +31,12 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     }
 
     jclass c;
-    c = (*env)->FindClass(env, "com/hronro/jdime/engine/QuerySnapshot");
+    c = (*env)->FindClass(env, "com/hronro/imejd/engine/QuerySnapshot");
     g_snapshot_cls = (jclass)(*env)->NewGlobalRef(env, c);
     g_snapshot_ctor = (*env)->GetMethodID(env, g_snapshot_cls, "<init>",
         "(Ljava/lang/String;Ljava/util/List;III)V");
 
-    c = (*env)->FindClass(env, "com/hronro/jdime/engine/Candidate");
+    c = (*env)->FindClass(env, "com/hronro/imejd/engine/Candidate");
     g_candidate_cls = (jclass)(*env)->NewGlobalRef(env, c);
     g_candidate_ctor = (*env)->GetMethodID(env, g_candidate_cls, "<init>",
         "(Ljava/lang/String;Ljava/lang/String;)V");
@@ -139,57 +139,57 @@ static jobject build_snapshot(JNIEnv *env, query_result r, unsigned char page_si
     return snapshot;
 }
 
-// ---- native methods of com.hronro.jdime.engine.Engine (member fns → jobject thiz) ----
+// ---- native methods of com.hronro.imejd.engine.Engine (member fns → jobject thiz) ----
 
 JNIEXPORT jlong JNICALL
-Java_com_hronro_jdime_engine_Engine_nativeInit(JNIEnv *env, jobject thiz, jbyte page_size) {
+Java_com_hronro_imejd_engine_Engine_nativeInit(JNIEnv *env, jobject thiz, jbyte page_size) {
     (void)env; (void)thiz;
     return (jlong)(intptr_t)jd_init((unsigned char)page_size);
 }
 
 JNIEXPORT void JNICALL
-Java_com_hronro_jdime_engine_Engine_nativeDeinit(JNIEnv *env, jobject thiz, jlong ctx) {
+Java_com_hronro_imejd_engine_Engine_nativeDeinit(JNIEnv *env, jobject thiz, jlong ctx) {
     (void)env; (void)thiz;
     jd_deinit((jd_context *)(intptr_t)ctx);
 }
 
 JNIEXPORT jobject JNICALL
-Java_com_hronro_jdime_engine_Engine_nativePressKey(JNIEnv *env, jobject thiz, jlong ctx, jbyte key, jbyte page_size) {
+Java_com_hronro_imejd_engine_Engine_nativePressKey(JNIEnv *env, jobject thiz, jlong ctx, jbyte key, jbyte page_size) {
     (void)thiz;
     query_result r = jd_press_key((jd_context *)(intptr_t)ctx, (char)key);
     return build_snapshot(env, r, (unsigned char)page_size);
 }
 
 JNIEXPORT jobject JNICALL
-Java_com_hronro_jdime_engine_Engine_nativeBackspace(JNIEnv *env, jobject thiz, jlong ctx, jbyte page_size) {
+Java_com_hronro_imejd_engine_Engine_nativeBackspace(JNIEnv *env, jobject thiz, jlong ctx, jbyte page_size) {
     (void)thiz;
     query_result r = jd_backspace((jd_context *)(intptr_t)ctx);
     return build_snapshot(env, r, (unsigned char)page_size);
 }
 
 JNIEXPORT jobject JNICALL
-Java_com_hronro_jdime_engine_Engine_nativeNextPage(JNIEnv *env, jobject thiz, jlong ctx, jbyte page_size) {
+Java_com_hronro_imejd_engine_Engine_nativeNextPage(JNIEnv *env, jobject thiz, jlong ctx, jbyte page_size) {
     (void)thiz;
     query_result r = jd_next_page((jd_context *)(intptr_t)ctx);
     return build_snapshot(env, r, (unsigned char)page_size);
 }
 
 JNIEXPORT jobject JNICALL
-Java_com_hronro_jdime_engine_Engine_nativePrevPage(JNIEnv *env, jobject thiz, jlong ctx, jbyte page_size) {
+Java_com_hronro_imejd_engine_Engine_nativePrevPage(JNIEnv *env, jobject thiz, jlong ctx, jbyte page_size) {
     (void)thiz;
     query_result r = jd_prev_page((jd_context *)(intptr_t)ctx);
     return build_snapshot(env, r, (unsigned char)page_size);
 }
 
 JNIEXPORT jobject JNICALL
-Java_com_hronro_jdime_engine_Engine_nativeJumpToPage(JNIEnv *env, jobject thiz, jlong ctx, jint page, jbyte page_size) {
+Java_com_hronro_imejd_engine_Engine_nativeJumpToPage(JNIEnv *env, jobject thiz, jlong ctx, jint page, jbyte page_size) {
     (void)thiz;
     query_result r = jd_jump_to_page((jd_context *)(intptr_t)ctx, (unsigned int)page);
     return build_snapshot(env, r, (unsigned char)page_size);
 }
 
 JNIEXPORT void JNICALL
-Java_com_hronro_jdime_engine_Engine_nativeReset(JNIEnv *env, jobject thiz, jlong ctx) {
+Java_com_hronro_imejd_engine_Engine_nativeReset(JNIEnv *env, jobject thiz, jlong ctx) {
     (void)env; (void)thiz;
     jd_reset((jd_context *)(intptr_t)ctx);
 }

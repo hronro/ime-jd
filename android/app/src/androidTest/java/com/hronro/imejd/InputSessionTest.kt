@@ -1,12 +1,12 @@
 // Port of ios/KeyboardTests/InputSessionTests.swift. Instrumented (androidTest)
 // rather than a JVM unit test because it drives the real engine through JNI and
 // needs libjd.so / libjdjni.so loaded on a device/emulator.
-package com.hronro.jdime
+package com.hronro.imejd
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.hronro.jdime.engine.InputSession
-import com.hronro.jdime.engine.KeyAction
-import com.hronro.jdime.engine.KeyboardHost
+import com.hronro.imejd.engine.InputSession
+import com.hronro.imejd.engine.KeyAction
+import com.hronro.imejd.engine.KeyboardHost
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

@@ -1,7 +1,7 @@
 // Port of ios/Keyboard/UI/CandidateGridView.swift. The expanded candidate list:
 // a scrollable wrapping grid of ALL loaded candidates, shown when the user taps
 // the bar's expand chevron. Covers the keys (opaque background).
-package com.hronro.jdime.ui
+package com.hronro.imejd.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -17,7 +17,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import com.hronro.jdime.engine.Candidate
+import com.hronro.imejd.engine.Candidate
 import kotlin.math.max
 
 @SuppressLint("ViewConstructor")

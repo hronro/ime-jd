@@ -108,8 +108,8 @@ fn main() {
          VALUE \"CompanyName\", \"hronro\"\n\
          VALUE \"FileDescription\", \"键道输入法\"\n\
          VALUE \"FileVersion\", \"{major}.{minor}.{patch}.0\"\n\
-         VALUE \"InternalName\", \"jd_ime\"\n\
-         VALUE \"OriginalFilename\", \"jd_ime.dll\"\n\
+         VALUE \"InternalName\", \"ime_jd\"\n\
+         VALUE \"OriginalFilename\", \"ime_jd.dll\"\n\
          VALUE \"ProductName\", \"键道输入法\"\n\
          VALUE \"ProductVersion\", \"{version}\"\n\
          END\n\
@@ -120,8 +120,8 @@ fn main() {
          END\n\
          END\n",
     );
-    let rc_path = out_dir.join("jd_ime.rc");
-    fs::write(&rc_path, rc).expect("write generated jd_ime.rc");
+    let rc_path = out_dir.join("ime_jd.rc");
+    fs::write(&rc_path, rc).expect("write generated ime_jd.rc");
 
     embed_resource::compile(&rc_path, embed_resource::NONE)
         .manifest_required()
