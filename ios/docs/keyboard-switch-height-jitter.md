@@ -44,10 +44,14 @@ Decisive readings:
 
 The **"offset trick"** (see Apple Developer Forums thread 799003 for the general idea): request `target − offset` during the slide-in so iOS's inflation lands exactly on `target`, then restore `target` once presented. Made robust with **auto-calibration**.
 
-1. **Calibrate once** — the first uncalibrated appearance (per idiom+orientation) runs with no trick; we read the raw overshoot off the laid-out height (`view.bounds.height − target`, bounded to a fraction of the keyboard height to ignore the full-screen transient) and persist it in `UserDefaults`, keyed `presentationOffset.{phone|pad}.{portrait|landscape}`.
-2. **Pre-cancel thereafter** — request `target − offset` during the slide-in, restore `target` at `viewDidAppear`.
+1. **Calibrate once** — the first uncalibrated appearance (per idiom+orientation) runs with no trick; we read the raw overshoot off the laid-out height (`view.bounds.height − target`, bounded to a fraction of the keyboard height to ignore the full-screen transient) and persist it in `UserDefaults`, keyed `presentationOffset.{phone|pad}.{portrait|landscape}`. The overshoot accumulator is reset at the start of each uncalibrated appearance so it can't be contaminated by a stale value from another orientation.
+2. **Pre-cancel thereafter** — request `target − offset` during the slide-in, restore `target` at `viewDidAppear`. A cached offset that looks suspiciously large (≥ half the target) is ignored for that appearance (falls back to `target`) — one jitter instead of a permanently wrong height.
 
-This reproduces Gboard's behavior — **one calibration jitter the first time each orientation is used, seamless forever after** (persisted across launches) — with **no hardcoded per-device tables**, so it adapts to any iPhone and iOS version.
+This reproduces Gboard's behavior — **one calibration jitter the first time each orientation is used, seamless forever after** (persisted across launches) — with **no hardcoded per-device tables**, so it adapts to any iPhone/iPad and iOS version.
+
+### Orientation key
+
+The offset is keyed by idiom (`.pad` vs `.phone`) and orientation. Orientation is read from `view.window?.windowScene?.interfaceOrientation` when available, falling back to `view.bounds` aspect ratio. The earlier `verticalSizeClass == .compact → landscape` heuristic was iPhone-only — on iPad the vertical size class is `.regular` in *both* orientations, so iPad landscape would have been collapsed into the portrait key and never calibrated.
 
 ### Critical timing detail
 
@@ -55,9 +59,13 @@ The offset **must be applied in `viewIsAppearing(_:)`** (and restored in `viewDi
 
 Implementation: `ios/Keyboard/KeyboardViewController.swift` — `viewIsAppearing` / `viewDidAppear` / `viewDidLayoutSubviews`, the `applyHeight()` / `calibratePresentationOffset()` helpers, and the `presentationOffset` (UserDefaults) property. The height constraint stays `.defaultHigh`; `KeyboardView` is pinned to all four edges of the input view and its rows lay out proportionally, so it fills whatever height is applied.
 
+### Why no "self-healing" validation of the cached offset
+
+An earlier revision added a validation pass: on the first `viewDidLayoutSubviews` after `viewDidAppear`, if `view.bounds.height` wasn't within 2pt of `target`, the cached offset was cleared so the next appearance would re-calibrate. **This reintroduced jitter during fast keyboard switching.** The reason: iOS removes its presentation inflation *after* `viewDidAppear` (not at it), so the first layout pass after `viewDidAppear` can still observe inflated bounds (`target + offset`). The validator read that as a stale cache and wiped a perfectly correct offset — and fast switching made that racy layout pass more likely to hit, so the cache was repeatedly nuked and every switch became an uncalibrated one. Because there is no reliable signal that distinguishes "inflation not yet removed" from "offset genuinely stale" at that instant, validation was removed entirely. If self-healing is needed in the future, it must be deferred until well after the presentation settles (e.g. a timer gated on the view still being visible) and verified on device.
+
 ## Caveats
 
-The fix relies on **undocumented** iOS behavior (the presentation inflation); a future iOS could change it. Auto-calibration adapts to a different offset *value*, but not to the mechanism disappearing entirely — re-verify on major iOS updates.
+The fix relies on **undocumented** iOS behavior (the presentation inflation); a future iOS could change it. Auto-calibration adapts to a different offset *value*, but not to the mechanism disappearing entirely — re-verify on major iOS updates. A stale cache (iOS update, restore-to-different-device, or a bad first measurement) is **not** auto-corrected; it produces a persistent jitter until the extension is reinstalled (which clears `UserDefaults`) or the offset is otherwise reset.
 
 A **one-time calibration jitter** on first use per orientation is expected (matches the system keyboards' first-launch behavior).
 

@@ -9,11 +9,12 @@ final class KeyboardViewController: UIInputViewController {
     private var keyboard: KeyboardView!
     private var heightConstraint: NSLayoutConstraint!
 
-    /// True between `viewWillAppear` and `viewDidAppear` — the keyboard's slide-in, the
+    /// True between `viewIsAppearing` and `viewDidAppear` — the keyboard's slide-in, the
     /// window during which iOS inflates the input view (see the presentation-offset note).
     private var isPresenting = false
     /// Largest plausible overshoot seen while the offset is still uncalibrated; committed
-    /// to `presentationOffset` at `viewDidAppear`.
+    /// to `presentationOffset` at `viewDidAppear`. Reset at the start of each uncalibrated
+    /// appearance so it can't be contaminated by a stale value from another orientation.
     private var pendingOffset: CGFloat = 0
 
     override func viewDidLoad() {
@@ -49,6 +50,9 @@ final class KeyboardViewController: UIInputViewController {
         // Apply the offset trick at this (and only this) point in the slide-in: request
         // `target - offset` so iOS's inflation lands on `target`.
         isPresenting = true
+        // Reset the accumulator when running an uncalibrated appearance, so a stale
+        // pendingOffset from a previous orientation can't leak into this one.
+        if presentationOffset == nil { pendingOffset = 0 }
         applyHeight()
     }
 
@@ -99,7 +103,15 @@ final class KeyboardViewController: UIInputViewController {
 
     private var offsetKey: String {
         let idiom = traitCollection.userInterfaceIdiom == .pad ? "pad" : "phone"
-        let orientation = traitCollection.verticalSizeClass == .compact ? "landscape" : "portrait"
+        // Derive orientation from the window scene when available — the vertical size
+        // class is `.regular` in *both* orientations on iPad, so the size-class heuristic
+        // would collapse iPad landscape into the portrait key and never calibrate it.
+        let orientation: String
+        if let o = view.window?.windowScene?.interfaceOrientation {
+            orientation = o.isLandscape ? "landscape" : "portrait"
+        } else {
+            orientation = view.bounds.width > view.bounds.height ? "landscape" : "portrait"
+        }
         return "presentationOffset.\(idiom).\(orientation)"
     }
 
@@ -110,13 +122,16 @@ final class KeyboardViewController: UIInputViewController {
 
     /// Sets the height constraint: `target - offset` while presenting (so iOS's inflation
     /// lands on `target`), otherwise the true `target`. Falls back to `target` until the
-    /// offset has been calibrated for this idiom/orientation.
+    /// offset has been calibrated for this idiom/orientation, and also falls back if the
+    /// cached offset looks suspiciously large (≥ half the target) — a bad cache then
+    /// produces one jitter instead of a permanently wrong height, and the validation pass
+    /// will invalidate it for next time.
     private func applyHeight() {
         guard let keyboard else { return }
         let target = keyboard.preferredHeight
         let wanted: CGFloat
-        if isPresenting, let offset = presentationOffset {
-            wanted = max(target - offset, target / 2)   // floor guards against a bad cache
+        if isPresenting, let offset = presentationOffset, offset < target * 0.5 {
+            wanted = target - offset
         } else {
             wanted = target
         }
