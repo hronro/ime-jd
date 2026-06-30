@@ -120,7 +120,22 @@ impl ITfCandidateListUIElement_Impl for CandidateListUIElement_Impl {
     fn GetString(&self, uindex: u32) -> Result<BSTR> {
         let state = self.state.borrow();
         match state.all_items.get(uindex as usize) {
-            Some(item) => Ok(BSTR::from(&item.value)),
+            Some(item) => {
+                // TSF has no separate annotation channel on
+                // `ITfCandidateListUIElement` — only `GetString`. Concatenate
+                // the hint into the displayed string so UI-less hosts (games,
+                // immersive shells) can show it, matching the format used by
+                // our own popup. Commit is unaffected: selection flows
+                // through `ITfKeyEventSink`, which uses the engine's `value`
+                // directly.
+                let s = match &item.hint {
+                    Some(h) if !h.is_empty() => {
+                        format!("{}{}", item.value, candidate_window::format_hint(h))
+                    }
+                    _ => item.value.clone(),
+                };
+                Ok(BSTR::from(&s))
+            }
             None => Err(E_INVALIDARG.into()),
         }
     }

@@ -836,7 +836,7 @@ fn format_value(idx: usize, item: &CandidateItem) -> String {
     format!("{} {}", idx + 1, item.value)
 }
 
-fn format_hint(hint: &str) -> String {
+pub(crate) fn format_hint(hint: &str) -> String {
     // Leading space separates the hint from the value; matches the bracket
     // style used in the CLI renderer.
     format!(" 〔{hint}〕")
