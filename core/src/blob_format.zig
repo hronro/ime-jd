@@ -22,7 +22,7 @@
 
 const std = @import("std");
 
-/// 28-byte fixed header at offset 0 of the blob.
+/// 32-byte fixed header at offset 0 of the blob.
 /// Pool offsets are computed at runtime from the counts here.
 ///
 /// No magic/version fields: the blob is regenerated from source every build
@@ -43,6 +43,11 @@ pub const Header = extern struct {
     // (depth − start_depth) across nodes in any non-root subtree.
     frontier_cap: u32,
     path_buf_cap: u32,
+
+    // Longest value string in bytes (excluding the NUL terminator) —
+    // computed in `buildBlob`, consumed by `jd_init` to size the
+    // per-context commit scratch buffer (see `query.commitScratchCap`).
+    max_value_len: u32,
 };
 
 /// 16-byte fixed-layout node. `_pad` is unused but keeps the struct

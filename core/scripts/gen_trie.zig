@@ -141,8 +141,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const t = try trie.Trie.fromBytes(blob);
     const msg = try std.fmt.allocPrint(
         arena,
-        "gen_trie: {d} entries → {d} bytes blob (frontier_cap={d}, path_buf_cap={d})\n",
-        .{ entries.len, blob.len, t.frontier_cap, t.path_buf_cap },
+        "gen_trie: {d} entries → {d} bytes blob (frontier_cap={d}, path_buf_cap={d}, max_value_len={d})\n",
+        .{ entries.len, blob.len, t.frontier_cap, t.path_buf_cap, t.max_value_len },
     );
     try std.Io.File.stdout().writeStreamingAll(io, msg);
 }

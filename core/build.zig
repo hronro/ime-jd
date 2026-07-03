@@ -187,6 +187,9 @@ pub fn build(b: *std.Build) void {
     test_mod.addImport("trie", trie_target_mod);
     test_mod.addImport("blob_format", blob_format_target_mod);
     test_mod.addImport("punc_format", punc_format_target_mod);
+    // main.zig's end-to-end tests run against the real embedded blobs.
+    test_mod.addImport("trie_blob", trie_blob_module);
+    test_mod.addImport("punc_blob", punc_blob_module);
 
     const main_tests = b.addTest(.{ .root_module = test_mod });
     const run_main_tests = b.addRunArtifact(main_tests);

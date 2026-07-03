@@ -14,13 +14,22 @@ const QueryOption = pagination.QueryOption;
 
 const buildTestTrie = @import("./trie_test_data.zig").buildTestTrie;
 
-/// Inline-buffer sizes. `MAX_PRESSED_KEYS` is a domain invariant
-/// (dictionary entries have ≤ 6 letters; `buildBlob` asserts it).
-/// `COMMIT_SCRATCH_BYTES` covers any in-place commit composition; the
-/// largest is a two-value concatenation (case F1 in `pressKey`), bounded
-/// by the same build-time assert in `buildBlob`.
-pub const MAX_PRESSED_KEYS: usize = 6;
-pub const COMMIT_SCRATCH_BYTES: usize = 128;
+/// Longest key sequence a dictionary entry may have — single source of
+/// truth is `trie.MAX_KEYS_LEN`; `trie.buildBlob` rejects longer entries
+/// as a hard build error, so the unchecked `pressed_keys` writes during
+/// descent can never run past the array.
+pub const MAX_PRESSED_KEYS: usize = trie_mod.MAX_KEYS_LEN;
+
+/// Bytes required for `Context.commit_scratch`, given the longest value
+/// across both blobs (`max(trie.max_value_len, punc.max_value_len)`).
+/// The worst-case composition is two values concatenated (case F1 in
+/// `pressKey`: previous first option + new auto-committed option) plus
+/// the 0 sentinel. The value-plus-one-byte cases (B, G, H: value + key
+/// byte + sentinel) and the bare synth cases (A: " " + sentinel) are
+/// covered too, since max_value + 2 ≤ 2 × max(max_value, 1) + 1.
+pub fn commitScratchCap(max_value_len: usize) usize {
+    return 2 * @max(max_value_len, 1) + 1;
+}
 
 pub const InitOptions = struct {
     trie: *const Trie,
@@ -51,6 +60,9 @@ pub const Context = struct {
         frontier: []pagination.FrontierEntry,
         path_buf: []u8,
         page_buf: []u8,
+        /// Must be at least `commitScratchCap(max(trie.max_value_len,
+        /// punc.max_value_len))` bytes.
+        commit_scratch: []u8,
     };
 
     /// The backing allocation handed to `shared_allocator.free` in
@@ -62,8 +74,10 @@ pub const Context = struct {
 
     /// Scratch for commit-string composition (synth single byte, value+key,
     /// value+';', value+value). Returned to C as a sentinel-terminated
-    /// pointer; the caller consumes before the next jd_* call.
-    commit_scratch: [COMMIT_SCRATCH_BYTES]u8,
+    /// pointer; the caller consumes before the next jd_* call. Borrowed
+    /// from the caller like the other buffers, sized by
+    /// `commitScratchCap` from the caps embedded in the blobs.
+    commit_scratch: []u8,
 
     /// One entry per descended trie key; bounded by max key length.
     pressed_keys: [MAX_PRESSED_KEYS]usize,
@@ -94,8 +108,8 @@ pub const Context = struct {
     pager: ?pagination.Pager,
 
     /// Constructs a Context from pre-allocated buffers. The caller (jd_init
-    /// or a test harness) provides storage for the three variable-sized
-    /// regions; the inline fields (commit_scratch, pressed_keys, page_fba,
+    /// or a test harness) provides storage for the four variable-sized
+    /// regions; the inline fields (pressed_keys, page_fba,
     /// pair_toggle_bits) live inside the returned struct. `raw` is left
     /// undefined — jd_init sets it explicitly after the carved layout is
     /// known; tests don't touch it.
@@ -103,7 +117,7 @@ pub const Context = struct {
         const root_node = options.trie.root();
         return .{
             .raw = undefined,
-            .commit_scratch = undefined,
+            .commit_scratch = buffers.commit_scratch,
             .pressed_keys = undefined,
             .pressed_keys_len = 0,
             .pair_toggle_bits = @splat(0),
@@ -131,7 +145,7 @@ pub const Context = struct {
     /// trailing 0 sentinel, and returns the scratch pointer typed for C.
     inline fn scratchCommit(self: *Self, len: usize) [*:0]const u8 {
         self.commit_scratch[len] = 0;
-        return @ptrCast(&self.commit_scratch);
+        return @ptrCast(self.commit_scratch.ptr);
     }
 
     /// Concatenate `prev` (if non-null) and `value` into `commit_scratch`
@@ -528,6 +542,7 @@ const ContextHarness = struct {
     frontier: []pagination.FrontierEntry,
     path_buf: []u8,
     page_buf: []u8,
+    commit_scratch: []u8,
     punc_handle: *punc_mod.PuncHandle,
 
     fn init(
@@ -554,17 +569,26 @@ const ContextHarness = struct {
         const punc_handle = try allocator.create(punc_mod.PuncHandle);
         errdefer allocator.destroy(punc_handle);
         punc_handle.* = try punc_mod.buildPunc(allocator, normals, paireds);
+        errdefer punc_handle.deinit(allocator);
+        // Exactly the production formula — no slack, so a composition that
+        // outgrows the cap fails the safety-checked test build.
+        const commit_scratch = try allocator.alloc(u8, commitScratchCap(
+            @max(trie.max_value_len, punc_handle.punc.max_value_len),
+        ));
+        errdefer allocator.free(commit_scratch);
         var self = ContextHarness{
             .ctx = undefined,
             .frontier = frontier,
             .path_buf = path_buf,
             .page_buf = page_buf,
+            .commit_scratch = commit_scratch,
             .punc_handle = punc_handle,
         };
         self.ctx = Context.init(.{
             .frontier = frontier,
             .path_buf = path_buf,
             .page_buf = page_buf,
+            .commit_scratch = commit_scratch,
         }, .{ .trie = trie, .punc = &punc_handle.punc, .page_size = page_size });
         return self;
     }
@@ -573,6 +597,7 @@ const ContextHarness = struct {
         allocator.free(self.frontier);
         allocator.free(self.path_buf);
         allocator.free(self.page_buf);
+        allocator.free(self.commit_scratch);
         self.punc_handle.deinit(allocator);
         allocator.destroy(self.punc_handle);
     }
@@ -1365,4 +1390,115 @@ test "trie composition + paired key commits both" {
     _ = context.pressKey('a');
     const r = context.pressKey('"');
     try testing.expectEqualStrings("甲“", std.mem.sliceTo(r.commit.?, 0));
+}
+
+// =========================================================================
+// Long-value regression tests.
+//
+// The dictionary contains values far longer than the old fixed 128-byte
+// scratch buffer (the longest is 300 bytes). commit_scratch is now sized
+// from `max_value_len` embedded in the blobs; the harness allocates it
+// with the exact production formula (`commitScratchCap`, zero slack), so
+// any composition that outgrows the cap trips the bounds checks of the
+// safety-checked test build. Each test below drives one scratch-composing
+// case in `pressKey` with values that would have overflowed 128 bytes.
+// =========================================================================
+
+const LONG_A = "季" ** 100; // 300 bytes — matches the longest real entry
+const LONG_B = "鸡" ** 80; // 240 bytes
+
+fn buildLongValueTrie(allocator: std.mem.Allocator) !trie_mod.TrieHandle {
+    return trie_mod.buildTrie(allocator, &.{
+        .{ .keys = "aa", .value = LONG_A },
+        .{ .keys = "ac", .value = "X" },
+        .{ .keys = "b", .value = LONG_B },
+    });
+}
+
+test "long values: case F1 concatenates two long values into scratch" {
+    var th = try buildLongValueTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    // 'a' opens a pager whose first option is LONG_A (child order a < c).
+    _ = context.pressKey('a');
+    // 'b' is no child of node "a" but is a child of the root, and node "b"
+    // has a single hint-less option: commit LONG_A ++ LONG_B (540 bytes).
+    const r = context.pressKey('b');
+    try testing.expectEqualStrings(LONG_A ++ LONG_B, std.mem.sliceTo(r.commit.?, 0));
+}
+
+test "long values: case H appends a literal byte to a long first option" {
+    var th = try buildLongValueTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    _ = context.pressKey('a');
+    const r = context.pressKey('1');
+    try testing.expectEqualStrings(LONG_A ++ "1", std.mem.sliceTo(r.commit.?, 0));
+}
+
+test "long values: case B fallback appends ';' to a long single option" {
+    var th = try trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = "aa", .value = LONG_A },
+    });
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.init(testing.allocator, &th.trie, 3);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    // Single option WITH hint ("a"), so no E1 auto-commit; pager stays open.
+    _ = context.pressKey('a');
+    const r = context.pressKey(';');
+    try testing.expectEqualStrings(LONG_A ++ ";", std.mem.sliceTo(r.commit.?, 0));
+}
+
+test "long values: punctuation after a long composition commits both" {
+    var th = try buildLongValueTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const dot_candidates = [_][]const u8{"。"};
+    const normals = [_]punc_mod.NormalInput{
+        .{ .key = '.', .candidates = &dot_candidates },
+    };
+    const paireds = [_]punc_mod.PairedInput{
+        .{ .key = '"', .open = "“", .close = "”" },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &normals, &paireds);
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    // Case D (normal, single candidate) after a long in-flight composition.
+    _ = context.pressKey('a');
+    const r1 = context.pressKey('.');
+    try testing.expectEqualStrings(LONG_A ++ "。", std.mem.sliceTo(r1.commit.?, 0));
+
+    // Case C (paired) after a long in-flight composition.
+    _ = context.pressKey('a');
+    const r2 = context.pressKey('"');
+    try testing.expectEqualStrings(LONG_A ++ "“", std.mem.sliceTo(r2.commit.?, 0));
+}
+
+test "long values: E1 auto-commit concatenates an abandoned punc window" {
+    var th = try buildLongValueTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+
+    const bracket_candidates = [_][]const u8{ "「", "【" };
+    const normals = [_]punc_mod.NormalInput{
+        .{ .key = '[', .candidates = &bracket_candidates },
+    };
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, 3, &normals, &.{});
+    defer harness.deinit(testing.allocator);
+    const context = &harness.ctx;
+
+    // '[' opens a punc candidate window; 'b' abandons it (committing 「)
+    // and descends to node "b", whose single hint-less option LONG_B
+    // auto-commits — concatenated into scratch as 「 ++ LONG_B.
+    _ = context.pressKey('[');
+    const r = context.pressKey('b');
+    try testing.expectEqualStrings("「" ++ LONG_B, std.mem.sliceTo(r.commit.?, 0));
 }

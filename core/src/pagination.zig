@@ -462,7 +462,9 @@ pub const Pager = union(enum) {
 /// production (`jd_init` in main.zig) and tests.
 pub fn pageBufferSize(page_size: u8) usize {
     // page_size options + one hint per option of up to MAX_HINT_LEN bytes + sentinel.
-    const MAX_HINT_LEN: usize = 5;
+    // A hint is the keys remaining below the current node, so it is bounded
+    // by the max key length minus the one key already pressed to get there.
+    const MAX_HINT_LEN: usize = trie_mod.MAX_KEYS_LEN - 1;
     return @as(usize, page_size) * (@sizeOf(QueryOption) + MAX_HINT_LEN + 1);
 }
 

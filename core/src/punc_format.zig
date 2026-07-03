@@ -18,13 +18,18 @@
 
 const std = @import("std");
 
-/// 4-byte fixed header at offset 0 of the blob.
+/// 8-byte fixed header at offset 0 of the blob.
 ///
 /// No magic/version fields, matching `blob_format.Header`: blob is
 /// regenerated from source every build, so generator and runtime are
 /// always in lockstep.
 pub const Header = extern struct {
     strings_total: u32,
+
+    /// Longest candidate/half string in bytes (excluding the NUL
+    /// terminator) — consumed by `jd_init` to size the per-context commit
+    /// scratch buffer (see `query.commitScratchCap`).
+    max_value_len: u32,
 };
 
 /// 4-byte entry for one row of `normal.txt`. There is exactly one slot

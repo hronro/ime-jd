@@ -37,6 +37,9 @@ pub const Punc = struct {
     paired_table: *const [fmt.TABLE_SIZE]fmt.PairedEntry,
     strings: []const u8,
 
+    /// Longest candidate/half string in bytes (excluding the NUL terminator).
+    max_value_len: u32,
+
     /// Parse a blob produced by `buildBlob` (or by `scripts/gen_punc.zig`).
     /// O(1) — just header read + slice header construction.
     pub fn fromBytes(bytes: []align(4) const u8) !Punc {
@@ -55,6 +58,7 @@ pub const Punc = struct {
             .normal_table = normal_ptr,
             .paired_table = paired_ptr,
             .strings = strings,
+            .max_value_len = header_ptr.max_value_len,
         };
     }
 
@@ -131,6 +135,10 @@ pub fn buildBlob(
         .close_offset = 0,
     });
 
+    // Longest candidate/half in bytes; sizes the per-context commit
+    // scratch buffer via the header (see `query.commitScratchCap`).
+    var max_value_len: u32 = 0;
+
     // ---- Phase 2: emit normals. ----
     for (normals) |n| {
         if (n.candidates.len == 0) return error.NormalEntryHasNoCandidates;
@@ -140,6 +148,8 @@ pub fn buildBlob(
         if (start_offset > std.math.maxInt(u16)) return error.StringsPoolTooLarge;
 
         for (n.candidates) |c| {
+            max_value_len = @max(max_value_len, std.math.cast(u32, c.len) orelse
+                return error.ValueTooLong);
             try strings.appendSlice(allocator, c);
             try strings.append(allocator, 0);
         }
@@ -153,6 +163,11 @@ pub fn buildBlob(
 
     // ---- Phase 3: emit paireds. ----
     for (paireds) |p| {
+        max_value_len = @max(max_value_len, std.math.cast(u32, p.open.len) orelse
+            return error.ValueTooLong);
+        max_value_len = @max(max_value_len, std.math.cast(u32, p.close.len) orelse
+            return error.ValueTooLong);
+
         const open_offset = strings.items.len;
         if (open_offset > std.math.maxInt(u16)) return error.StringsPoolTooLarge;
         try strings.appendSlice(allocator, p.open);
@@ -177,7 +192,10 @@ pub fn buildBlob(
     @memset(buf, 0);
 
     const header = std.mem.bytesAsValue(fmt.Header, buf[0..@sizeOf(fmt.Header)]);
-    header.* = .{ .strings_total = @intCast(strings.items.len) };
+    header.* = .{
+        .strings_total = @intCast(strings.items.len),
+        .max_value_len = max_value_len,
+    };
 
     {
         const dst: *[fmt.TABLE_SIZE]fmt.NormalEntry =
@@ -206,8 +224,9 @@ pub fn buildBlob(
 fn byteSwapBlob(buf: []align(4) u8) void {
     const offsets = fmt.PoolOffsets.compute();
 
-    // Header: 1 u32 at offset 0.
+    // Header: 2 u32 fields starting at offset 0.
     swap32At(buf, 0);
+    swap32At(buf, 4);
 
     // Normal table: 256 entries × 2 u16 fields.
     var i: usize = 0;
@@ -334,6 +353,17 @@ test "paired offset 0 is reserved (sentinel works for offset 0 byte)" {
 
     const entry = ph.punc.lookupPaired('"') orelse return error.TestUnexpectedNull;
     try testing.expect(entry.open_offset >= 1);
+}
+
+test "max_value_len covers normals and both paired halves" {
+    const candidates = [_][]const u8{ "。", "……" }; // 3 and 6 bytes
+    var ph = try buildPunc(testing.allocator, &.{
+        .{ .key = '.', .candidates = &candidates },
+    }, &.{
+        .{ .key = '"', .open = "“", .close = "”" }, // 3 bytes each
+    });
+    defer ph.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 6), ph.punc.max_value_len);
 }
 
 test "buildBlob produces byte-swapped output for cross-endian targets" {

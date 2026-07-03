@@ -119,7 +119,7 @@ ctx = jd_init(...)  ──►  (jd_press_key   | jd_next_page | jd_prev_page |
 
 Each `jd_init` call returns an independent context owned by the caller. Contexts share the embedded trie (parsed lazily on the first call from any thread, then immutable for the rest of the process), but their query state is fully separate — pages, in-flight key indexes, scratch and pagination buffers, etc.
 
-`jd_init` performs exactly one heap allocation (sized from caps embedded in the trie blob) and `jd_deinit` performs exactly one matching free; nothing in between calls the allocator. Per-context resident memory for the bundled dictionary is around 240 KB at the default page size.
+`jd_init` performs exactly one heap allocation (sized from caps embedded in the trie and punctuation blobs — worst-case BFS state, page buffers, and the longest possible commit composition) and `jd_deinit` performs exactly one matching free; nothing in between calls the allocator. Per-context resident memory for the bundled dictionary is around 240 KB at the default page size.
 
 ### Thread-safety
 

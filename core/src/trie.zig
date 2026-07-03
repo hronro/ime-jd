@@ -16,6 +16,12 @@ const fmt = @import("./blob_format.zig");
 
 const ALPHA: usize = 27;
 
+/// Domain invariant: the longest key sequence a dictionary entry may have.
+/// `Context.pressed_keys` in query.zig is sized to exactly this, so
+/// `buildBlob` rejects longer entries as a hard error (it runs in the
+/// generator's ReleaseFast build, where `std.debug.assert` would vanish).
+pub const MAX_KEYS_LEN: usize = 6;
+
 fn keyRank(c: u8) u8 {
     if (c >= 'a' and c <= 'z') return c - 'a';
     if (c == ';') return 26;
@@ -41,6 +47,8 @@ pub const Trie = struct {
     frontier_cap: u32,
     /// Worst-case BFS path-buffer byte count across any non-root start node.
     path_buf_cap: u32,
+    /// Longest value string in bytes (excluding the NUL terminator).
+    max_value_len: u32,
 
     pub const Node = NodeView;
 
@@ -71,6 +79,7 @@ pub const Trie = struct {
             .strings = strings,
             .frontier_cap = header_ptr.frontier_cap,
             .path_buf_cap = header_ptr.path_buf_cap,
+            .max_value_len = header_ptr.max_value_len,
         };
     }
 
@@ -201,14 +210,18 @@ pub fn buildBlob(
     var record_count: u32 = 1;
 
     // ---- Phase 1: walk entries, build trie shape, count values ----
+    // Hard errors, not asserts: this code runs in the generator's
+    // ReleaseFast build, where `std.debug.assert` compiles to nothing —
+    // a violated invariant here must fail the build, not ship as UB.
+    var max_value_len: u32 = 0;
     for (entries) |e| {
-        // Domain invariants the consumer relies on:
-        // - Key sequences fit in `Context.pressed_keys: [MAX_PRESSED_KEYS]usize`
-        //   in main.zig (currently 6).
-        // - Any commit composition (worst case: two values concatenated)
-        //   fits in `Context.commit_scratch: [128]u8`.
-        std.debug.assert(e.keys.len <= 6);
-        std.debug.assert(e.value.len * 2 + 1 <= 128);
+        // Key sequences must fit `Context.pressed_keys: [MAX_KEYS_LEN]usize`
+        // (query.zig writes it unchecked during trie descent).
+        if (e.keys.len > MAX_KEYS_LEN) return error.EntryKeysTooLong;
+        // The longest value sizes the per-context commit scratch buffer
+        // (query.commitScratchCap); track it in the header.
+        max_value_len = @max(max_value_len, std.math.cast(u32, e.value.len) orelse
+            return error.EntryValueTooLong);
         var cur: u32 = 0;
         for (e.keys) |k| {
             var rec_idx = nodes[cur].first_child;
@@ -411,6 +424,7 @@ pub fn buildBlob(
         .strings_total = @intCast(strings.items.len),
         .frontier_cap = frontier_cap,
         .path_buf_cap = path_buf_cap,
+        .max_value_len = max_value_len,
     };
 
     const nodes_dst = std.mem.bytesAsSlice(fmt.Node, buf[offsets.nodes..][0 .. NC * @sizeOf(fmt.Node)]);
@@ -467,8 +481,8 @@ fn byteSwapBlob(buf: []align(4) u8, current_endian: std.builtin.Endian) void {
         child_keys_total,
     );
 
-    // Header: 7 u32 fields starting at offset 0.
-    for (0..7) |i| swap32At(buf, i * 4);
+    // Header: 8 u32 fields starting at offset 0.
+    for (0..8) |i| swap32At(buf, i * 4);
 
     // Nodes: 3 u32 fields per Node (count_and_width, values_start,
     // children_start); the trailing u8 + padding doesn't need swapping.
@@ -618,6 +632,22 @@ test "indexOfChild round-trip" {
         try testing.expect(root.getChild(t, k) != null);
     }
     try testing.expect(root.getChild(t, 'b') == null);
+}
+
+test "max_value_len is computed and round-trips through the blob" {
+    var th = try buildTrie(testing.allocator, &.{
+        .{ .keys = "a", .value = "甲" }, // 3 bytes
+        .{ .keys = "ab", .value = "abcdefghij" }, // 10 bytes — the max
+        .{ .keys = "c", .value = "xy" },
+    });
+    defer th.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 10), th.trie.max_value_len);
+}
+
+test "entries with keys longer than MAX_KEYS_LEN are a hard error" {
+    try testing.expectError(error.EntryKeysTooLong, buildTrie(testing.allocator, &.{
+        .{ .keys = "abcdefg", .value = "x" }, // 7 keys > MAX_KEYS_LEN (6)
+    }));
 }
 
 test "fromBytes rejects undersized buffer" {
