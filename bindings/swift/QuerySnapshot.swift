@@ -1,3 +1,8 @@
+// `copy` deep-copies the borrowed C strings into Swift Strings, so a snapshot is
+// safe to retain across later engine calls (load-bearing for candidate pagination).
+// Shared source, compiled into both the macOS and iOS frontends — see
+// bindings/swift/README.md.
+
 import Foundation
 import Libjd
 

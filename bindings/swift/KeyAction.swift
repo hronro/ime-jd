@@ -1,3 +1,7 @@
+// The semantic actions a frontend's key gate resolves raw input into.
+// Shared source, compiled into both the macOS and iOS frontends — see
+// bindings/swift/README.md.
+
 import Foundation
 
 enum KeyAction: Equatable {

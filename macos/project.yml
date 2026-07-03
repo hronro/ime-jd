@@ -42,6 +42,11 @@ targets:
       - path: JdIME
         excludes:
           - "Info.plist"
+      # Engine FFI wrapper shared with the iOS frontend (source-level, no
+      # package) — Engine / QuerySnapshot / KeyAction.
+      - path: ../bindings/swift
+        includes:
+          - "*.swift"
     settings:
       base:
         INFOPLIST_FILE: JdIME/Info.plist

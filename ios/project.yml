@@ -32,6 +32,9 @@ targets:
       # preview drives the exact same KeyboardView/InputSession as the extension.
       - path: Keyboard/Engine
       - path: Keyboard/UI
+      - path: ../bindings/swift
+        includes:
+          - "*.swift"
     settings:
       base:
         INFOPLIST_FILE: App/Info.plist
@@ -59,6 +62,11 @@ targets:
       - path: Keyboard
         excludes:
           - "Info.plist"
+      # Engine FFI wrapper shared with the macOS frontend (source-level, no
+      # package) — Engine / QuerySnapshot / KeyAction.
+      - path: ../bindings/swift
+        includes:
+          - "*.swift"
     settings:
       base:
         INFOPLIST_FILE: Keyboard/Info.plist
@@ -85,6 +93,9 @@ targets:
     sources:
       - path: KeyboardTests
       - path: Keyboard/Engine
+      - path: ../bindings/swift
+        includes:
+          - "*.swift"
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

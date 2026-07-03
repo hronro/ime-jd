@@ -10,7 +10,8 @@ ios/
   App/                        # container app (instructions + in-app keyboard preview)
   Keyboard/
     KeyboardViewController.swift   # the extension's principal class (UIInputViewController)
-    Engine/                   # libjd FFI wrapper + dispatch core (copied from macos/, kept in sync)
+    Engine/                   # InputSession — the iOS dispatch core (the FFI wrapper itself
+                              # is shared source at ../bindings/swift, listed in project.yml)
     UI/                       # KeyboardView, key grid, candidate bar/grid, theme, popups
   KeyboardTests/              # InputSession logic tests (hostless)
   scripts/
@@ -58,7 +59,7 @@ xcodebuild -project JdIME-iOS.xcodeproj -scheme JdIME-iOS \
 - **No inline marked text.** iOS forbids third-party keyboards from showing preedit text in the host app, so the in-flight code and candidates render in the keyboard's own candidate bar; only the final string is sent via `textDocumentProxy.insertText`. This matches the engine, which keeps composition state internally and emits only commits.
 - **Selection = tap, pagination = scroll.** No number-key selectors. The 123/#+= layers show Chinese punctuation directly and insert the tapped mark themselves, **bypassing libjd's punctuation table** but matching its behavior: while composing, commit the top candidate first, then append the mark; otherwise insert it directly (see `core/docs/integration.md`).
 - **No sound / haptics.** Both require Full Access on iOS, which this keyboard never requests.
-- The `Engine/` files are verbatim copies of `macos/JdIME/Engine/` — keep them in sync.
+- The engine FFI wrapper (`Engine` / `QuerySnapshot` / `KeyAction`) is shared source at `bindings/swift/`, compiled into both this project and `macos/` — one copy, no sync discipline needed. Only the dispatch layers stay per-platform (`InputSession` here, `KeyGate`/`Composition` on macOS) because their semantics deliberately differ.
 
 ## libjd linking
 

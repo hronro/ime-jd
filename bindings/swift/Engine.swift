@@ -1,5 +1,7 @@
-// Copied verbatim from macos/JdIME/Engine/Engine.swift — keep in sync.
 // Thin FFI wrapper over libjd; pure Foundation + Libjd, no platform UI deps.
+// Shared source, compiled into both the macOS (macos/) and iOS (ios/)
+// frontends via their project.yml source paths — see bindings/swift/README.md.
+
 import Foundation
 import Libjd
 

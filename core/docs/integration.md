@@ -37,7 +37,7 @@ zig build -Dtarget=powerpc-linux-musl   # big-endian target
 The blob's multi-byte fields are written in the target's endianness — the build-time generator runs on the host and, when the host and target differ, byte-swaps every u32 field before embedding the blob. Cross-compiling between little-endian and big-endian platforms is fully supported.
 ## The C API
 
-Rust consumers should not hand-roll these declarations — depend on the shared bindings crate at `bindings/rust` (a Cargo path dependency; used by `cli/` and `windows/`), which links libjd and upholds the pointer-lifetime contract below by copying every result into owned data.
+Rust consumers should not hand-roll these declarations — depend on the shared bindings crate at `bindings/rust` (a Cargo path dependency; used by `cli/` and `windows/`), which links libjd and upholds the pointer-lifetime contract below by copying every result into owned data. Swift consumers likewise share the wrapper at `bindings/swift` (compiled directly into the `macos/` and `ios/` targets via their project.yml source paths).
 
 From `include/jd.h`:
 

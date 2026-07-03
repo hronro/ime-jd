@@ -62,4 +62,4 @@ xcodebuild \
     test
 ```
 
-Tests cover the engine's FFI smoke contract (mirroring `cli/tests/core_smoke.rs`) and every branch of the `NSEvent → KeyAction` gate.
+Tests cover the engine's FFI smoke contract (mirroring `bindings/rust/tests/engine.rs`) and every branch of the `NSEvent → KeyAction` gate. The engine wrapper under test (`Engine` / `QuerySnapshot` / `KeyAction`) is shared source at `bindings/swift/`, compiled into both this project and `ios/`.
