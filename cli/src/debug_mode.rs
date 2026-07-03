@@ -3,15 +3,13 @@ use std::time::Instant;
 
 use crossterm::{event, terminal};
 
-use crate::core;
-
 pub fn debug_mode<W>(w: &mut W) -> Result<()>
 where
     W: Write,
 {
     terminal::enable_raw_mode()?;
     let init_start = Instant::now();
-    let mut jd = core::JdContext::new(core::InitOptions { page_size: 4 });
+    let mut jd = jd::JdContext::new(4).expect("failed to initialize the jd engine");
     let init_elapsed = init_start.elapsed();
     write!(w, "Initialized in {:?}\n\r", init_elapsed)?;
     w.flush()?;

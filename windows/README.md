@@ -58,10 +58,11 @@ If you've selected 键道 in a running app (Notepad, browser, etc.) you'll need 
 
 ```
 windows/
-  Cargo.toml          cdylib, depends on `windows` 0.62 and `windows-core`
-  build.rs            invokes `zig build` for the core, links libjd_static.lib,
-                      and generates the .rc (RT_MANIFEST + VERSIONINFO, the
-                      version read from core/build.zig.zon)
+  Cargo.toml          cdylib, depends on `windows` 0.62, `windows-core`, and
+                      the shared `jd` bindings crate (../bindings/rust)
+  build.rs            generates the .rc (RT_MANIFEST + VERSIONINFO, the
+                      version read from core/build.zig.zon); libjd itself is
+                      located/linked by the `jd` crate's build script
   app.manifest        embedded Win32 manifest (asInvoker, Win 10/11 supportedOS)
   register.bat        admin installer
   unregister.bat      admin uninstaller
@@ -77,7 +78,7 @@ windows/
     candidate_window.rs   D2D + DirectWrite popup showing the engine candidates
     registration.rs   COM + TSF profile/category registration (HKLM)
     guids.rs          CLSID + profile GUID + display attribute GUID
-    jd.rs             FFI to libjd (Mutex-guarded global engine)
-  tests/
-    engine.rs         exercises the FFI layer without TSF
+    jd.rs             TSF glue over the shared `jd` crate: UI-thread-local
+                      engine context + PAGE_SIZE (engine tests live in
+                      bindings/rust/tests)
 ```

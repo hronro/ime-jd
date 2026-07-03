@@ -5,7 +5,6 @@ use std::io;
 
 pub use crossterm::terminal::size;
 
-mod core;
 mod debug_mode;
 mod renderer;
 

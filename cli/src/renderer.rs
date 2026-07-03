@@ -7,8 +7,6 @@ use crossterm::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::core;
-
 /// The layout is like below:
 /// ```
 /// +--------------------------+
@@ -40,8 +38,8 @@ pub struct Renderer {
     input: String,
     /// The options currently displayed, retained so they can be redrawn after
     /// a resize without re-querying (and thus mutating) the core.
-    current_options: Vec<core::QueryOption>,
-    jd: core::JdContext,
+    current_options: Vec<jd::QueryOption>,
+    jd: jd::JdContext,
 }
 impl Renderer {
     pub fn new(size: (u16, u16)) -> Self {
@@ -49,9 +47,7 @@ impl Renderer {
         let option_rows = ((height - 3) / 2 - 2).min(4);
         let output_rows = height - 4 - option_rows - 1;
 
-        let jd = core::JdContext::new(core::InitOptions {
-            page_size: option_rows as u8,
-        });
+        let jd = jd::JdContext::new(option_rows as u8).expect("failed to initialize the jd engine");
 
         Self {
             width,
@@ -75,15 +71,11 @@ impl Renderer {
 
     /// Store the latest options and draw them. Used by every key handler so
     /// `current_options` always mirrors what's on screen (for resize redraws).
-    fn update_options<W>(
-        &mut self,
-        w: &mut W,
-        options: Option<Vec<core::QueryOption>>,
-    ) -> Result<()>
+    fn update_options<W>(&mut self, w: &mut W, options: Vec<jd::QueryOption>) -> Result<()>
     where
         W: Write,
     {
-        self.current_options = options.unwrap_or_default();
+        self.current_options = options;
         self.draw_options(w, &self.current_options)
     }
 
@@ -157,7 +149,7 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_options<W>(&self, w: &mut W, options: &[core::QueryOption]) -> Result<()>
+    fn draw_options<W>(&self, w: &mut W, options: &[jd::QueryOption]) -> Result<()>
     where
         W: Write,
     {
@@ -176,7 +168,7 @@ impl Renderer {
                     "[{}] {}{}",
                     index + 1,
                     option.value,
-                    if let Some(hint) = option.hint {
+                    if let Some(hint) = &option.hint {
                         format!(" 〔{hint}〕")
                     } else {
                         String::from("")
@@ -279,10 +271,10 @@ impl Renderer {
                                 let query_result = self.jd.press_key(c as u8);
 
                                 if let Some(commit) = query_result.commit {
-                                    self.output_string.push_str(commit);
-                                    self.output.push_unicode_char(commit, w)?;
+                                    self.output_string.push_str(&commit);
+                                    self.output.push_unicode_char(&commit, w)?;
 
-                                    self.input = if query_result.options.is_some() {
+                                    self.input = if !query_result.options.is_empty() {
                                         String::from(c)
                                     } else {
                                         String::new()

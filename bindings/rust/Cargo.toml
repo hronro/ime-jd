@@ -1,0 +1,10 @@
+[package]
+name = "jd"
+# Placeholder. The real project version lives in core/build.zig.zon; this
+# 0.0.0 is intentionally not a real version.
+version = "0.0.0"
+edition = "2024"
+# Cargo's native-dependency key: exactly one crate in any build graph may
+# link the native `jd` library, and its build script gets to publish
+# `DEP_JD_*` metadata (libdir, linkage) to direct dependents' build scripts.
+links = "jd"

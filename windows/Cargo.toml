@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 embed-resource = "3"
 
 [dependencies]
+jd = { path = "../bindings/rust" }
 # The `#[implement]` macro expands to code that references `windows_core` by
 # name, so we keep it as a direct dependency even though `windows::core` is
 # a re-export of the same crate.

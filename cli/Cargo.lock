@@ -92,10 +92,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jd"
+version = "0.0.0"
+
+[[package]]
 name = "jd-cli"
 version = "0.0.0"
 dependencies = [
  "crossterm",
+ "jd",
  "unicode-width",
 ]
 
