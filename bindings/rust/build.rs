@@ -33,9 +33,16 @@ fn main() {
         let core_dir = manifest_dir.join("..").join("..").join("core");
 
         // Pair the core's optimize mode with cargo's debug/release split:
-        // Debug for cargo debug (enables the core's per-context DebugAllocator
-        // leak detection), ReleaseFast for cargo release.
-        let optimize_flag = if is_debug_profile {
+        // Debug for cargo debug (keeps the core's safety checks during
+        // iteration), ReleaseFast for cargo release.
+        //
+        // Except on Windows: the archive is linked by MSVC's link.exe, and
+        // zig's Debug objects reference zig-runtime symbols it can't resolve
+        // (compiler-rt stack probes like ___chkstk_ms, and
+        // LdrRegisterDllNotification from zig's own ntdll import stubs —
+        // neither exists in the MSVC/SDK link set). ReleaseFast objects
+        // carry no such references, and are what CI has always linked.
+        let optimize_flag = if is_debug_profile && !is_windows {
             "-Doptimize=Debug"
         } else {
             "-Doptimize=ReleaseFast"
