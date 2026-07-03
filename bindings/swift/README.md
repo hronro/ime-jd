@@ -1,6 +1,6 @@
 # jd (Swift bindings)
 
-libjd 核心引擎的 Swift 安全封装，供 `macos/` 与 `ios/` 两个前端**源文件级共享**：两边的 `project.yml` 直接把本目录列为 source path（XcodeGen 支持项目目录外的相对路径），同一份文件编译进各自的 target——不经过 SPM package，也没有软链接。此前这三个文件在两个项目里是靠注释纪律人肉同步的逐字节拷贝。
+Safe Swift wrapper for the libjd core engine, shared by the `macos/` and `ios/` frontends at the **source level**: both `project.yml`s list this directory as a source path (XcodeGen supports relative paths outside the project directory), so the same files compile into each target — no SPM package, no symlinks. These three files used to exist as byte-identical copies in the two projects, kept in sync by comment discipline alone.
 
 ```yaml
 # macos/project.yml / ios/project.yml
@@ -8,18 +8,18 @@ sources:
   - path: ../bindings/swift
 ```
 
-## 内容
+## Contents
 
-- **`Engine.swift`** — `jd_context` 的 RAII 封装（`deinit` 调 `jd_deinit`），每个方法返回深拷贝后的 `QuerySnapshot`。
-- **`QuerySnapshot.swift`** — owned 的结果快照。`copy` 在返回前把 C API 的借用指针全部拷贝为 Swift `String`（生命周期契约见 `core/docs/integration.md`），并实现"当前页可见候选数"的取余运算。
-- **`KeyAction.swift`** — 按键语义动作枚举，各前端的 key gate / dispatch 层共用。
+- **`Engine.swift`** — RAII wrapper around `jd_context` (`deinit` calls `jd_deinit`); every method returns a deep-copied `QuerySnapshot`.
+- **`QuerySnapshot.swift`** — owned result snapshot. `copy` turns all of the C API's borrowed pointers into Swift `String`s before returning (see the pointer-lifetime contract in `core/docs/integration.md`), and implements the "options visible on the current page" remainder math.
+- **`KeyAction.swift`** — the semantic key-action enum shared by each frontend's key gate / dispatch layer.
 
-平台相关的部分不在这里：macOS 的 `KeyGate`/`Composition`/IMK 控制器在 `macos/JdIME/`，iOS 的 `InputSession` 在 `ios/Keyboard/Engine/`——两者的分发语义有刻意的平台差异（macOS 空结果回传宿主，iOS 插入字面量），不应合并。
+The platform-specific parts deliberately live elsewhere: macOS's `KeyGate` / `Composition` / IMK controller in `macos/JdIME/`, iOS's `InputSession` in `ios/Keyboard/Engine/`. Their dispatch semantics differ on purpose (an empty engine result passes the key back to the host on macOS but inserts the literal byte on iOS), so they must not be merged.
 
-## 前提
+## Prerequisites
 
-`import Libjd` 依赖各 target 的 `SWIFT_INCLUDE_PATHS` 指向 `core/include`（module map），两个项目的 project.yml 已配置。
+`import Libjd` relies on each target's `SWIFT_INCLUDE_PATHS` pointing at `core/include` (the module map); both projects' project.yml already configure this.
 
-## 测试
+## Tests
 
-引擎语义测试在各前端的测试 target 里：`macos/JdIMETests/EngineSmokeTests.swift` 与 `ios/KeyboardTests/InputSessionTests.swift`——它们分别通过本目录的共享封装驱动真实引擎。
+Engine-semantics tests live in each frontend's test target: `macos/JdIMETests/EngineSmokeTests.swift` and `ios/KeyboardTests/InputSessionTests.swift` — both drive the real engine through the shared wrapper in this directory.

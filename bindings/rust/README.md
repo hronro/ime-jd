@@ -1,23 +1,23 @@
 # jd (Rust bindings)
 
-libjd 核心引擎的 Rust 安全封装，供 `cli/` 与 `windows/` 两个前端通过 path dependency 共享：
+Safe Rust bindings for the libjd core engine, shared by the `cli/` and `windows/` frontends as a plain Cargo path dependency:
 
 ```toml
 [dependencies]
 jd = { path = "../bindings/rust" }
 ```
 
-## 设计
+## Design
 
-- **所有返回值是 owned 数据**。C API 返回的指针只在同一 context 的下一次 `jd_*` 调用前有效（见 `core/docs/integration.md` 的指针生命周期契约）；封装层在返回前把 `commit`、候选值和 hint 全部拷贝为 `String`，因此 `QueryResult` 可以任意保留。
-- **`&mut self` 静态强制单线程契约**。单个 `JdContext` 不允许并发调用；不同 context 完全独立。
-- **`visible_count`** 是"当前页可见候选数"取余运算的唯一实现（`options_count` 是全部页的总数，非当前数组长度），各前端不应自行复制这段逻辑。
-- **链接由本 crate 的 build.rs 负责**（`links = "jd"`）：优先使用 `LIBJD_PATH` 指向的预构建产物，否则调用 zig 构建 `core/`。依赖方的 build.rs 可通过 `DEP_JD_LIBDIR` / `DEP_JD_LINKAGE` 获知库目录与链接方式（CLI 用它在动态链接的开发构建里补 rpath）。
+- **Every returned value is owned data.** The C API's pointers are only valid until the next `jd_*` call on the same context (see the pointer-lifetime contract in `core/docs/integration.md`); the wrapper copies `commit`, every candidate value, and every hint into `String`s before returning, so a `QueryResult` may be retained freely.
+- **`&mut self` statically enforces the single-thread contract.** A single `JdContext` must not be called concurrently; distinct contexts are fully independent.
+- **`visible_count`** is the one implementation of the "options visible on the current page" remainder math (`options_count` is the total across all pages, not the length of the current array) — frontends must not grow their own copies of this logic.
+- **Linking is owned by this crate's build.rs** (`links = "jd"`): a prebuilt bundle pointed at by `LIBJD_PATH` takes precedence; otherwise it builds `core/` with zig. Dependents' build scripts can read the library directory and chosen linkage from `DEP_JD_LIBDIR` / `DEP_JD_LINKAGE` (the CLI uses these to emit an rpath for dynamically-linked dev builds).
 
-## 测试
+## Tests
 
 ```sh
 cargo test
 ```
 
-集成测试链接真实词库，覆盖 FFI 冒烟、context 独立性、结果 owned 性（跨调用保留）与分页一致性。
+The integration tests link the real dictionary and cover the FFI smoke contract, context independence, result ownership (retention across later engine calls), and pagination consistency.
