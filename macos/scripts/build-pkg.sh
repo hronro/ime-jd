@@ -104,9 +104,25 @@ mkdir -p "$OUT_DIR"
 mkdir -p "$STAGE_DIR/Library/Input Methods"
 cp -R "$APP_PATH" "$STAGE_DIR/Library/Input Methods/"
 
+# Strip extended attributes from the staged payload so pkgbuild doesn't
+# record them as AppleDouble (._*) entries in the archive.
+xattr -rc "$STAGE_DIR"
+
+# pkgbuild's inferred component plist marks app bundles BundleIsRelocatable —
+# Installer then asks Spotlight where a bundle with this identifier already
+# lives and installs THERE instead of the payload path. On one tested machine
+# that diverted every upgrade into /Library/Input Methods/JdIME.localized/
+# JdIME.app (a stray copy), leaving the registered bundle stale ("PackageKit:
+# ... relocated to ..." in /var/log/install.log). Pin the bundle so the
+# payload path is authoritative.
+COMPONENT_PLIST="$OUT_DIR/jdime-component.plist"
+pkgbuild --analyze --root "$STAGE_DIR" "$COMPONENT_PLIST" >/dev/null
+plutil -replace '0.BundleIsRelocatable' -bool false "$COMPONENT_PLIST"
+
 echo "==> pkgbuild..."
 pkgbuild \
     --root "$STAGE_DIR" \
+    --component-plist "$COMPONENT_PLIST" \
     --identifier "$IDENT.pkg" \
     --version "$VERSION" \
     --install-location "/" \
@@ -130,7 +146,7 @@ productbuild \
     --package-path "$OUT_DIR" \
     "$PKG_OUT"
 
-rm -f "$OUT_DIR/JdIME-component.pkg"
+rm -f "$OUT_DIR/JdIME-component.pkg" "$COMPONENT_PLIST"
 echo "built $PKG_OUT"
 
 # Optional signing (uncomment and configure the identity for distribution):
