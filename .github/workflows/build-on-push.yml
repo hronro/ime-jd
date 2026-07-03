@@ -339,3 +339,56 @@ jobs:
           name: jd-ime-ios-ipa
           path: dist/jd-ime-ios.ipa
           if-no-files-found: error
+
+  # Android app + IME service, one APK carrying both ABIs (arm64-v8a +
+  # x86_64). Gradle's buildLibjd task runs zig + the NDK clang itself, so
+  # this job needs no prebuilt libjd bundle. Android refuses to install
+  # unsigned APKs, so the artifact is signed with an ephemeral CI-generated
+  # key — fine for grab-and-test, but each run's signature differs, so
+  # installing a newer artifact over an older one needs an uninstall first.
+  # (Tagged releases use the stable keystore from repo secrets instead —
+  # see release.yml.)
+  build-android:
+    name: android .apk
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease
+
+      - name: Sign APK (ephemeral CI key)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bt=$(printf '%s\n' "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          unsigned=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          keytool -genkeypair -keystore ci.jks -storepass ci-ephemeral \
+            -alias ci -dname "CN=ime-jd CI" -keyalg RSA -keysize 2048 -validity 10000
+          "$bt/zipalign" -f 4 "$unsigned" aligned.apk
+          mkdir -p dist
+          "$bt/apksigner" sign --ks ci.jks --ks-pass pass:ci-ephemeral \
+            --out dist/jd-ime-android.apk aligned.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: jd-ime-android-apk
+          path: dist/jd-ime-android.apk
+          if-no-files-found: error

@@ -447,3 +447,78 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
+
+  # Android app + IME service, one APK carrying both ABIs (arm64-v8a +
+  # x86_64). Gradle's buildLibjd task runs zig + the NDK clang itself, so
+  # this job needs no prebuilt libjd bundle. The APK's versionName/Code come
+  # from the tag (which create-release verified against core/build.zig.zon).
+  #
+  # Android refuses to install unsigned APKs, so the asset is signed with
+  # the keystore from repo secrets:
+  #   ANDROID_SIGNING_KEYSTORE — base64 of a .jks holding ONE key
+  #                              (apksigner then needs no alias)
+  #   ANDROID_SIGNING_PASSWORD — its store/key password
+  # Until those are configured, the job falls back to an ephemeral
+  # CI-generated key with a warning: the APK installs fine, but every
+  # release gets a different signature, so users must uninstall to upgrade.
+  build-android:
+    name: android .apk
+    runs-on: ubuntu-latest
+    needs: create-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build release APK
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          core="${ver%%[-+]*}"   # strip -prerelease/+build for the numeric code
+          IFS=. read -r major minor patch <<<"$core"
+          code=$((major * 10000 + minor * 100 + patch))
+          ./gradlew assembleRelease -PjdVersionName="$ver" -PjdVersionCode="$code"
+
+      - name: Sign APK
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_SIGNING_KEYSTORE }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > signing.jks
+            pass="$KEYSTORE_PASS"
+          else
+            echo "::warning::ANDROID_SIGNING_KEYSTORE secret not set — signing" \
+              "with an ephemeral key; users must uninstall to upgrade across releases."
+            keytool -genkeypair -keystore signing.jks -storepass ci-ephemeral \
+              -alias ci -dname "CN=ime-jd CI" -keyalg RSA -keysize 2048 -validity 10000
+            pass=ci-ephemeral
+          fi
+          bt=$(printf '%s\n' "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          unsigned=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          "$bt/zipalign" -f 4 "$unsigned" aligned.apk
+          mkdir -p release
+          "$bt/apksigner" sign --ks signing.jks --ks-pass "pass:$pass" \
+            --out "release/jd-ime-${GITHUB_REF_NAME}-android.apk" aligned.apk
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber

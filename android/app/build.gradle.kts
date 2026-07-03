@@ -13,9 +13,11 @@ android {
         applicationId = "com.hronro.imejd"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        // Placeholder; CI can override from core/build.zig.zon's .version (like macOS/iOS).
-        versionName = "0.2.0"
+        // Placeholders; release CI overrides both from the version tag
+        // (which create-release verifies against core/build.zig.zon):
+        //   ./gradlew assembleRelease -PjdVersionName=X.Y.Z -PjdVersionCode=N
+        versionCode = (findProperty("jdVersionCode") as String?)?.toInt() ?: 1
+        versionName = (findProperty("jdVersionName") as String?) ?: "0.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
