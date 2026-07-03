@@ -37,6 +37,14 @@ jobs:
           - platform: ios
             arch: arm64
             zig_target: aarch64-ios.13.0
+          # Android engine slices, consumed by build-android (which links
+          # the JNI shim against them with the NDK).
+          - platform: android
+            arch: arm64
+            zig_target: aarch64-linux-android
+          - platform: android
+            arch: x86_64
+            zig_target: x86_64-linux-android
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -340,25 +348,21 @@ jobs:
           path: dist/jd-ime-ios.ipa
           if-no-files-found: error
 
-  # Android app + IME service, one APK carrying both ABIs (arm64-v8a +
-  # x86_64). Gradle's buildLibjd task runs zig + the NDK clang itself, so
-  # this job needs no prebuilt libjd bundle. Android refuses to install
-  # unsigned APKs, so the artifact is signed with an ephemeral CI-generated
-  # key — fine for grab-and-test, but each run's signature differs, so
-  # installing a newer artifact over an older one needs an uninstall first.
-  # (Tagged releases use the stable keystore from repo secrets instead —
-  # see release.yml.)
+  # Android app + IME service, one APK per ABI (arm64-v8a + x86_64). Reuses
+  # the prebuilt engine slices from build-libs via the script's LIBJD_SO_DIR
+  # fast-path (like build-ios's LIBJD_A); only the JNI shim is linked here,
+  # by the NDK, so the job needs no zig. Android refuses to install unsigned
+  # APKs, so the artifacts are signed with an ephemeral CI-generated key —
+  # fine for grab-and-test, but each run's signature differs, so installing
+  # a newer artifact over an older one needs an uninstall first. (Tagged
+  # releases use the stable keystore from repo secrets — see release.yml.)
   build-android:
     name: android .apk
     runs-on: ubuntu-latest
+    needs: build-libs
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
 
       - name: Install JDK
         uses: actions/setup-java@v4
@@ -369,26 +373,60 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build release APK
+      - name: Download prebuilt engine (arm64)
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-android-arm64
+          path: prebuilt-raw/arm64
+
+      - name: Download prebuilt engine (x86_64)
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-android-x86_64
+          path: prebuilt-raw/x86_64
+
+      - name: Stage engines by ABI
+        shell: bash
+        # build-libjd.sh expects LIBJD_SO_DIR/<abi>/libjd.so, keyed by the
+        # Android ABI names rather than the artifact arch names.
+        run: |
+          set -euo pipefail
+          mkdir -p prebuilt/arm64-v8a prebuilt/x86_64
+          cp prebuilt-raw/arm64/lib/libjd.so  prebuilt/arm64-v8a/
+          cp prebuilt-raw/x86_64/lib/libjd.so prebuilt/x86_64/
+
+      - name: Build release APKs
         working-directory: android
+        env:
+          LIBJD_SO_DIR: ${{ github.workspace }}/prebuilt
         run: ./gradlew assembleRelease
 
-      - name: Sign APK (ephemeral CI key)
+      - name: Sign APKs (ephemeral CI key)
         shell: bash
         run: |
           set -euo pipefail
           bt=$(printf '%s\n' "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          unsigned=android/app/build/outputs/apk/release/app-release-unsigned.apk
           keytool -genkeypair -keystore ci.jks -storepass ci-ephemeral \
             -alias ci -dname "CN=ime-jd CI" -keyalg RSA -keysize 2048 -validity 10000
-          "$bt/zipalign" -f 4 "$unsigned" aligned.apk
           mkdir -p dist
-          "$bt/apksigner" sign --ks ci.jks --ks-pass pass:ci-ephemeral \
-            --out dist/jd-ime-android.apk aligned.apk
+          for pair in "arm64-v8a:arm64" "x86_64:x86_64"; do
+            abi="${pair%%:*}" arch="${pair##*:}"
+            unsigned="android/app/build/outputs/apk/release/app-$abi-release-unsigned.apk"
+            "$bt/zipalign" -f 4 "$unsigned" "aligned-$abi.apk"
+            "$bt/apksigner" sign --ks ci.jks --ks-pass pass:ci-ephemeral \
+              --out "dist/jd-ime-android-$arch.apk" "aligned-$abi.apk"
+          done
 
-      - name: Upload APK
+      - name: Upload APK (arm64)
         uses: actions/upload-artifact@v7
         with:
-          name: jd-ime-android-apk
-          path: dist/jd-ime-android.apk
+          name: jd-ime-android-arm64
+          path: dist/jd-ime-android-arm64.apk
+          if-no-files-found: error
+
+      - name: Upload APK (x86_64)
+        uses: actions/upload-artifact@v7
+        with:
+          name: jd-ime-android-x86_64
+          path: dist/jd-ime-android-x86_64.apk
           if-no-files-found: error

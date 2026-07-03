@@ -13,6 +13,11 @@
 #
 # Usage: scripts/build-libjd.sh [abi ...]   (default: arm64-v8a x86_64)
 # Env:   ANDROID_HOME / ANDROID_NDK_HOME, MIN_SDK (default 24), OPT (default ReleaseSmall)
+#        LIBJD_SO_DIR -> optional dir of prebuilt engines, <abi>/libjd.so per
+#                        requested ABI; when set they're used directly instead
+#                        of invoking zig (the CI fast-path, like iOS's LIBJD_A
+#                        — the `build-libs` bundles are ReleaseFast). The NDK
+#                        is still required: the JNI shim is always linked here.
 
 set -eu
 
@@ -26,12 +31,15 @@ MIN_SDK="${MIN_SDK:-24}"
 OPT="-Doptimize=${OPT:-ReleaseSmall}"
 
 # --- locate zig (Gradle's daemon may not inherit an interactive PATH) ---
-if ! command -v zig >/dev/null 2>&1; then
-    for cand in /opt/homebrew/bin/zig /usr/local/bin/zig "$HOME/.local/bin/zig"; do
-        [ -x "$cand" ] && { PATH="$(dirname "$cand"):$PATH"; export PATH; break; }
-    done
+# Not needed at all when every engine comes prebuilt via LIBJD_SO_DIR.
+if [ -z "${LIBJD_SO_DIR:-}" ]; then
+    if ! command -v zig >/dev/null 2>&1; then
+        for cand in /opt/homebrew/bin/zig /usr/local/bin/zig "$HOME/.local/bin/zig"; do
+            [ -x "$cand" ] && { PATH="$(dirname "$cand"):$PATH"; export PATH; break; }
+        done
+    fi
+    command -v zig >/dev/null 2>&1 || { echo "error: zig not found on PATH" >&2; exit 1; }
 fi
-command -v zig >/dev/null 2>&1 || { echo "error: zig not found on PATH" >&2; exit 1; }
 
 # --- locate the NDK ---
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
@@ -47,7 +55,9 @@ TOOLBIN="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin"
 CLANG="$TOOLBIN/clang"
 STRIP="$TOOLBIN/llvm-strip"
 
-echo "zig:  $(command -v zig) ($(zig version))"
+if [ -z "${LIBJD_SO_DIR:-}" ]; then
+    echo "zig:  $(command -v zig) ($(zig version))"
+fi
 echo "ndk:  $NDK ($HOST_TAG)"
 
 for abi in $ABIS; do
@@ -60,18 +70,39 @@ for abi in $ABIS; do
     esac
 
     echo "=== $abi ==="
-    prefix="$CORE_DIR/zig-out/android/$abi"
 
-    # 1. Core engine -> libjd.so
-    ( cd "$CORE_DIR" && zig build -Dtarget="$zig_target" "$OPT" --prefix "$prefix" )
+    # 1. Core engine -> libjd.so (prebuilt fast-path, or built with zig)
+    if [ -n "${LIBJD_SO_DIR:-}" ]; then
+        libjd_so="$LIBJD_SO_DIR/$abi/libjd.so"
+        if [ ! -f "$libjd_so" ]; then
+            echo "error: LIBJD_SO_DIR is set but $libjd_so does not exist" >&2
+            exit 1
+        fi
+        # Cheap arch sanity check — a wrong slice would only surface as an
+        # ld.lld error while linking the shim (mirrors iOS's lipo check).
+        case "$abi" in
+            arm64-v8a) want="AArch64" ;;
+            x86_64)    want="X86-64" ;;
+            *)         want="" ;;
+        esac
+        if [ -n "$want" ] && ! "$TOOLBIN/llvm-readelf" -h "$libjd_so" | grep -qi "$want"; then
+            echo "error: prebuilt $libjd_so is not a $want ELF (wrong ABI slice?)" >&2
+            exit 1
+        fi
+        echo "using prebuilt libjd from $libjd_so"
+    else
+        prefix="$CORE_DIR/zig-out/android/$abi"
+        ( cd "$CORE_DIR" && zig build -Dtarget="$zig_target" "$OPT" --prefix "$prefix" )
+        libjd_so="$prefix/lib/libjd.so"
+    fi
 
     # 2. JNI shim -> libjdjni.so, linked against the dynamic libjd.so
     out="$JNILIBS_DIR/$abi"
     mkdir -p "$out"
-    cp "$prefix/lib/libjd.so" "$out/libjd.so"
+    cp "$libjd_so" "$out/libjd.so"
     "$CLANG" --target="$clang_target" -shared -fPIC -O2 \
         -I"$CORE_DIR/include" \
-        "$SHIM" -L"$prefix/lib" -ljd \
+        "$SHIM" -L"$(dirname "$libjd_so")" -ljd \
         -o "$out/libjdjni.so"
 
     # Trim symbols (keep dynamic/exported) — the project values small binaries.

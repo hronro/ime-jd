@@ -19,10 +19,18 @@ android {
         versionCode = (findProperty("jdVersionCode") as String?)?.toInt() ?: 1
         versionName = (findProperty("jdVersionName") as String?) ?: "0.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
 
-        ndk {
-            // MVP: real phones (arm64-v8a) + emulator (x86_64). Add armeabi-v7a / x86 later.
-            abiFilters += listOf("arm64-v8a", "x86_64")
+    // One APK per ABI, shipped as separate downloads like every other
+    // platform's per-arch packages. This list must stay in sync with the
+    // ABIs the buildLibjd task below passes to build-libjd.sh.
+    // MVP: real phones (arm64-v8a) + emulator (x86_64). Add armeabi-v7a / x86 later.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = false
         }
     }
 
