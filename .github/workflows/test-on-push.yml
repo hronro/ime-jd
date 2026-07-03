@@ -1,0 +1,227 @@
+name: Tests
+
+# The merge gate: runs every test suite in the repo. Kept separate from
+# build-on-push.yml (which produces artifacts on master pushes) so branch
+# protection can require these checks on PRs without coupling them to the
+# artifact builds. No `paths` filtering — a path-filtered workflow never
+# starts, which leaves its required checks "Expected" forever and blocks
+# the merge.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on force-pushes / new PR commits.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Zig engine: unit + integration tests, including the generator parsers
+  # and the end-to-end tests against the real embedded blobs.
+  test-core:
+    name: core (zig)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run core tests
+        working-directory: core
+        run: zig build test --summary all
+
+  # Rust: the shared bindings crate (FFI contract tests against the real
+  # engine, dynamic-linkage dev path) and the CLI's renderer tests.
+  test-rust:
+    name: rust (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Cache cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            bindings/rust
+            cli
+
+      - name: Test bindings/rust
+        working-directory: bindings/rust
+        run: cargo test
+
+      - name: Test cli
+        working-directory: cli
+        run: cargo test
+
+  # Rust on Windows: exercises the static jd_static.lib linkage path of the
+  # bindings crate, and compiles the TSF crate — the one build this repo's
+  # developers can't check on non-Windows machines (embed-resource needs the
+  # MSVC resource toolchain).
+  test-rust-windows:
+    name: rust (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      # Unlike build-on-push (which hands the Windows jobs a libjd prebuilt on
+      # Linux), this job zig-builds the core from source on Windows. The
+      # runner image ships git with autocrlf=true, which would rewrite the
+      # dictionary tables to CRLF and break the generator's default-LF parse
+      # (core/build.zig's -Dtables_eol note) — force an LF checkout.
+      - name: Force LF checkout
+        run: git config --global core.autocrlf false
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Cache cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            bindings/rust
+            windows
+
+      - name: Test bindings/rust
+        working-directory: bindings/rust
+        run: cargo test
+
+      - name: Test windows IME crate
+        working-directory: windows
+        run: cargo test
+
+  # macOS IME: KeyGate (full NSEvent → KeyAction matrix), engine FFI smoke,
+  # and candidate formatting, built with the shared bindings/swift sources.
+  test-macos:
+    name: macos (xcodebuild)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: macos
+        run: xcodegen generate
+
+      - name: Run tests
+        working-directory: macos
+        run: >
+          xcodebuild
+          -project JdIME.xcodeproj -scheme JdIME
+          -derivedDataPath build
+          test
+
+  # iOS keyboard: hostless InputSession dispatch tests on a simulator,
+  # built with the shared bindings/swift sources.
+  test-ios:
+    name: ios (simulator)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Pick a simulator
+        id: sim
+        # Device names change across Xcode images; pick the first available
+        # iPhone by UDID instead of hardcoding one.
+        run: |
+          set -euo pipefail
+          udid=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices[] | .[] | select(.isAvailable and (.name | startswith("iPhone")))][0].udid')
+          test -n "$udid" && test "$udid" != "null"
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        working-directory: ios
+        run: >
+          xcodebuild
+          -project JdIME-iOS.xcodeproj -scheme JdIME-iOS
+          -destination "id=${{ steps.sim.outputs.udid }}"
+          -derivedDataPath build/DD
+          test
+
+  # Android: instrumented InputSession tests against the real engine through
+  # JNI — the only coverage the JNI marshaling layer has, so it earns the
+  # emulator's extra runtime.
+  test-android:
+    name: android (emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run instrumented tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          disable-animations: true
+          working-directory: android
+          script: ./gradlew connectedAndroidTest
