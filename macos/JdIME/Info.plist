@@ -43,8 +43,16 @@
          enumerates on Tahoe. -->
     <key>InputMethodType</key>
     <string>keyboard</string>
+    <!-- MUST be "<bundle-id>_Connection". On macOS 12, IMKServer registers
+         its mach service as "<bundle-id>_Connection" no matter what name the
+         IMKServer initializer is given, while client apps look up the name
+         stored here (via the TIS registration record) — any other value
+         leaves clients connecting to a service that doesn't exist, so the
+         IME silently never receives input (keystrokes pass through, and
+         selecting 键道 in the menu bounces back). macOS 26 honors this value
+         on both sides, so the bundle-id form works everywhere. -->
     <key>InputMethodConnectionName</key>
-    <string>JdIME_Connection</string>
+    <string>com.hronro.ime-jd_Connection</string>
     <key>InputMethodServerControllerClass</key>
     <string>JdIME_InputController</string>
     <key>InputMethodServerDelegateClass</key>
