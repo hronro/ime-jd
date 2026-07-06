@@ -87,7 +87,8 @@ enum KeyLayout {
         rows.append(charRow("qwertyuiop"))
         // 9-key home row, centered like the built-in keyboard. ';' is omitted: on
         // desktop it's a shortcut to pick the 2nd candidate, but on mobile you tap
-        // the candidate instead. (A literal ';' is still available on the 123 layer.)
+        // the candidate instead. (The engine reserves ';' as that shortcut, so the
+        // punctuation inventory has no '；' either — no plane carries one.)
         rows.append([KeySpec(.spacer, 0.5)] + charRow("asdfghjkl") + [KeySpec(.spacer, 0.5)])
         rows.append([KeySpec(.shift, 1.5)] + charRow("zxcvbnm") + [KeySpec(.backspace, 1.5)])
         rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe))
@@ -95,14 +96,16 @@ enum KeyLayout {
     }
 
     // Digits + Chinese punctuation, shown directly (not the ASCII forms). The two
-    // pages together cover every mark in core/src/punctuation-marks/. Keys insert
-    // their mark via the engine-bypass path (see InputSession.insertLiteral).
+    // pages together cover every mark in core/src/punctuation-marks/, arranged by
+    // frequency like the built-in Pinyin keyboard: the most common marks sit on
+    // this page's bottom row within thumb reach, the rare ones live on #+=. Keys
+    // insert their mark via the engine-bypass path (see InputSession.insertLiteral).
     private static func numbers(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
         var rows: [[KeySpec]] = [
             litRow(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]),
-            litRow(["。", "，", "、", "？", "！", "：", "……", "·", "～", "｀"]),
+            litRow(["－", "／", "：", "～", "（", "）", "＄", "＠", "“", "”"]),
             [KeySpec(.toLayer(.symbols), 1.5)]
-                + litRow(["“", "”", "‘", "’", "（", "）", "《", "》"])
+                + litRow(["。", "，", "、", "？", "！", "……", "‘", "’"])
                 + [KeySpec(.backspace, 1.5)],
         ]
         rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe, leftLayer: .letters))
@@ -111,10 +114,10 @@ enum KeyLayout {
 
     private static func symbols(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
         var rows: [[KeySpec]] = [
-            litRow(["「", "」", "【", "】", "〔", "〕", "［", "］", "『", "』"]),
-            litRow(["〖", "〗", "｛", "｝", "＠", "＃", "＄", "％", "＆", "＊"]),
+            litRow(["「", "」", "【", "】", "｛", "｝", "＃", "％", "＆", "＊"]),
+            litRow(["＿", "＝", "＋", "＼", "｜", "¦", "《", "》", "·", "｀"]),
             [KeySpec(.toLayer(.numbers), 1.5)]
-                + litRow(["＋", "－", "＝", "＿", "｜", "¦", "＼", "／"])
+                + litRow(["『", "』", "〖", "〗", "〔", "〕", "［", "］"])
                 + [KeySpec(.backspace, 1.5)],
         ]
         rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe, leftLayer: .letters))
