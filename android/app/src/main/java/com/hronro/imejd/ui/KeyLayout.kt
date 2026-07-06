@@ -1,6 +1,9 @@
-// Port of ios/Keyboard/UI/KeyLayout.swift. Proportional key weights so one model
-// lays out across phone/tablet and orientations. Key arrays/weights are copied
-// verbatim — including the Chinese-punctuation rows and the omitted ';'.
+// Port of ios/Keyboard/UI/KeyLayout.swift: same proportional-weight model (one
+// model lays out across phone/tablet and orientations), same omitted ';'. The
+// punctuation arrangement deliberately diverges from iOS: there the planes mirror
+// Apple's built-in Pinyin keyboard, here they follow Gboard's Chinese conventions —
+// ，/。 flank the space bar on every plane, and the ?123 / =\< pages group marks
+// the way Gboard's symbol pages do.
 package com.hronro.imejd.ui
 
 /** Which key plane is showing. */
@@ -30,8 +33,8 @@ sealed interface KeyCap {
             Shift -> "⇧"
             is ToLayer -> when (layer) {
                 KeyboardLayer.LETTERS -> "ABC"
-                KeyboardLayer.NUMBERS -> "123"
-                KeyboardLayer.SYMBOLS -> "#+="
+                KeyboardLayer.NUMBERS -> "?123"
+                KeyboardLayer.SYMBOLS -> "=\\<"
             }
             Globe -> "🌐"
             Space -> "空格"
@@ -80,34 +83,45 @@ object KeyLayout {
     )
 
     // Digits + Chinese punctuation, shown directly (not the ASCII forms). The two
-    // pages together cover every mark in core/src/punctuation-marks/. Keys insert
-    // their mark via the engine-bypass path (InputSession.insertLiteral).
+    // pages together cover every mark in core/src/punctuation-marks/, arranged by
+    // frequency the way Gboard's symbol pages are: this ?123 page mirrors Gboard's
+    // (its `@ # ￥ _ & - + ( ) /` and `* " ' : ; ! ?` rows, with ＄ in the ￥ slot,
+    // the directional quote pairs in the "/' slots, and 、 in the ; slot), while
+    // ，/。 stay on the bottom row of every plane. Keys insert their mark via the
+    // engine-bypass path (InputSession.insertLiteral).
     private fun numbers(idiom: KeyboardIdiom): List<List<KeySpec>> = listOf(
         litRow(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")),
-        litRow(listOf("。", "，", "、", "？", "！", "：", "……", "·", "～", "｀")),
+        litRow(listOf("＠", "＃", "＄", "＿", "＆", "－", "＋", "（", "）", "／")),
         listOf(KeySpec(KeyCap.ToLayer(KeyboardLayer.SYMBOLS), 1.5f)) +
-            litRow(listOf("“", "”", "‘", "’", "（", "）", "《", "》")) +
+            litRow(listOf("“", "”", "‘", "’", "：", "、", "！", "？")) +
             listOf(KeySpec(KeyCap.Backspace, 1.5f)),
         bottomRow(idiom, leftLayer = KeyboardLayer.LETTERS),
     )
 
+    // The rare marks, grouped like Gboard's =\< page: misc symbols up top (starting
+    // ~ ` | as Gboard does), the bracket pairs in the middle, and a short wide
+    // third row for the rarest CJK bracket variants.
     private fun symbols(idiom: KeyboardIdiom): List<List<KeySpec>> = listOf(
-        litRow(listOf("「", "」", "【", "】", "〔", "〕", "［", "］", "『", "』")),
-        litRow(listOf("〖", "〗", "｛", "｝", "＠", "＃", "＄", "％", "＆", "＊")),
+        litRow(listOf("～", "｀", "｜", "¦", "·", "＼", "％", "＊", "……", "＝")),
+        litRow(listOf("《", "》", "「", "」", "『", "』", "｛", "｝", "【", "】")),
         listOf(KeySpec(KeyCap.ToLayer(KeyboardLayer.NUMBERS), 1.5f)) +
-            litRow(listOf("＋", "－", "＝", "＿", "｜", "¦", "＼", "／")) +
+            litRow(listOf("〔", "〕", "［", "］", "〖", "〗")) +
             listOf(KeySpec(KeyCap.Backspace, 1.5f)),
         bottomRow(idiom, leftLayer = KeyboardLayer.LETTERS),
     )
 
-    /** `[123/ABC] [ space ] [ return ]`. No globe key — IME switching is offered by
-     *  the system navigation bar's input-method switcher. */
+    /** `[?123/ABC] [，] [ space ] [。] [ return ]` — ，/。 beside the space bar on
+     *  every plane, Gboard-style, so the two most common marks never need a layer
+     *  switch. No globe key — IME switching is offered by the system navigation
+     *  bar's input-method switcher. */
     private fun bottomRow(
         idiom: KeyboardIdiom,
         leftLayer: KeyboardLayer = KeyboardLayer.NUMBERS,
     ): List<KeySpec> = listOf(
         KeySpec(KeyCap.ToLayer(leftLayer), 2.0f),
-        KeySpec(KeyCap.Space, 6.0f),
+        KeySpec(KeyCap.InsertLiteral("，")),
+        KeySpec(KeyCap.Space, 4.0f),
+        KeySpec(KeyCap.InsertLiteral("。")),
         KeySpec(KeyCap.Return, 2.0f),
     )
 }

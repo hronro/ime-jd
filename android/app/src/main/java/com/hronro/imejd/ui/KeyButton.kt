@@ -9,6 +9,7 @@ import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
@@ -55,6 +56,7 @@ class KeyButton(
 
     private val handler = Handler(Looper.getMainLooper())
     private var repeatRunnable: Runnable? = null
+    private val inkBounds = Rect()
 
     init {
         installBackground()
@@ -129,7 +131,18 @@ class KeyButton(
         textPaint.color = textColor()
         val fm = textPaint.fontMetrics
         val baseline = height / 2f - (fm.ascent + fm.descent) / 2f
-        canvas.drawText(displayText, width / 2f, baseline, textPaint)
+        var x = width / 2f
+        if (spec.cap is KeyCap.InsertLiteral && displayText.isNotEmpty()) {
+            // Fullwidth CJK punctuation (。，、！…) inks only the bottom-left of a
+            // full-em advance. CoreText hides that on iOS by compressing the trailing
+            // half-em at line ends; Android's Paint has no such rule, so centering the
+            // advance leaves the mark visibly left of center. Center on the ink box
+            // instead — horizontally only: the low vertical position is how these
+            // marks sit in running text (and on the iOS keys).
+            textPaint.getTextBounds(displayText, 0, displayText.length, inkBounds)
+            x += textPaint.measureText(displayText) / 2f - inkBounds.exactCenterX()
+        }
+        canvas.drawText(displayText, x, baseline, textPaint)
     }
 
     @SuppressLint("ClickableViewAccessibility")
