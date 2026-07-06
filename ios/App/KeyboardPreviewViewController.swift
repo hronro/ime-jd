@@ -4,7 +4,7 @@ import UIKit
 /// extension in Settings. It drives the SAME `KeyboardView` + `InputSession`, with
 /// committed text routed into a real text view (which conforms to `UIKeyInput`).
 final class KeyboardPreviewViewController: UIViewController {
-    private let session = InputSession(pageSize: 9)
+    private let session = InputSession(pageSize: 16)   // mirrors the extension
     private let host = FieldHost()
     private let textView = UITextView()
     private var keyboard: KeyboardView!
@@ -60,6 +60,12 @@ final class KeyboardPreviewViewController: UIViewController {
         // QA launch flags to preview a specific plane directly.
         if CommandLine.arguments.contains("-numbers") { keyboard.showLayer(.numbers) }
         else if CommandLine.arguments.contains("-symbols") { keyboard.showLayer(.symbols) }
+        // `-type ab` feeds keys into the session at launch, so screenshots can
+        // capture the composing candidate bar without tapping.
+        if let i = CommandLine.arguments.firstIndex(of: "-type"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            for b in CommandLine.arguments[i + 1].utf8 { session.handle(.engineKey(b)) }
+        }
     }
 
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {

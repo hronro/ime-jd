@@ -1,7 +1,8 @@
 import UIKit
 
 /// The expanded candidate list: a scrollable wrapping grid of ALL loaded
-/// candidates, shown when the user taps the bar's expand chevron. Covers the keys.
+/// candidates, shown when the user taps the bar's expand chevron. Covers the
+/// keys. Self-filling: keeps requesting pages while its last item is on screen.
 final class CandidateGridView: UIView, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout {
     var onSelect: ((Int) -> Void)?
     var onNeedMore: (() -> Void)?
@@ -28,8 +29,12 @@ final class CandidateGridView: UIView, UICollectionViewDataSource, UICollectionV
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private func build() {
-        closeButton.setTitle("▴", for: .normal)
-        closeButton.titleLabel?.font = .systemFont(ofSize: 18)
+        // Same glyph family and box as the bar's expand chevron, so the
+        // expand/collapse affordance flips in place.
+        closeButton.setImage(UIImage(
+            systemName: "chevron.up",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+        ), for: .normal)
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.onTap { [weak self] in self?.onClose?() }
 
@@ -65,7 +70,7 @@ final class CandidateGridView: UIView, UICollectionViewDataSource, UICollectionV
     func apply(theme: KeyboardTheme) {
         self.theme = theme
         backgroundColor = theme.keyboardBackground
-        closeButton.setTitleColor(theme.candidateText, for: .normal)
+        closeButton.tintColor = theme.candidateHint
         topSeparator.backgroundColor = theme.separator
         collection.reloadData()
     }
@@ -101,6 +106,15 @@ final class CandidateGridView: UIView, UICollectionViewDataSource, UICollectionV
         let text = CandidateBarView.title(items[ip.item], theme: theme)
         let w = ceil(text.size().width) + 28
         return CGSize(width: min(w, cv.bounds.width), height: 46)
+    }
+
+    func collectionView(_ cv: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt ip: IndexPath) {
+        // A collection view whose content fits its bounds cannot scroll, so the
+        // didScroll prefetch below never fires on a freshly-expanded, underfilled
+        // grid. Requesting more whenever the last loaded item comes on screen makes
+        // the grid fill itself page by page until content overflows the viewport
+        // (the owner's loader no-ops once the engine is out of pages, ending the chain).
+        if ip.item == items.count - 1 { onNeedMore?() }
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {

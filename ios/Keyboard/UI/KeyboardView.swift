@@ -164,7 +164,9 @@ final class KeyboardView: UIView {
 
     private func renderCandidates(_ snap: QuerySnapshot, _ raw: String) {
         items = snap.options
-        candidateBar.reset(composing: raw, items: items, canExpand: snap.totalPages > 1)
+        // Chevron keyed to a fixed count, not totalPages, so the expand affordance
+        // doesn't vanish for mid-size candidate sets when the engine page size grows.
+        candidateBar.reset(composing: raw, items: items, canExpand: snap.optionsCount > 9)
         if let grid = gridOverlay {
             if raw.isEmpty { collapseGrid() } else { grid.setItems(items) }
         }

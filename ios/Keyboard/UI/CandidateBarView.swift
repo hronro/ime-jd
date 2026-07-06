@@ -42,8 +42,14 @@ final class CandidateBarView: UIView, UIScrollViewDelegate {
         scroll.delegate = self
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        expandButton.setTitle("▾", for: .normal)
-        expandButton.titleLabel?.font = .systemFont(ofSize: 18)
+        // The built-in Pinyin keyboard's affordance: a thin secondary-gray SF Symbol
+        // chevron, not a filled text triangle. Starts hidden so the idle bar shows
+        // nothing — visibility is decided by reset() once a composition has candidates.
+        expandButton.setImage(UIImage(
+            systemName: "chevron.down",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+        ), for: .normal)
+        expandButton.isHidden = true
         expandButton.translatesAutoresizingMaskIntoConstraints = false
         expandButton.onTap { [weak self] in self?.onExpand?() }
 
@@ -66,7 +72,9 @@ final class CandidateBarView: UIView, UIScrollViewDelegate {
             expandButton.trailingAnchor.constraint(equalTo: trailingAnchor),
             expandButton.topAnchor.constraint(equalTo: topAnchor),
             expandButton.bottomAnchor.constraint(equalTo: bottomAnchor),
-            expandButton.widthAnchor.constraint(equalToConstant: 36),
+            // 44pt box: the standard touch target, and equal to the grid's close
+            // button so the expand/collapse chevron flips in place.
+            expandButton.widthAnchor.constraint(equalToConstant: 44),
 
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
@@ -84,7 +92,7 @@ final class CandidateBarView: UIView, UIScrollViewDelegate {
     func apply(theme: KeyboardTheme) {
         self.theme = theme
         composingLabel.textColor = theme.composingText
-        expandButton.setTitleColor(theme.candidateText, for: .normal)
+        expandButton.tintColor = theme.candidateHint
         topSeparator.backgroundColor = theme.separator
     }
 

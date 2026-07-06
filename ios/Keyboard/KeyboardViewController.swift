@@ -5,7 +5,9 @@ import Libjd
 /// reusable `KeyboardView`, forwarding committed text to the host via the text proxy
 /// and keeping appearance / return key / height in sync with the host field.
 final class KeyboardViewController: UIInputViewController {
-    private let session = InputSession(pageSize: 9)
+    // 16 per fetch — iOS selects by tap, so pages aren't capped at 9 the way
+    // macOS's 1-9 digit labels cap them; bigger pages = fewer grid-fill round trips.
+    private let session = InputSession(pageSize: 16)
     private var keyboard: KeyboardView!
     private var heightConstraint: NSLayoutConstraint!
 
