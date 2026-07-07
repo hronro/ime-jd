@@ -3,12 +3,14 @@
 #   Single ASCII byte key, NOT one of: space, ';', '1'..'9'.
 #   Multiple values on the same line produce a candidate window in source
 #   order (the first value is the default).
+#   Lines starting with '#' are comments — EXCEPT '#' immediately followed
+#   by a tab, which is the mapping line for the '#' key itself.
 
 `	｀
 ~	～
 !	！
 @	＠
-# 	＃
+#	＃
 $	＄
 %	％
 ^	……

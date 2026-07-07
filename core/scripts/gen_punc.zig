@@ -7,7 +7,9 @@
 //! target's endianness differs from the host's, `punc.buildBlob` byte-swaps
 //! every multi-byte field before writing the blob to disk.
 //!
-//! File formats (tab-separated, '#' comments, blank lines ignored):
+//! File formats (tab-separated, '#' comments, blank lines ignored — with one
+//! carve-out: a line whose '#' is immediately followed by a tab is the
+//! mapping line for the `#` key itself, not a comment):
 //!
 //!   normal.txt: <key>\t<value>[\t<value>...]
 //!     One line per key. Multiple values on the same line become a
@@ -60,6 +62,14 @@ fn isReservedKey(key: u8) ?[]const u8 {
     return null;
 }
 
+/// A trimmed line is a comment iff it starts with '#' NOT immediately
+/// followed by a tab. `#<TAB>...` is the mapping line for the `#` key —
+/// the one key that collides with the comment marker. (A lone `#` or
+/// `# anything` stays a comment, so prose headers keep working.)
+fn isCommentLine(trimmed: []const u8) bool {
+    return trimmed[0] == '#' and (trimmed.len == 1 or trimmed[1] != '\t');
+}
+
 fn parseKeyField(field: []const u8, path: []const u8, line: []const u8) !u8 {
     if (field.len != 1) {
         diag("error: punc key must be exactly one ASCII byte, got {d} bytes in {s}: {s}\n", .{ field.len, path, line });
@@ -92,7 +102,7 @@ fn parseNormal(
     var it = std.mem.splitSequence(u8, data, eol);
     while (it.next()) |raw_line| {
         const trimmed = std.mem.trim(u8, raw_line, " \r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        if (trimmed.len == 0 or isCommentLine(trimmed)) continue;
 
         var fields = std.mem.splitScalar(u8, trimmed, '\t');
         const key_field = std.mem.trim(u8, fields.first(), " ");
@@ -143,7 +153,7 @@ fn parsePaired(
     var it = std.mem.splitSequence(u8, data, eol);
     while (it.next()) |raw_line| {
         const trimmed = std.mem.trim(u8, raw_line, " \r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        if (trimmed.len == 0 or isCommentLine(trimmed)) continue;
 
         var fields = std.mem.splitScalar(u8, trimmed, '\t');
         const key_field = fields.first();
@@ -405,6 +415,28 @@ test "parseNormal: skips comments and blank lines" {
     try testing.expectEqual(@as(usize, 2), f.out.items.len);
 }
 
+test "parseNormal: '#' followed by a tab is the '#' key's mapping, not a comment" {
+    var f = NormalFixture.init();
+    defer f.deinit();
+
+    try parseNormal(f.arena(), &f.out, "# header\n#\t＃\n", "\n", "normal.txt");
+    try testing.expectEqual(@as(usize, 1), f.out.items.len);
+    try testing.expectEqual(@as(u8, '#'), f.out.items[0].key);
+    try testing.expectEqualStrings("＃", f.out.items[0].candidates[0]);
+}
+
+test "parseNormal: '#' followed by space stays a comment" {
+    var f = NormalFixture.init();
+    defer f.deinit();
+
+    // `# \t＃` (hash space tab) is a comment — the '#' key line must put
+    // the tab immediately after the hash. This was exactly the shape that
+    // silently dropped the mapping before the isCommentLine carve-out.
+    try parseNormal(f.arena(), &f.out, "# \t＃\n.\t。\n", "\n", "normal.txt");
+    try testing.expectEqual(@as(usize, 1), f.out.items.len);
+    try testing.expectEqual(@as(u8, '.'), f.out.items[0].key);
+}
+
 test "parseNormal: missing key is an error" {
     var f = NormalFixture.init();
     defer f.deinit();
@@ -532,6 +564,15 @@ test "parsePaired: skips comments and blank lines" {
         "paired.txt",
     );
     try testing.expectEqual(@as(usize, 2), f.out.items.len);
+}
+
+test "parsePaired: '#' followed by a tab is the '#' key's mapping, not a comment" {
+    var f = PairedFixture.init();
+    defer f.deinit();
+
+    try parsePaired(f.arena(), &f.out, "# header\n#\to\tc\n", "\n", "paired.txt");
+    try testing.expectEqual(@as(usize, 1), f.out.items.len);
+    try testing.expectEqual(@as(u8, '#'), f.out.items[0].key);
 }
 
 // ---- assertNoCrossFileConflicts ----
