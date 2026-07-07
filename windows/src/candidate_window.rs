@@ -1,16 +1,26 @@
-//! Horizontal candidate popup in the style of Windows 11 Pinyin.
+//! Horizontal candidate popup in the style of the Windows 11 Pinyin IME.
 //!
 //! Layout (DIPs):
 //! ```text
-//! ┌────────────────────────────────────────────────────────────┐
-//! │ ▎1 你好  2 你号  3 拟好  4 倪浩  …  N XXX        ◀  ▶        │
-//! └────────────────────────────────────────────────────────────┘
+//! ┌──────────────────────────────────────────────────┐
+//! │ ▎1 你好   2 你号   3 拟好   4 倪浩   …  N XXX    │
+//! └──────────────────────────────────────────────────┘
 //! ```
 //! - Single row, left-to-right. The first candidate is "active" (commits on
-//!   space) and is marked by a thin blue bar on its left.
-//! - Two arrow buttons on the right paginate the engine.
-//! - DWM is asked for rounded corners; on Windows 11 the OS applies them, on
-//!   Windows 10 the call is a benign no-op and the popup has sharp corners.
+//!   space); it carries a subtle rounded highlight pill with a small
+//!   accent-color bar on the pill's left edge — the Windows 11 selection
+//!   style. Hovered candidates get a lighter pill.
+//! - No buttons. Paging stays keyboard-only (PgUp/PgDn/`-`/`=`), keeping the
+//!   popup minimal.
+//! - Colors follow the system app theme (light/dark) and the user's accent
+//!   color, re-read from the registry on every show so theme switches apply
+//!   without restarting the host.
+//! - DWM is asked for rounded corners. On Windows 11 that succeeds: the OS
+//!   clips the window round and our hairline border is stroked with a
+//!   matching radius. On Windows 10 the call fails (the attribute doesn't
+//!   exist there) and the popup falls back to a sharp-cornered rectangle
+//!   with the same hairline border — which is the native look of Windows
+//!   10's own IME popup.
 //!
 //! One window per TIP UI thread; created lazily, destroyed in `Deactivate`.
 //! D2D + DirectWrite render the body. The render target's DPI is set to the
@@ -34,9 +44,8 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS,
-    DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
-    IDWriteTextLayout,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS, DWriteCreateFactory, IDWriteFactory,
+    IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dwm::{
     DWM_WINDOW_CORNER_PREFERENCE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -44,17 +53,18 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{HBRUSH, InvalidateRect, ValidateRect};
+use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows::Win32::UI::TextServices::ITfContext;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_IME, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
-    HICON, IDC_HAND, LoadCursorW, MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE,
-    SWP_NOACTIVATE, SWP_NOZORDER, SetCursor, SetWindowPos, ShowWindow, WM_LBUTTONDOWN,
-    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR, WNDCLASSEXW, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CS_DROPSHADOW, CS_HREDRAW, CS_IME, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    GetClientRect, HICON, IDC_ARROW, LoadCursorW, MA_NOACTIVATE, RegisterClassExW, SW_HIDE,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow, WM_LBUTTONDOWN,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_PAINT, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 // `WM_MOUSELEAVE` lives in `Win32::UI::Controls` in windows-rs, which would
@@ -69,20 +79,27 @@ const WINDOW_CLASS_NAME: PCWSTR = w!("JdImeCandidateWindow");
 const FONT_FAMILY: PCWSTR = w!("Microsoft YaHei UI");
 const FONT_LOCALE: PCWSTR = w!("zh-CN");
 const FONT_SIZE: f32 = 16.0;
-/// Smaller font for the page-nav arrow glyphs. Matches the Pinyin popup,
-/// where the arrows are visibly more compact than the candidate text.
-const ARROW_FONT_SIZE: f32 = 11.0;
 
-const ROW_HEIGHT: f32 = 36.0;
-const PAD_X: f32 = 12.0;
-const PAD_Y: f32 = 6.0;
-const ITEM_GAP: f32 = 14.0;
-const SELECT_BAR_WIDTH: f32 = 3.0;
-const SELECT_BAR_GAP: f32 = 6.0;
-const BUTTON_WIDTH: f32 = 16.0;
-const BUTTON_GAP: f32 = 2.0;
-const ITEMS_BUTTONS_GAP: f32 = 10.0;
-const CORNER_RADIUS: f32 = 6.0;
+// Metrics (DIPs) modeled on the Windows 11 IME candidate window.
+/// Height of one candidate's highlight pill.
+const PILL_HEIGHT: f32 = 32.0;
+const PILL_RADIUS: f32 = 4.0;
+/// Horizontal padding inside a pill, each side.
+const ITEM_PAD_X: f32 = 10.0;
+/// Gap between the index digit and the candidate text.
+const NUM_GAP: f32 = 6.0;
+/// Gap between adjacent pills.
+const ITEM_GAP: f32 = 2.0;
+/// Margin between the window edge and the pills.
+const EDGE_PAD_X: f32 = 4.0;
+const EDGE_PAD_Y: f32 = 4.0;
+const WINDOW_HEIGHT: f32 = PILL_HEIGHT + 2.0 * EDGE_PAD_Y;
+/// Accent selection-indicator bar on the active pill's left edge.
+const SEL_BAR_WIDTH: f32 = 3.0;
+const SEL_BAR_HEIGHT: f32 = 16.0;
+/// Radius the border stroke follows on Windows 11; DWMWCP_ROUND clips the
+/// window to the same 8-DIP curve, so the hairline hugs the visible edge.
+const CORNER_RADIUS: f32 = 8.0;
 
 #[derive(Debug, Default, Clone)]
 pub struct CandidateItem {
@@ -90,18 +107,26 @@ pub struct CandidateItem {
     pub hint: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PageNav {
-    Prev,
-    Next,
+/// Per-item layout produced by `relayout`: the pill rect (highlight + hit
+/// target) plus the measured widths needed to place the text runs inside it.
+#[derive(Debug, Default, Clone, Copy)]
+struct ItemLayout {
+    rect: D2D_RECT_F,
+    num_w: f32,
+    value_w: f32,
 }
 
-/// A hit-test target — used for both click dispatch and hover highlighting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HitTarget {
-    PrevButton,
-    NextButton,
-    Candidate(usize),
+/// Theme-derived colors, WinUI flyout tokens. Detected from the registry at
+/// window creation and refreshed on every `show_at`.
+#[derive(Debug, Clone, Copy)]
+struct Palette {
+    bg: D2D1_COLOR_F,
+    border: D2D1_COLOR_F,
+    text: D2D1_COLOR_F,
+    text_secondary: D2D1_COLOR_F,
+    selected_fill: D2D1_COLOR_F,
+    hover_fill: D2D1_COLOR_F,
+    accent: D2D1_COLOR_F,
 }
 
 struct CandidateWindow {
@@ -109,22 +134,21 @@ struct CandidateWindow {
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
     text_format: IDWriteTextFormat,
-    arrow_format: IDWriteTextFormat,
     render_target: Option<ID2D1HwndRenderTarget>,
     items: Vec<CandidateItem>,
-    page: u32,
-    total_pages: u32,
-    /// Hit-test rects in DIPs.
-    prev_btn_rect: D2D_RECT_F,
-    next_btn_rect: D2D_RECT_F,
-    item_rects: Vec<D2D_RECT_F>,
+    /// Pill rects in DIPs, parallel to `items`.
+    item_layouts: Vec<ItemLayout>,
+    palette: Palette,
+    /// Whether DWM accepted the rounded-corner preference (Windows 11).
+    /// Decides if the border stroke follows a rounded or square outline.
+    rounded_corners: bool,
     /// Context + client-ID stashed at show time so the async click handler
     /// can request an edit session to commit on click.
     ctx: Option<ITfContext>,
     tid: u32,
-    /// What the mouse is currently over, if anything. Repainted whenever
-    /// it changes.
-    hover: Option<HitTarget>,
+    /// Candidate index the mouse is currently over, if any. Repainted
+    /// whenever it changes.
+    hover: Option<usize>,
     /// Once we call TrackMouseEvent for TME_LEAVE we get exactly one
     /// WM_MOUSELEAVE; flip this to know whether we need to re-arm.
     tracking_leave: bool,
@@ -137,9 +161,7 @@ impl CandidateWindow {
         let d2d: ID2D1Factory =
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) }?;
         let dwrite: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
-        let text_format = make_text_format(&dwrite, DWRITE_TEXT_ALIGNMENT_LEADING, FONT_SIZE)?;
-        let arrow_format =
-            make_text_format(&dwrite, DWRITE_TEXT_ALIGNMENT_CENTER, ARROW_FONT_SIZE)?;
+        let text_format = make_text_format(&dwrite)?;
 
         let hinstance = dll_hmodule();
         let hwnd = unsafe {
@@ -151,7 +173,7 @@ impl CandidateWindow {
                 0,
                 0,
                 100,
-                ROW_HEIGHT as i32,
+                WINDOW_HEIGHT as i32,
                 None,
                 None,
                 Some(hinstance.into()),
@@ -159,31 +181,31 @@ impl CandidateWindow {
             )
         }?;
 
-        // Best-effort rounded corners on Windows 11. Returns S_OK as a no-op
-        // on Windows 10; we don't propagate the result either way.
+        // Rounded corners on Windows 11. On Windows 10 the attribute doesn't
+        // exist and the call fails with E_INVALIDARG — we use that as the
+        // version probe: square window there, and paint() strokes a square
+        // border to match.
         let pref: DWM_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND;
-        unsafe {
-            let _ = DwmSetWindowAttribute(
+        let rounded_corners = unsafe {
+            DwmSetWindowAttribute(
                 hwnd,
                 DWMWA_WINDOW_CORNER_PREFERENCE,
                 &pref as *const _ as *const _,
                 std::mem::size_of::<DWM_WINDOW_CORNER_PREFERENCE>() as u32,
-            );
+            )
         }
+        .is_ok();
 
         Ok(Self {
             hwnd,
             d2d,
             dwrite,
             text_format,
-            arrow_format,
             render_target: None,
             items: Vec::new(),
-            page: 0,
-            total_pages: 0,
-            prev_btn_rect: D2D_RECT_F::default(),
-            next_btn_rect: D2D_RECT_F::default(),
-            item_rects: Vec::new(),
+            item_layouts: Vec::new(),
+            palette: detect_palette(),
+            rounded_corners,
             ctx: None,
             tid: 0,
             hover: None,
@@ -222,60 +244,62 @@ impl CandidateWindow {
         Ok(())
     }
 
-    /// Re-layout: measure each item (value + optional hint), place it
-    /// left-to-right, cache the rect for hit-testing. Returns the resulting
-    /// total popup width in DIPs.
+    /// Re-layout: measure each item's runs (index digit, value, optional
+    /// hint), place its pill left-to-right, cache the layout for painting
+    /// and hit-testing. Returns the resulting total popup width in DIPs.
     fn relayout(&mut self) -> Result<f32> {
-        self.item_rects.clear();
+        self.item_layouts.clear();
         if self.items.is_empty() {
             return Ok(80.0);
         }
-        let mut x = PAD_X + SELECT_BAR_WIDTH + SELECT_BAR_GAP;
+        let mut x = EDGE_PAD_X;
         for (i, item) in self.items.iter().enumerate() {
             if i > 0 {
                 x += ITEM_GAP;
             }
-            let value_w = measure_text(&self.dwrite, &self.text_format, &format_value(i, item))?;
+            let num_w = measure_text(&self.dwrite, &self.text_format, &(i + 1).to_string())?;
+            let value_w = measure_text(&self.dwrite, &self.text_format, &item.value)?;
             let hint_w = match &item.hint {
                 Some(h) => measure_text(&self.dwrite, &self.text_format, &format_hint(h))?,
                 None => 0.0,
             };
-            let total_w = value_w + hint_w;
-            self.item_rects.push(D2D_RECT_F {
-                left: x,
-                top: PAD_Y,
-                right: x + total_w,
-                bottom: PAD_Y + ROW_HEIGHT,
+            let pill_w = ITEM_PAD_X + num_w + NUM_GAP + value_w + hint_w + ITEM_PAD_X;
+            self.item_layouts.push(ItemLayout {
+                rect: D2D_RECT_F {
+                    left: x,
+                    top: EDGE_PAD_Y,
+                    right: x + pill_w,
+                    bottom: EDGE_PAD_Y + PILL_HEIGHT,
+                },
+                num_w,
+                value_w,
             });
-            x += total_w;
+            x += pill_w;
         }
-        x += ITEMS_BUTTONS_GAP + BUTTON_WIDTH + BUTTON_GAP + BUTTON_WIDTH + PAD_X;
-        Ok(x)
+        Ok(x + EDGE_PAD_X)
     }
 
     fn show_at(
         &mut self,
         screen_pos: POINT,
         items: Vec<CandidateItem>,
-        page: u32,
-        total_pages: u32,
         ctx: ITfContext,
         tid: u32,
     ) -> Result<()> {
         self.items = items;
-        self.page = page;
-        self.total_pages = total_pages;
         self.ctx = Some(ctx);
         self.tid = tid;
         // Items changed — drop any stale hover; the cursor may now be
         // over a different candidate or off the popup entirely.
         self.hover = None;
+        // Cheap registry reads — keeps the popup in sync with live theme
+        // and accent-color changes.
+        self.palette = detect_palette();
 
         let width_dip = self.relayout()?;
-        let height_dip = ROW_HEIGHT + 2.0 * PAD_Y;
         let scale = self.dpi() / 96.0;
         let width_px = (width_dip * scale).ceil() as i32;
-        let height_px = (height_dip * scale).ceil() as i32;
+        let height_px = (WINDOW_HEIGHT * scale).ceil() as i32;
 
         self.render_target = None;
 
@@ -304,45 +328,6 @@ impl CandidateWindow {
         Ok(())
     }
 
-    /// Update contents without moving the window. Used after page nav clicks.
-    fn update_items(
-        &mut self,
-        items: Vec<CandidateItem>,
-        page: u32,
-        total_pages: u32,
-    ) -> Result<()> {
-        self.items = items;
-        self.page = page;
-        self.total_pages = total_pages;
-        self.hover = None;
-
-        let width_dip = self.relayout()?;
-        let height_dip = ROW_HEIGHT + 2.0 * PAD_Y;
-        let scale = self.dpi() / 96.0;
-        let width_px = (width_dip * scale).ceil() as i32;
-        let height_px = (height_dip * scale).ceil() as i32;
-
-        // Keep current position but resize.
-        let mut rect = RECT::default();
-        unsafe {
-            windows::Win32::UI::WindowsAndMessaging::GetWindowRect(self.hwnd, &mut rect)?;
-        }
-        self.render_target = None;
-        unsafe {
-            SetWindowPos(
-                self.hwnd,
-                None,
-                rect.left,
-                rect.top,
-                width_px,
-                height_px,
-                SWP_NOACTIVATE | SWP_NOZORDER,
-            )?;
-            let _ = InvalidateRect(Some(self.hwnd), None, true);
-        }
-        Ok(())
-    }
-
     fn hide(&mut self) {
         self.hover = None;
         self.tracking_leave = false;
@@ -365,147 +350,109 @@ impl CandidateWindow {
         let scale = self.dpi() / 96.0;
         let width = width_px as f32 / scale;
         let height = height_px as f32 / scale;
-
-        let bg = color(0.18, 0.18, 0.20, 1.0);
-        let text = color(0.88, 0.88, 0.88, 1.0);
-        let accent = color(0.0, 0.47, 0.83, 1.0); // Windows accent blue
-        let dim = color(0.55, 0.55, 0.55, 1.0);
-
-        // Cache button rects (recomputed each paint; cheap).
-        let button_y_top = PAD_Y;
-        let button_y_bot = height - PAD_Y;
-        let next_btn_left = width - PAD_X - BUTTON_WIDTH;
-        let prev_btn_left = next_btn_left - BUTTON_GAP - BUTTON_WIDTH;
-        self.prev_btn_rect = D2D_RECT_F {
-            left: prev_btn_left,
-            top: button_y_top,
-            right: prev_btn_left + BUTTON_WIDTH,
-            bottom: button_y_bot,
-        };
-        self.next_btn_rect = D2D_RECT_F {
-            left: next_btn_left,
-            top: button_y_top,
-            right: next_btn_left + BUTTON_WIDTH,
-            bottom: button_y_bot,
-        };
+        let p = self.palette;
 
         unsafe {
             rt.BeginDraw();
-            // Background. Fill with the rounded body. On Win 11 the DWM
-            // corner preference rounds the actual window edges; this fill
-            // matches so the body is fully opaque under the rounding mask.
-            rt.Clear(Some(&color(0.0, 0.0, 0.0, 0.0)));
+            // Full-bleed background. On Windows 11 DWM clips the corners to
+            // the rounded preference; on Windows 10 the window is square and
+            // the fill covers it exactly (no transparent corners — a
+            // non-layered window would render those as black).
+            rt.Clear(Some(&p.bg));
 
-            let bg_brush = rt.CreateSolidColorBrush(&bg, None)?;
-            let text_brush = rt.CreateSolidColorBrush(&text, None)?;
-            let accent_brush = rt.CreateSolidColorBrush(&accent, None)?;
-            let dim_brush = rt.CreateSolidColorBrush(&dim, None)?;
+            let text_brush = rt.CreateSolidColorBrush(&p.text, None)?;
+            let secondary_brush = rt.CreateSolidColorBrush(&p.text_secondary, None)?;
+            let accent_brush = rt.CreateSolidColorBrush(&p.accent, None)?;
 
-            let body = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F {
-                    left: 0.0,
-                    top: 0.0,
-                    right: width,
-                    bottom: height,
-                },
-                radiusX: CORNER_RADIUS,
-                radiusY: CORNER_RADIUS,
-            };
-            rt.FillRoundedRectangle(&body, &bg_brush);
-
-            // Hover highlight, drawn under text + arrows so it acts as a
-            // background pill.
-            if let Some(target) = self.hover {
-                let hover_brush = rt.CreateSolidColorBrush(&color(0.30, 0.30, 0.32, 1.0), None)?;
-                let pill = |r: &D2D_RECT_F, pad_x: f32, pad_y: f32| D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: r.left - pad_x,
-                        top: r.top + pad_y,
-                        right: r.right + pad_x,
-                        bottom: r.bottom - pad_y,
-                    },
-                    radiusX: 4.0,
-                    radiusY: 4.0,
+            // Active (first) candidate: highlight pill + accent bar on its
+            // left edge, vertically centered — the Windows 11 selection look.
+            if let Some(first) = self.item_layouts.first() {
+                let selected_brush = rt.CreateSolidColorBrush(&p.selected_fill, None)?;
+                rt.FillRoundedRectangle(&rounded(first.rect, PILL_RADIUS), &selected_brush);
+                let bar = D2D_RECT_F {
+                    left: first.rect.left,
+                    top: first.rect.top + (PILL_HEIGHT - SEL_BAR_HEIGHT) / 2.0,
+                    right: first.rect.left + SEL_BAR_WIDTH,
+                    bottom: first.rect.top + (PILL_HEIGHT + SEL_BAR_HEIGHT) / 2.0,
                 };
-                match target {
-                    HitTarget::Candidate(i) => {
-                        if let Some(rect) = self.item_rects.get(i) {
-                            rt.FillRoundedRectangle(&pill(rect, 4.0, 2.0), &hover_brush);
-                        }
-                    }
-                    HitTarget::PrevButton => {
-                        rt.FillRoundedRectangle(&pill(&self.prev_btn_rect, 0.0, 2.0), &hover_brush);
-                    }
-                    HitTarget::NextButton => {
-                        rt.FillRoundedRectangle(&pill(&self.next_btn_rect, 0.0, 2.0), &hover_brush);
-                    }
-                }
+                rt.FillRoundedRectangle(&rounded(bar, SEL_BAR_WIDTH / 2.0), &accent_brush);
             }
 
-            // Items — use the rects cached by relayout() so paint and
-            // hit-test agree exactly on positions. The value renders in the
-            // normal text color; the optional hint is drawn immediately to
-            // its right in the dim color (matches the CLI's display).
+            // Hover pill on any other candidate (the active one already has
+            // the stronger selected fill).
+            if let Some(i) = self.hover
+                && i != 0
+                && let Some(layout) = self.item_layouts.get(i)
+            {
+                let hover_brush = rt.CreateSolidColorBrush(&p.hover_fill, None)?;
+                rt.FillRoundedRectangle(&rounded(layout.rect, PILL_RADIUS), &hover_brush);
+            }
+
+            // Text runs — index digit in the secondary color, the candidate
+            // value in the primary color, the optional hint dim again
+            // (matches the CLI's display). All runs share one text format,
+            // so their baselines line up.
             for (i, item) in self.items.iter().enumerate() {
-                if let Some(rect) = self.item_rects.get(i) {
-                    let value = format_value(i, item);
-                    let value_w =
-                        measure_text(&self.dwrite, &self.text_format, &value).unwrap_or(0.0);
-                    let value_rect = D2D_RECT_F {
-                        left: rect.left,
-                        top: rect.top,
-                        right: rect.left + value_w,
-                        bottom: rect.bottom,
-                    };
-                    draw_text(&rt, &value, &value_rect, &self.text_format, &text_brush);
-
-                    if let Some(hint) = &item.hint {
-                        let hint_text = format_hint(hint);
-                        let hint_rect = D2D_RECT_F {
-                            left: rect.left + value_w,
-                            top: rect.top,
-                            right: rect.right,
-                            bottom: rect.bottom,
-                        };
-                        draw_text(&rt, &hint_text, &hint_rect, &self.text_format, &dim_brush);
-                    }
+                let Some(layout) = self.item_layouts.get(i) else {
+                    continue;
+                };
+                let run = |left: f32, w: f32| D2D_RECT_F {
+                    left,
+                    top: layout.rect.top,
+                    right: left + w,
+                    bottom: layout.rect.bottom,
+                };
+                let mut x = layout.rect.left + ITEM_PAD_X;
+                draw_text(
+                    &rt,
+                    &(i + 1).to_string(),
+                    &run(x, layout.num_w),
+                    &self.text_format,
+                    &secondary_brush,
+                );
+                x += layout.num_w + NUM_GAP;
+                draw_text(
+                    &rt,
+                    &item.value,
+                    &run(x, layout.value_w),
+                    &self.text_format,
+                    &text_brush,
+                );
+                x += layout.value_w;
+                if let Some(hint) = &item.hint {
+                    let hint_rect = run(x, (layout.rect.right - ITEM_PAD_X - x).max(0.0));
+                    draw_text(
+                        &rt,
+                        &format_hint(hint),
+                        &hint_rect,
+                        &self.text_format,
+                        &secondary_brush,
+                    );
                 }
             }
 
-            // Selected-indicator bar on the first item.
-            if !self.items.is_empty() {
-                let bar = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: PAD_X,
-                        top: PAD_Y + 4.0,
-                        right: PAD_X + SELECT_BAR_WIDTH,
-                        bottom: PAD_Y + ROW_HEIGHT - 4.0,
-                    },
-                    radiusX: 1.5,
-                    radiusY: 1.5,
-                };
-                rt.FillRoundedRectangle(&bar, &accent_brush);
+            // Hairline border, one physical pixel, stroked just inside the
+            // window edge. Rounded to match the DWM clip on Windows 11,
+            // square on Windows 10.
+            let border_brush = rt.CreateSolidColorBrush(&p.border, None)?;
+            let px = 1.0 / scale;
+            let inset = px / 2.0;
+            let border_rect = D2D_RECT_F {
+                left: inset,
+                top: inset,
+                right: width - inset,
+                bottom: height - inset,
+            };
+            if self.rounded_corners {
+                rt.DrawRoundedRectangle(
+                    &rounded(border_rect, CORNER_RADIUS - inset),
+                    &border_brush,
+                    px,
+                    None,
+                );
+            } else {
+                rt.DrawRectangle(&border_rect, &border_brush, px, None);
             }
-
-            // Page navigation buttons (left/right arrows).
-            let can_prev = self.total_pages > 1 && self.page > 1;
-            let can_next = self.total_pages > 1 && self.page < self.total_pages;
-            let prev_brush = if can_prev { &text_brush } else { &dim_brush };
-            let next_brush = if can_next { &text_brush } else { &dim_brush };
-            draw_text(
-                &rt,
-                "◀",
-                &self.prev_btn_rect,
-                &self.arrow_format,
-                prev_brush,
-            );
-            draw_text(
-                &rt,
-                "▶",
-                &self.next_btn_rect,
-                &self.arrow_format,
-                next_brush,
-            );
 
             match rt.EndDraw(None, None) {
                 Ok(()) => {}
@@ -518,21 +465,11 @@ impl CandidateWindow {
         Ok(())
     }
 
-    /// Hit-test a point (client coords in DIPs) against the popup's
-    /// interactive regions.
-    fn hit_test(&self, dip_x: f32, dip_y: f32) -> Option<HitTarget> {
-        if hits(&self.prev_btn_rect, dip_x, dip_y) {
-            return Some(HitTarget::PrevButton);
-        }
-        if hits(&self.next_btn_rect, dip_x, dip_y) {
-            return Some(HitTarget::NextButton);
-        }
-        for (i, rect) in self.item_rects.iter().enumerate() {
-            if hits(rect, dip_x, dip_y) {
-                return Some(HitTarget::Candidate(i));
-            }
-        }
-        None
+    /// Hit-test a point (client coords in DIPs) against the candidate pills.
+    fn hit_test(&self, dip_x: f32, dip_y: f32) -> Option<usize> {
+        self.item_layouts
+            .iter()
+            .position(|l| hits(&l.rect, dip_x, dip_y))
     }
 }
 
@@ -552,14 +489,7 @@ thread_local! {
     static WINDOW: RefCell<Option<CandidateWindow>> = const { RefCell::new(None) };
 }
 
-pub fn show(
-    screen_pos: POINT,
-    items: Vec<CandidateItem>,
-    page: u32,
-    total_pages: u32,
-    ctx: ITfContext,
-    tid: u32,
-) {
+pub fn show(screen_pos: POINT, items: Vec<CandidateItem>, ctx: ITfContext, tid: u32) {
     WINDOW.with(|w| {
         let mut w = w.borrow_mut();
         if w.is_none() {
@@ -568,10 +498,7 @@ pub fn show(
                 Err(_) => return,
             }
         }
-        let _ = w
-            .as_mut()
-            .unwrap()
-            .show_at(screen_pos, items, page, total_pages, ctx, tid);
+        let _ = w.as_mut().unwrap().show_at(screen_pos, items, ctx, tid);
     });
 }
 
@@ -640,28 +567,12 @@ fn hits(rect: &D2D_RECT_F, x: f32, y: f32) -> bool {
     x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
 }
 
-fn perform_page_nav(nav: PageNav) {
-    let result = match nav {
-        PageNav::Prev => jd::prev_page(),
-        PageNav::Next => jd::next_page(),
-    };
-    if result.options.is_empty() {
-        hide();
-        return;
+fn rounded(rect: D2D_RECT_F, radius: f32) -> D2D1_ROUNDED_RECT {
+    D2D1_ROUNDED_RECT {
+        rect,
+        radiusX: radius,
+        radiusY: radius,
     }
-    let items: Vec<CandidateItem> = result
-        .options
-        .iter()
-        .map(|o| CandidateItem {
-            value: o.value.clone(),
-            hint: o.hint.clone(),
-        })
-        .collect();
-    WINDOW.with(|w| {
-        if let Some(win) = w.borrow_mut().as_mut() {
-            let _ = win.update_items(items, result.current_page, result.total_pages);
-        }
-    });
 }
 
 fn perform_commit(idx: usize) {
@@ -688,10 +599,12 @@ fn ensure_class_registered() {
     if REGISTERED.swap(true, Ordering::SeqCst) {
         return;
     }
-    let cursor = unsafe { LoadCursorW(None, IDC_HAND).unwrap_or_default() };
+    let cursor = unsafe { LoadCursorW(None, IDC_ARROW).unwrap_or_default() };
     let wc = WNDCLASSEXW {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-        style: CS_HREDRAW | CS_VREDRAW | CS_IME,
+        // CS_DROPSHADOW gives the popup the standard menu shadow on both
+        // Windows 10 and 11, like the native IME window.
+        style: CS_HREDRAW | CS_VREDRAW | CS_IME | CS_DROPSHADOW,
         lpfnWndProc: Some(wnd_proc),
         cbClsExtra: 0,
         cbWndExtra: 0,
@@ -713,8 +626,8 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             // the popup steals focus from the host on every click, the host
             // sees focus loss, TSF fires OnCompositionTerminated, the
             // composition is committed as raw letters, and the popup is
-            // dismissed — even though the user just wanted to click a button
-            // on the popup itself.
+            // dismissed — even though the user just wanted to click a
+            // candidate on the popup itself.
             LRESULT(MA_NOACTIVATE as isize)
         }
         WM_PAINT => {
@@ -741,11 +654,8 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 let scale = win.dpi() / 96.0;
                 win.hit_test(x_px / scale, y_px / scale)
             });
-            match target {
-                Some(HitTarget::PrevButton) => perform_page_nav(PageNav::Prev),
-                Some(HitTarget::NextButton) => perform_page_nav(PageNav::Next),
-                Some(HitTarget::Candidate(i)) => perform_commit(i),
-                None => {}
+            if let Some(idx) = target {
+                perform_commit(idx);
             }
             LRESULT(0)
         }
@@ -800,20 +710,82 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             });
             LRESULT(0)
         }
-        WM_SETCURSOR => unsafe {
-            // Make the buttons feel clickable.
-            let _ = SetCursor(Some(LoadCursorW(None, IDC_HAND).unwrap_or_default()));
-            LRESULT(1)
-        },
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
 
-fn make_text_format(
-    dwrite: &IDWriteFactory,
-    alignment: windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT,
-    font_size: f32,
-) -> Result<IDWriteTextFormat> {
+// ---- theme detection ------------------------------------------------------
+
+/// WinUI flyout-surface colors for the current system theme + accent.
+fn detect_palette() -> Palette {
+    let accent = system_accent_color();
+    if system_apps_dark_theme() {
+        Palette {
+            bg: color(0.172, 0.172, 0.172, 1.0), // #2C2C2C flyout surface
+            border: color(1.0, 1.0, 1.0, 0.094),
+            text: color(1.0, 1.0, 1.0, 1.0),
+            text_secondary: color(1.0, 1.0, 1.0, 0.63),
+            selected_fill: color(1.0, 1.0, 1.0, 0.075),
+            hover_fill: color(1.0, 1.0, 1.0, 0.05),
+            accent,
+        }
+    } else {
+        Palette {
+            bg: color(0.976, 0.976, 0.976, 1.0), // #F9F9F9 flyout surface
+            border: color(0.0, 0.0, 0.0, 0.08),
+            text: color(0.0, 0.0, 0.0, 0.896),
+            text_secondary: color(0.0, 0.0, 0.0, 0.61),
+            selected_fill: color(0.0, 0.0, 0.0, 0.055),
+            hover_fill: color(0.0, 0.0, 0.0, 0.035),
+            accent,
+        }
+    }
+}
+
+/// `AppsUseLightTheme == 0` means apps render dark. A missing value (or any
+/// read failure) means the Windows default: light.
+fn system_apps_dark_theme() -> bool {
+    read_hkcu_dword(
+        w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
+        w!("AppsUseLightTheme"),
+    ) == Some(0)
+}
+
+/// The user's accent color as DWM stores it (0xAABBGGRR). Falls back to the
+/// Windows default blue #0078D4.
+fn system_accent_color() -> D2D1_COLOR_F {
+    match read_hkcu_dword(w!(r"Software\Microsoft\Windows\DWM"), w!("AccentColor")) {
+        Some(abgr) => color(
+            (abgr & 0xFF) as f32 / 255.0,
+            ((abgr >> 8) & 0xFF) as f32 / 255.0,
+            ((abgr >> 16) & 0xFF) as f32 / 255.0,
+            1.0,
+        ),
+        None => color(0.0, 0.47, 0.83, 1.0),
+    }
+}
+
+fn read_hkcu_dword(subkey: PCWSTR, value: PCWSTR) -> Option<u32> {
+    let mut data = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey,
+            value,
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut data as *mut u32 as *mut _),
+            Some(&mut size),
+        )
+    }
+    .is_ok()
+    .then_some(data)
+}
+
+// ---- text helpers ---------------------------------------------------------
+
+fn make_text_format(dwrite: &IDWriteFactory) -> Result<IDWriteTextFormat> {
     let fmt = unsafe {
         dwrite.CreateTextFormat(
             FONT_FAMILY,
@@ -821,19 +793,15 @@ fn make_text_format(
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            font_size,
+            FONT_SIZE,
             FONT_LOCALE,
         )
     }?;
     unsafe {
         fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-        fmt.SetTextAlignment(alignment)?;
+        fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
     }
     Ok(fmt)
-}
-
-fn format_value(idx: usize, item: &CandidateItem) -> String {
-    format!("{} {}", idx + 1, item.value)
 }
 
 pub(crate) fn format_hint(hint: &str) -> String {
@@ -845,7 +813,7 @@ pub(crate) fn format_hint(hint: &str) -> String {
 fn measure_text(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &str) -> Result<f32> {
     let wide: Vec<u16> = text.encode_utf16().collect();
     let layout: IDWriteTextLayout =
-        unsafe { dwrite.CreateTextLayout(&wide, format, 4096.0, ROW_HEIGHT) }?;
+        unsafe { dwrite.CreateTextLayout(&wide, format, 4096.0, PILL_HEIGHT) }?;
     let mut metrics = DWRITE_TEXT_METRICS::default();
     unsafe { layout.GetMetrics(&mut metrics) }?;
     Ok(metrics.widthIncludingTrailingWhitespace)

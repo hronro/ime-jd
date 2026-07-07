@@ -303,14 +303,7 @@ impl TextInputProcessor_Impl {
             })
             .collect();
         let pos = popup_pos();
-        candidate_window::show(
-            pos,
-            items.clone(),
-            result.current_page,
-            result.total_pages,
-            ctx.clone(),
-            tid,
-        );
+        candidate_window::show(pos, items.clone(), ctx.clone(), tid);
         // Mirror the candidate state into the TSF UIElement so UI-less hosts
         // (games, immersive shells) can render the list in their own UI.
         if let Some(tm) = self.state.borrow().thread_mgr.clone() {
