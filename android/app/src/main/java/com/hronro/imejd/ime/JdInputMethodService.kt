@@ -15,7 +15,9 @@ import com.hronro.imejd.ui.KeyboardView
 
 class JdInputMethodService : InputMethodService(), KeyboardHost {
 
-    private val session: InputSession by lazy { InputSession(pageSize = 9).also { it.host = this } }
+    // 16 per fetch — selection is by tap, so pages aren't capped at 9 the way
+    // macOS's 1-9 digit labels cap them; bigger pages = fewer grid-fill round trips.
+    private val session: InputSession by lazy { InputSession(pageSize = 16).also { it.host = this } }
     private var keyboard: KeyboardView? = null
 
     override fun onCreateInputView(): View {

@@ -10,7 +10,6 @@ import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.RippleDrawable
 import android.util.AttributeSet
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -28,7 +27,7 @@ class CandidateGridView(context: Context, private var theme: KeyboardTheme) : Li
     var onClose: (() -> Unit)? = null
 
     private val density = context.resources.displayMetrics.density
-    private val closeButton = TextView(context)
+    private val closeButton = ChevronView(context, pointsUp = true)
     private val flow = FlowLayout(context)
     private val scroll = ScrollView(context)
     private var items: List<Candidate> = emptyList()
@@ -42,11 +41,9 @@ class CandidateGridView(context: Context, private var theme: KeyboardTheme) : Li
     private fun dp(v: Int) = (v * density).toInt()
 
     private fun build() {
-        closeButton.text = "▴"
-        closeButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-        closeButton.gravity = Gravity.CENTER
+        // Same 44dp trailing box as the bar's expand chevron, so the flip lands in place.
         closeButton.setOnClickListener { onClose?.invoke() }
-        addView(closeButton, LayoutParams(LayoutParams.MATCH_PARENT, dp(CandidateBarView.HEIGHT_DP)).apply {
+        addView(closeButton, LayoutParams(dp(44), dp(CandidateBarView.HEIGHT_DP)).apply {
             gravity = Gravity.END
         })
 
@@ -63,10 +60,25 @@ class CandidateGridView(context: Context, private var theme: KeyboardTheme) : Li
         addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
     }
 
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        super.onLayout(changed, l, t, r, b)
+        // A ScrollView whose content fits its viewport cannot scroll, so the scroll
+        // listener's prefetch never fires on a freshly-expanded, underfilled grid.
+        // After each layout, if there is nothing left to scroll to, ask for another
+        // page — the grid fills itself until content overflows the viewport. The
+        // chain terminates because the owner's loader no-ops once the engine is out
+        // of pages, and appending nothing schedules no further layout. Posted, not
+        // invoked inline: appending mutates the tree, which is illegal mid-layout.
+        if (items.isNotEmpty() && !scroll.canScrollVertically(1)) {
+            post { onNeedMore?.invoke() }
+        }
+    }
+
     fun apply(theme: KeyboardTheme) {
         this.theme = theme
         setBackgroundColor(theme.keyboardBackground)
-        closeButton.setTextColor(theme.candidateText)
+        closeButton.tint = theme.candidateHint
+        closeButton.background = RippleDrawable(ColorStateList.valueOf(theme.rippleColor), null, ColorDrawable(Color.WHITE))
         rebuild()
     }
 

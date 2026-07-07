@@ -10,6 +10,7 @@ import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.RippleDrawable
 import android.text.SpannableStringBuilder
@@ -57,7 +58,7 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
     private val composingLabel = TextView(context)
     private val scroll = HorizontalScrollView(context)
     private val stack = LinearLayout(context)
-    private val expandButton = TextView(context)
+    private val expandButton = ChevronView(context, pointsUp = false)
     private val separatorPaint = Paint()
     private var shownCount = 0
 
@@ -85,17 +86,20 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
         }
         addView(scroll, LayoutParams(0, LayoutParams.MATCH_PARENT, 1f))
 
-        expandButton.text = "▾"
-        expandButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-        expandButton.gravity = Gravity.CENTER
+        // The system keyboards' affordance: a thin secondary-gray chevron in a 44dp
+        // box (equal to the grid's close button, so the expand/collapse flip lands in
+        // place). Starts GONE so the idle bar shows nothing — reset() decides
+        // visibility once a composition has candidates.
+        expandButton.visibility = View.GONE
         expandButton.setOnClickListener { onExpand?.invoke() }
-        addView(expandButton, LayoutParams(dp(36), LayoutParams.MATCH_PARENT))
+        addView(expandButton, LayoutParams(dp(44), LayoutParams.MATCH_PARENT))
     }
 
     fun apply(theme: KeyboardTheme) {
         this.theme = theme
         composingLabel.setTextColor(theme.composingText)
-        expandButton.setTextColor(theme.candidateText)
+        expandButton.tint = theme.candidateHint
+        expandButton.background = rippleBackground(theme)
         separatorPaint.color = theme.separator
         separatorPaint.strokeWidth = 0.5f * density
         invalidate()
@@ -148,5 +152,48 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
         super.onDraw(canvas)
         // Top separator hairline.
         canvas.drawLine(0f, 0.25f * density, width.toFloat(), 0.25f * density, separatorPaint)
+    }
+}
+
+/**
+ * The Material `expand_more` / `expand_less` chevron — the affordance Gboard uses
+ * in its suggestion strip — drawn from the icon's 24dp-viewport path, so the shape
+ * matches exactly (45° arms, 2dp thickness, sharp apex, vertically-cut tips).
+ * Text glyphs like ▾ render as filled triangles, which is why this is drawn
+ * instead. Colored via [tint].
+ */
+class ChevronView(context: Context, private val pointsUp: Boolean) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val path = Path()
+
+    var tint: Int = 0
+        set(value) {
+            field = value
+            paint.color = value
+            invalidate()
+        }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // Material expand_more path in its 24dp viewport, centered in whatever box
+        // the owner gives the view; expand_less is its exact vertical mirror.
+        val s = resources.displayMetrics.density
+        val ox = (w - 24f * s) / 2f
+        val oy = (h - 24f * s) / 2f
+        fun x(v: Float) = ox + v * s
+        fun y(v: Float) = oy + (if (pointsUp) 24f - v else v) * s
+        path.reset()
+        path.moveTo(x(16.59f), y(8.59f))
+        path.lineTo(x(12f), y(13.17f))
+        path.lineTo(x(7.41f), y(8.59f))
+        path.lineTo(x(6f), y(10f))
+        path.lineTo(x(12f), y(16f))
+        path.lineTo(x(18f), y(10f))
+        path.close()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        canvas.drawPath(path, paint)
     }
 }
