@@ -53,6 +53,9 @@ pub fn register() -> Result<()> {
             guids::LANGID_ZH_CN,
             &guids::GUID_JD_PROFILE,
             &desc,
+            // pchIconFile + uIconIndex: the icon shown in the input switcher
+            // and Settings. Index 0 is the DLL's first ICON resource — the
+            // seal icon embedded by build.rs (`1 ICON "jd.ico"`).
             &dll_path,
             0,
             HKL::default(),
