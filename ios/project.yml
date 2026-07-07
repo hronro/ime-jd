@@ -9,8 +9,10 @@ options:
 
 settings:
   base:
-    # Placeholder — the real version comes from core/build.zig.zon's `.version`,
-    # passed as MARKETING_VERSION at build/archive time (matching the macOS flow).
+    # Placeholders — the release workflow overrides both at build time:
+    # MARKETING_VERSION with the tag's version (== core/build.zig.zon's
+    # `.version`, matching the macOS flow) and CURRENT_PROJECT_VERSION with
+    # build-android's numeric code scheme. Plain Xcode/IDE builds keep 0.0.0.
     MARKETING_VERSION: "0.0.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"

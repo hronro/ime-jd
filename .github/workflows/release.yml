@@ -439,13 +439,26 @@ jobs:
 
       - name: Build unsigned app (device)
         working-directory: ios
-        run: >
-          xcodebuild build
-          -project JdIME-iOS.xcodeproj -scheme JdIME-iOS
-          -sdk iphoneos -configuration Release
-          -derivedDataPath build/DD
-          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
-          LIBJD_A="${{ github.workspace }}/prebuilt-libs/lib/libjd.a"
+        shell: bash
+        # The tag equals v<core/build.zig.zon version> (create-release fails
+        # otherwise), so the tag drives the versions baked into the app:
+        # CFBundleShortVersionString gets the full version and CFBundleVersion
+        # the same numeric code scheme as build-android — monotonic across
+        # releases for sideloading tools that compare build numbers.
+        # project.yml's 0.0.0 stays the placeholder for plain IDE builds.
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          core="${ver%%[-+]*}"   # strip -prerelease/+build for the numeric code
+          IFS=. read -r major minor patch <<<"$core"
+          code=$((major * 10000 + minor * 100 + patch))
+          xcodebuild build \
+            -project JdIME-iOS.xcodeproj -scheme JdIME-iOS \
+            -sdk iphoneos -configuration Release \
+            -derivedDataPath build/DD \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            LIBJD_A="${{ github.workspace }}/prebuilt-libs/lib/libjd.a" \
+            MARKETING_VERSION="$ver" CURRENT_PROJECT_VERSION="$code"
 
       - name: Package unsigned .ipa
         shell: bash
