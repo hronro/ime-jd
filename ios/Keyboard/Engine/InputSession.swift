@@ -23,6 +23,10 @@ final class InputSession {
     private(set) var rawBuffer = ""
     /// Candidates/commit for the current page. `options` is this page only.
     private(set) var snapshot: QuerySnapshot = .empty
+    /// Highest engine page fetched into the UI's append-only candidate strip.
+    /// Runs ahead of `snapshot.currentPage` during lazy pagination — see
+    /// `loadMoreCandidates`, which parks the engine back on the snapshot's page.
+    private var lastFetchedPage: UInt32 = 0
 
     /// Fired after every state change. UI re-renders the composing label + candidates.
     var onChange: ((_ snapshot: QuerySnapshot, _ rawBuffer: String) -> Void)?
@@ -154,15 +158,23 @@ final class InputSession {
         setSnapshot(.empty)
     }
 
-    /// For the candidate bar's lazy pagination: advance one page and return its
-    /// candidates WITHOUT firing `onChange` (the bar appends them itself, keeping
-    /// already-shown candidates). Returns nil at the last page. The returned
-    /// strings are owned Swift copies, safe to retain across later engine calls.
+    /// For the candidate bar's lazy pagination: fetch the page after the last
+    /// fetched one and return its candidates WITHOUT firing `onChange` (the bar
+    /// appends them itself, keeping already-shown candidates). Returns nil at the
+    /// last page. The returned strings are owned Swift copies, safe to retain
+    /// across later engine calls.
+    ///
+    /// The engine is parked back on `snapshot.currentPage` before returning:
+    /// engine auto-commits (space, drill-in, punctuation fallback) act on the
+    /// first option of the engine's CURRENT page, so leaving the paginator on a
+    /// prefetched page would commit a candidate the user isn't looking at.
     func loadMoreCandidates() -> [Candidate]? {
-        guard snapshot.currentPage < snapshot.totalPages else { return nil }
-        let snap = engine.nextPage()
-        snapshot = snap
-        return snap.options
+        guard lastFetchedPage < snapshot.totalPages else { return nil }
+        let next = engine.jumpToPage(lastFetchedPage + 1)
+        _ = engine.jumpToPage(snapshot.currentPage)
+        guard !next.options.isEmpty else { return nil }
+        lastFetchedPage = next.currentPage
+        return next.options
     }
 
     // MARK: - Helpers
@@ -178,6 +190,7 @@ final class InputSession {
 
     private func setSnapshot(_ snap: QuerySnapshot) {
         snapshot = snap
+        lastFetchedPage = snap.currentPage
         onChange?(snap, rawBuffer)
     }
 }

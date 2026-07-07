@@ -17,6 +17,12 @@ final class CandidateBarView: UIView, UIScrollViewDelegate {
     private let topSeparator = UIView()
     private var theme: KeyboardTheme
     private var shownCount = 0
+    /// True while reset() rebuilds the strip. The programmatic setContentOffset
+    /// fires scrollViewDidScroll against the STALE contentSize (layout hasn't run
+    /// yet), and re-entering onNeedMore mid-rebuild would append a prefetched
+    /// page ahead of page 1 — cells would no longer line up with the owner's
+    /// item indices, so taps would commit a different candidate than displayed.
+    private var isResetting = false
 
     init(theme: KeyboardTheme) {
         self.theme = theme
@@ -99,10 +105,12 @@ final class CandidateBarView: UIView, UIScrollViewDelegate {
     /// Replace the strip with a fresh page.
     func reset(composing: String, items: [Candidate], canExpand: Bool) {
         composingLabel.text = composing
+        isResetting = true
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         shownCount = 0
         scroll.setContentOffset(.zero, animated: false)
         append(items)
+        isResetting = false
         expandButton.isHidden = !canExpand
     }
 
@@ -150,6 +158,7 @@ final class CandidateBarView: UIView, UIScrollViewDelegate {
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard !isResetting else { return }
         let nearEnd = scrollView.contentOffset.x + scrollView.bounds.width * 2 >= scrollView.contentSize.width
         if nearEnd { onNeedMore?() }
     }

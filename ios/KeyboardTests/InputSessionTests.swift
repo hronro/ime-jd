@@ -122,4 +122,57 @@ final class InputSessionTests: XCTestCase {
         XCTAssertFalse(h.joined.isEmpty, "space should commit the top candidate")
         XCTAssertFalse(s.isComposing)
     }
+
+    // MARK: - Lazy pagination (prefetch must not move the engine's page)
+
+    /// Regression: engine auto-commits (space, drill-in, punctuation fallback)
+    /// act on the first option of the engine's CURRENT page. Prefetching pages
+    /// for the strip must park the engine back on the visible page, or space
+    /// commits a candidate the user isn't looking at.
+    func testSpaceCommitsFirstVisibleCandidateAfterPrefetch() {
+        let (s, h) = makeSession()
+        s.handle(.engineKey(UInt8(ascii: "a")))   // 'a' has > 9 candidates → multi-page
+        XCTAssertGreaterThan(s.snapshot.totalPages, 1, "test needs a multi-page code")
+        let firstVisible = s.snapshot.options.first!.value
+        XCTAssertNotNil(s.loadMoreCandidates(), "prefetch should return a page")
+        s.handle(.engineKey(0x20))
+        XCTAssertEqual(h.joined, firstVisible)
+    }
+
+    /// Same property for the punctuation bypass (insertLiteral presses space).
+    func testInsertLiteralCommitsFirstVisibleCandidateAfterPrefetch() {
+        let (s, h) = makeSession()
+        s.handle(.engineKey(UInt8(ascii: "a")))
+        let firstVisible = s.snapshot.options.first!.value
+        _ = s.loadMoreCandidates()
+        s.insertLiteral("。")
+        XCTAssertEqual(h.joined, firstVisible + "。")
+    }
+
+    /// Prefetch feeds an append-only strip whose first page stays on screen, so
+    /// it must not touch the published snapshot.
+    func testPrefetchLeavesSnapshotUntouched() {
+        let (s, _) = makeSession()
+        s.handle(.engineKey(UInt8(ascii: "a")))
+        let before = s.snapshot
+        _ = s.loadMoreCandidates()
+        XCTAssertEqual(s.snapshot, before)
+    }
+
+    /// Consecutive prefetches walk each remaining page exactly once, then stop.
+    func testLoadMoreWalksAllPagesThenStops() {
+        let (s, _) = makeSession()
+        s.handle(.engineKey(UInt8(ascii: "a")))
+        let total = Int(s.snapshot.optionsCount)
+        let totalPages = Int(s.snapshot.totalPages)
+        var seen = s.snapshot.options.count
+        var fetches = 0
+        while let more = s.loadMoreCandidates() {
+            seen += more.count
+            fetches += 1
+            XCTAssertLessThanOrEqual(fetches, totalPages, "prefetch ran past the page count")
+        }
+        XCTAssertEqual(fetches, totalPages - 1, "each remaining page should be fetched exactly once")
+        XCTAssertEqual(seen, total, "prefetch should surface every candidate exactly once")
+    }
 }
