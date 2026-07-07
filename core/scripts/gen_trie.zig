@@ -55,6 +55,15 @@ fn parseTable(
         const keys = std.mem.trim(u8, trimmed[tab + 1 ..], " ");
         if (keys.len == 0) continue;
 
+        // buildBlob enforces the same alphabet as a hard error, but checking
+        // here too gives the dictionary editor the file and line at fault.
+        for (keys) |k| {
+            if (!trie.isValidKeyByte(k)) {
+                diag("error: key byte '{c}' (0x{x}) outside the a-z ';' alphabet in {s}: {s}\n", .{ k, k, path, trimmed });
+                return error.KeyOutsideAlphabet;
+            }
+        }
+
         try out.append(arena, .{ .keys = keys, .value = value });
     }
 }
@@ -215,6 +224,26 @@ test "parseTable: line without TAB is an error" {
     defer f.deinit();
 
     try testing.expectError(error.MalformedTableLine, parseTable(f.arena(), &f.entries, "no-tab-here\n", "\n", "test.txt"));
+}
+
+test "parseTable: key bytes outside the alphabet are an error" {
+    var f = ParseFixture.init();
+    defer f.deinit();
+
+    // Uppercase, digit, and interior-whitespace typos must name the file
+    // instead of flowing into the builder.
+    try testing.expectError(error.KeyOutsideAlphabet, parseTable(f.arena(), &f.entries, "甲\tA\n", "\n", "test.txt"));
+    try testing.expectError(error.KeyOutsideAlphabet, parseTable(f.arena(), &f.entries, "甲\ta0\n", "\n", "test.txt"));
+    try testing.expectError(error.KeyOutsideAlphabet, parseTable(f.arena(), &f.entries, "甲\ta b\n", "\n", "test.txt"));
+}
+
+test "parseTable: ';' is a valid key byte" {
+    var f = ParseFixture.init();
+    defer f.deinit();
+
+    try parseTable(f.arena(), &f.entries, "：\t;;\n", "\n", "test.txt");
+    try testing.expectEqual(@as(usize, 1), f.entries.items.len);
+    try testing.expectEqualStrings(";;", f.entries.items[0].keys);
 }
 
 test "parseTable: empty keys silently skipped" {

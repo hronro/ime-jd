@@ -28,6 +28,15 @@ fn keyRank(c: u8) u8 {
     return 27;
 }
 
+/// The exact key alphabet: a-z plus ';' (the ALPHA = 27 ranks above).
+/// Everything downstream assumes it — keyRank ordering, `buildBlob`'s
+/// fixed-size insertion buffers, the packed u8 width field — so `buildBlob`
+/// hard-errors on anything else. Exposed for the generator's parser, which
+/// rejects bad bytes with file/line context before they reach the builder.
+pub fn isValidKeyByte(c: u8) bool {
+    return keyRank(c) < ALPHA;
+}
+
 /// One input row: key string + value string. The value will be null-terminated
 /// in the on-disk strings pool so `Values.at(i)` can hand out `[:0]const u8`.
 pub const Entry = struct {
@@ -224,6 +233,11 @@ pub fn buildBlob(
             return error.EntryValueTooLong);
         var cur: u32 = 0;
         for (e.keys) |k| {
+            // Reject bytes outside the a-z + ';' alphabet. Without this, one
+            // bad dictionary line can give a node a 28th distinct child and
+            // overflow Phase 4's fixed [ALPHA] insertion buffers — silent
+            // stack corruption in the generator's ReleaseFast build.
+            if (!isValidKeyByte(k)) return error.EntryKeyOutsideAlphabet;
             var rec_idx = nodes[cur].first_child;
             var found: u32 = 0;
             while (rec_idx != 0) : (rec_idx = records[rec_idx].next_sibling) {
@@ -270,6 +284,9 @@ pub fn buildBlob(
             }
         }
     }
+    // The root's subtree count is the global maximum, and the packed node
+    // stores counts in 24 bits (fmt.Node.pack asserts that only in Debug).
+    if (counts[0] > 0x00FF_FFFF) return error.TooManyValuesTotal;
 
     // ---- Phase 2b: subtree node count + path bytes, for sizing the per-
     // context BFS buffers in `jd_init`. Same reverse-pass shape as Phase 2:
@@ -321,13 +338,17 @@ pub fn buildBlob(
         var i: u32 = 0;
         while (i < NC) : (i += 1) {
             child_off[i] = child_total;
-            var w: u8 = 0;
+            var w: usize = 0;
             var rec_idx = nodes[i].first_child;
             while (rec_idx != 0) : (rec_idx = records[rec_idx].next_sibling) {
                 w += 1;
             }
-            widths[i] = w;
-            child_total += w;
+            // Guaranteed by the alphabet check in Phase 1 (≤ 27 distinct
+            // bytes); re-checked here because Phase 4's fixed [ALPHA]
+            // buffers and the u8 width field depend on it directly.
+            if (w > ALPHA) return error.NodeTooWide;
+            widths[i] = @intCast(w);
+            child_total += @intCast(w);
         }
     }
 
@@ -372,6 +393,10 @@ pub fn buildBlob(
         var i: u32 = 0;
         while (i < NC) : (i += 1) {
             value_offset[i] = values_total;
+            // values_len is a u8 in the blob node; more entries than that
+            // sharing one exact key sequence would truncate silently and
+            // desync count() from the actual value list.
+            if (nodes[i].value_count > std.math.maxInt(u8)) return error.TooManyValuesPerNode;
             values_total += nodes[i].value_count;
         }
     }
@@ -648,6 +673,43 @@ test "entries with keys longer than MAX_KEYS_LEN are a hard error" {
     try testing.expectError(error.EntryKeysTooLong, buildTrie(testing.allocator, &.{
         .{ .keys = "abcdefg", .value = "x" }, // 7 keys > MAX_KEYS_LEN (6)
     }));
+}
+
+test "entries with keys outside the a-z ';' alphabet are a hard error" {
+    // Uppercase, digits, and whitespace are the likely dictionary typos;
+    // each must fail the build instead of overflowing Phase 4's fixed
+    // [ALPHA] insertion buffers in the ReleaseFast generator.
+    inline for (.{ "A", "0", " ", "a-", "a\tb" }) |keys| {
+        try testing.expectError(error.EntryKeyOutsideAlphabet, buildTrie(testing.allocator, &.{
+            .{ .keys = keys, .value = "x" },
+        }));
+    }
+}
+
+test "isValidKeyByte matches the a-z ';' alphabet exactly" {
+    var valid_count: usize = 0;
+    var c: usize = 0;
+    while (c < 256) : (c += 1) {
+        const b: u8 = @intCast(c);
+        const expected = (b >= 'a' and b <= 'z') or b == ';';
+        try testing.expectEqual(expected, isValidKeyByte(b));
+        if (isValidKeyByte(b)) valid_count += 1;
+    }
+    try testing.expectEqual(ALPHA, valid_count);
+}
+
+test "more than 255 values on one key sequence is a hard error" {
+    // values_len is a u8 in the blob node; 256 entries sharing one key
+    // sequence used to truncate silently in ReleaseFast.
+    var entries: [256]Entry = undefined;
+    for (&entries) |*e| e.* = .{ .keys = "a", .value = "x" };
+    try testing.expectError(error.TooManyValuesPerNode, buildTrie(testing.allocator, &entries));
+
+    // 255 on the node is the boundary and must still build.
+    var th = try buildTrie(testing.allocator, entries[0..255]);
+    defer th.deinit(testing.allocator);
+    const a = th.trie.root().getChild(&th.trie, 'a').?;
+    try testing.expectEqual(@as(usize, 255), a.values(&th.trie).len());
 }
 
 test "fromBytes rejects undersized buffer" {
