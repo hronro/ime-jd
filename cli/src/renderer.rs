@@ -44,8 +44,11 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(size: (u16, u16)) -> Self {
         let (width, height) = size;
-        let option_rows = ((height - 3) / 2 - 2).min(4);
-        let output_rows = height - 4 - option_rows - 1;
+        // Floor at one option row: the engine rejects a page size of 0, and
+        // terminals of height ≤ 8 would otherwise compute 0 (≤ 6 would
+        // underflow the u16 math entirely).
+        let option_rows = (height.saturating_sub(3) / 2).saturating_sub(2).clamp(1, 4);
+        let output_rows = height.saturating_sub(4 + option_rows + 1);
 
         let jd = jd::JdContext::new(option_rows as u8).expect("failed to initialize the jd engine");
 

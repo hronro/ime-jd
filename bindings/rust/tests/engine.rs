@@ -114,6 +114,14 @@ fn jump_to_page_lands_on_requested_page() {
 }
 
 #[test]
+fn page_size_zero_is_rejected() {
+    // A zero page size would divide by zero inside the core's paginators
+    // (UB in the ReleaseFast builds that ship); jd_init rejects it with
+    // NULL, which this safe constructor must surface as an error.
+    assert!(JdContext::new(0).is_err());
+}
+
+#[test]
 fn backspace_after_press_does_not_crash() {
     let mut ctx = JdContext::new(PAGE_SIZE).expect("jd_init failed");
     ctx.press_key(b'a');

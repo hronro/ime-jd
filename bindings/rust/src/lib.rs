@@ -78,7 +78,7 @@ pub struct InitError;
 
 impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("jd_init failed (allocation failure)")
+        f.write_str("jd_init failed (page_size 0 or allocation failure)")
     }
 }
 

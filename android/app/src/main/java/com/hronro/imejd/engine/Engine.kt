@@ -10,7 +10,15 @@ package com.hronro.imejd.engine
 import java.io.Closeable
 
 class Engine(private val pageSize: Byte = 9) : Closeable {
-    private var ctx: Long = nativeInit(pageSize)
+    // The engine rejects a zero page size (its paginators divide by it) and
+    // returns NULL on allocation failure; fail fast with a clear message
+    // instead of passing a 0 handle into the native pointer casts.
+    private var ctx: Long = run {
+        require(pageSize >= 1) { "Engine pageSize must be >= 1" }
+        val handle = nativeInit(pageSize)
+        check(handle != 0L) { "jd_init failed (allocation failure)" }
+        handle
+    }
 
     fun pressKey(byte: Byte): QuerySnapshot = nativePressKey(ctx, byte, pageSize)
     fun backspace(): QuerySnapshot = nativeBackspace(ctx, pageSize)

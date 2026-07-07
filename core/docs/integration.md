@@ -72,7 +72,7 @@ The header is C89-compatible and includes an `extern "C"` block for C++ consumer
 
 | Function                       | Effect                                                                       |
 |--------------------------------|------------------------------------------------------------------------------|
-| `jd_init(page_size)`           | Allocate a new context. Returns NULL on allocation failure.                  |
+| `jd_init(page_size)`           | Allocate a new context; `page_size` must be ≥ 1. Returns NULL when it is 0 or on allocation failure. |
 | `jd_press_key(ctx, key)`       | Feed one keystroke. Returns either a committed string or a page.             |
 | `jd_next_page(ctx)`            | Move to next page of the current candidate list, if any.                     |
 | `jd_prev_page(ctx)`            | Move to previous page, if any.                                               |

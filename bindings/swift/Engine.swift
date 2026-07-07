@@ -10,8 +10,11 @@ final class Engine {
     let pageSize: UInt8
 
     init(pageSize: UInt8 = 9) {
+        // The engine rejects a zero page size (its paginators divide by it);
+        // trap here with a precise message rather than on the generic NULL.
+        precondition(pageSize >= 1, "Engine pageSize must be >= 1")
         guard let raw = jd_init(pageSize) else {
-            fatalError("jd_init returned NULL")
+            fatalError("jd_init failed (allocation failure)")
         }
         self.ctx = raw
         self.pageSize = pageSize

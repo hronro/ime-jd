@@ -29,9 +29,10 @@ typedef struct {
 typedef struct jd_context jd_context;
 
 /**
- * Create a new context with the given page size. Returns NULL on allocation
- * failure. Each returned handle is owned by the caller and must be released
- * with jd_deinit.
+ * Create a new context with the given page size. `page_size` must be at
+ * least 1 (the candidate paginators divide by it). Returns NULL when
+ * page_size is 0 or on allocation failure. Each returned handle is owned
+ * by the caller and must be released with jd_deinit.
  */
 jd_context *jd_init(unsigned char page_size);
 

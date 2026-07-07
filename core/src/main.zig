@@ -117,6 +117,10 @@ fn computeLayout(frontier_cap: u32, path_buf_cap: u32, page_cap: usize, scratch_
 }
 
 export fn jd_init(page_size: u8) ?*JdContext {
+    // Both paginators divide by page_size (pagination.zig), so a zero must
+    // never cross the C boundary — in ReleaseFast that division is UB, not
+    // a panic. NULL reuses the existing allocation-failure contract.
+    if (page_size == 0) return null;
     ensureTrieInit();
     ensurePuncInit();
     const t = &trie_value;
@@ -228,6 +232,21 @@ test "real-data commit compositions fit the carved scratch buffer" {
     try std.testing.expectEqual(first_copy.len + 1, commit.len);
     try std.testing.expectEqualStrings(first_copy, commit[0..first_copy.len]);
     try std.testing.expectEqual(@as(u8, '1'), commit[first_copy.len]);
+}
+
+test "jd_init rejects page_size 0" {
+    try std.testing.expect(jd_init(0) == null);
+}
+
+test "'#' resolves to full-width ＃ through the punctuation table" {
+    // Regression: gen_punc's comment rule used to swallow normal.txt's
+    // `#` mapping line, so the shipped blob silently lacked the key and
+    // '#' fell through to the trie as a literal ASCII byte.
+    const handle = jd_init(9) orelse return error.OutOfMemory;
+    defer jd_deinit(handle);
+    const result = jd_press_key(handle, '#');
+    const commit = std.mem.sliceTo(result.commit orelse return error.NoCommit, 0);
+    try std.testing.expectEqualStrings("＃", commit);
 }
 
 test "multiple contexts share blobs but have independent state" {
