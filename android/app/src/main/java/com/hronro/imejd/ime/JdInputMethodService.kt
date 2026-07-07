@@ -21,10 +21,10 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
     private var keyboard: KeyboardView? = null
 
     override fun onCreateInputView(): View {
-        val action = currentInputEditorInfo?.imeOptions ?: EditorInfo.IME_ACTION_UNSPECIFIED
-        val kb = KeyboardView(this, session, KeyboardTheme.resolve(this, action))
+        val opts = currentInputEditorInfo?.imeOptions ?: 0
+        val kb = KeyboardView(this, session, KeyboardTheme.resolve(this, opts))
         kb.onReturn = { onReturn() }
-        kb.returnLabel = KeyboardTheme.returnLabel(action and EditorInfo.IME_MASK_ACTION)
+        kb.returnLabel = KeyboardTheme.returnLabel(KeyboardTheme.effectiveAction(opts))
         keyboard = kb
         return kb
     }
@@ -32,9 +32,9 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         session.cancelAndReset()
-        val action = info?.imeOptions ?: EditorInfo.IME_ACTION_UNSPECIFIED
-        keyboard?.applyTheme(KeyboardTheme.resolve(this, action))
-        keyboard?.returnLabel = KeyboardTheme.returnLabel(action and EditorInfo.IME_MASK_ACTION)
+        val opts = info?.imeOptions ?: 0
+        keyboard?.applyTheme(KeyboardTheme.resolve(this, opts))
+        keyboard?.returnLabel = KeyboardTheme.returnLabel(KeyboardTheme.effectiveAction(opts))
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -45,9 +45,9 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         // Re-theme live when the system toggles dark/light (or wallpaper colors change).
-        val action = currentInputEditorInfo?.imeOptions ?: EditorInfo.IME_ACTION_UNSPECIFIED
-        keyboard?.applyTheme(KeyboardTheme.resolve(this, action))
-        keyboard?.returnLabel = KeyboardTheme.returnLabel(action and EditorInfo.IME_MASK_ACTION)
+        val opts = currentInputEditorInfo?.imeOptions ?: 0
+        keyboard?.applyTheme(KeyboardTheme.resolve(this, opts))
+        keyboard?.returnLabel = KeyboardTheme.returnLabel(KeyboardTheme.effectiveAction(opts))
     }
 
     private fun onReturn() {
@@ -56,7 +56,7 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
             return
         }
         val ic = currentInputConnection ?: return
-        val action = (currentInputEditorInfo?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+        val action = KeyboardTheme.effectiveAction(currentInputEditorInfo?.imeOptions ?: 0)
         if (action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
             ic.performEditorAction(action)
         } else {
@@ -72,6 +72,13 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
 
     override fun deleteBackward() {
         val ic = currentInputConnection ?: return
+        // ⌫ with an active selection deletes the selection itself.
+        // deleteSurroundingText operates AROUND the selection — it would eat
+        // the character before it and leave the selected text in place.
+        if (!ic.getSelectedText(0).isNullOrEmpty()) {
+            ic.commitText("", 1)
+            return
+        }
         // Delete one code point — handle surrogate pairs, not a fixed 1 unit.
         val before = ic.getTextBeforeCursor(2, 0) ?: ""
         val n = if (before.length >= 2 &&

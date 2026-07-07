@@ -86,8 +86,7 @@ data class KeyboardTheme(
                 dark -> DARK
                 else -> LIGHT
             }
-            val action = imeOptions and EditorInfo.IME_MASK_ACTION
-            return if (returnIsTinted(action)) {
+            return if (returnIsTinted(effectiveAction(imeOptions))) {
                 base.copy(returnBackground = base.accent, returnText = base.onAccent)
             } else {
                 base.copy(returnBackground = base.specialKeyBackground, returnText = base.specialKeyText)
@@ -118,6 +117,20 @@ data class KeyboardTheme(
                 onAccent = c(android.R.color.system_neutral1_50),
             )
         }
+
+        /**
+         * The action the return key performs AND displays, from the host's raw
+         * imeOptions. IME_FLAG_NO_ENTER_ACTION means enter must insert a
+         * newline regardless of the declared action — TextView sets that flag
+         * automatically on every multiline editor that carries an action
+         * (chat compose boxes are the canonical case) — so the effective
+         * action collapses to NONE: untinted 换行 key, newline on press.
+         * Behavior (JdInputMethodService.onReturn) and the label/tint here all
+         * derive from this one value so they can never disagree.
+         */
+        fun effectiveAction(imeOptions: Int): Int =
+            if (imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION != 0) EditorInfo.IME_ACTION_NONE
+            else imeOptions and EditorInfo.IME_MASK_ACTION
 
         fun returnIsTinted(action: Int): Boolean = when (action) {
             EditorInfo.IME_ACTION_NONE, EditorInfo.IME_ACTION_UNSPECIFIED -> false
