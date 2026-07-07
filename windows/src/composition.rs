@@ -148,6 +148,31 @@ pub fn commit(ctx: &ITfContext, tid: u32) -> Result<()> {
     request_session(ctx, tid, session)
 }
 
+/// Tear down the composition WITHOUT committing (Escape): the in-flight text
+/// is removed from the document entirely, matching integration.md's "Escape /
+/// Cancel → tear down the composition without committing" and the macOS
+/// frontend's `Composition.cancel`. Same teardown as the backspace-to-empty
+/// path above; `commit` differs only in leaving the text in place. No-op if
+/// there's no composition.
+pub fn cancel(ctx: &ITfContext, tid: u32) -> Result<()> {
+    let ctx_for_session = ctx.clone();
+    let session = EditSession::new(move |ec| {
+        STATE.with(|s| -> Result<()> {
+            let mut state = s.borrow_mut();
+            if let Some(comp) = state.composition.take() {
+                let range = unsafe { comp.GetRange() }?;
+                let empty: Vec<u16> = Vec::new();
+                unsafe { range.SetText(ec, 0, &empty) }?;
+                let _ = display_attribute::clear(&ctx_for_session, ec, &range);
+                unsafe { comp.EndComposition(ec) }?;
+            }
+            state.buffer.clear();
+            Ok(())
+        })
+    });
+    request_session(ctx, tid, session)
+}
+
 /// Called by ITfCompositionSink::OnCompositionTerminated when something
 /// external (focus loss, app rejection, etc.) ended our composition. Just
 /// drop our handles; the composition is already gone in TSF's eyes.

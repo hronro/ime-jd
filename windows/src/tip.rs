@@ -158,8 +158,11 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
                 return Ok(BOOL(1));
             }
             if vk == VK_ESCAPE {
+                // Escape cancels: the in-flight raw letters are torn out of
+                // the document, NOT finalized (that's Enter's job below) —
+                // integration.md's "Escape / Cancel" row.
                 jd::reset();
-                let _ = composition::commit(ctx, tid);
+                let _ = composition::cancel(ctx, tid);
                 candidate_window::hide();
                 ui_element::end();
                 return Ok(BOOL(1));
