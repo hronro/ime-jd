@@ -143,4 +143,66 @@ class InputSessionTest {
         assertFalse("space should commit the top candidate", h.joined.isEmpty())
         assertFalse(s.isComposing)
     }
+
+    // MARK: - Lazy pagination (prefetch must not move the engine's page)
+
+    /**
+     * Regression: engine auto-commits (space, drill-in, punctuation fallback)
+     * act on the first option of the engine's CURRENT page. Prefetching pages
+     * for the strip must park the engine back on the visible page, or space
+     * commits a candidate the user isn't looking at.
+     */
+    @Test
+    fun spaceCommitsFirstVisibleCandidateAfterPrefetch() {
+        val (s, h) = makeSession()
+        s.handle(KeyAction.EngineKey(ascii('a'))) // 'a' has > 9 candidates → multi-page
+        assertTrue("test needs a multi-page code", s.snapshot.totalPages > 1)
+        val firstVisible = s.snapshot.options.first().value
+        assertTrue("prefetch should return a page", s.loadMoreCandidates() != null)
+        s.handle(KeyAction.EngineKey(0x20))
+        assertEquals(firstVisible, h.joined)
+    }
+
+    /** Same property for the punctuation bypass (insertLiteral presses space). */
+    @Test
+    fun insertLiteralCommitsFirstVisibleCandidateAfterPrefetch() {
+        val (s, h) = makeSession()
+        s.handle(KeyAction.EngineKey(ascii('a')))
+        val firstVisible = s.snapshot.options.first().value
+        s.loadMoreCandidates()
+        s.insertLiteral("。")
+        assertEquals(firstVisible + "。", h.joined)
+    }
+
+    /**
+     * Prefetch feeds an append-only strip whose first page stays on screen, so
+     * it must not touch the published snapshot.
+     */
+    @Test
+    fun prefetchLeavesSnapshotUntouched() {
+        val (s, _) = makeSession()
+        s.handle(KeyAction.EngineKey(ascii('a')))
+        val before = s.snapshot
+        s.loadMoreCandidates()
+        assertEquals(before, s.snapshot)
+    }
+
+    /** Consecutive prefetches walk each remaining page exactly once, then stop. */
+    @Test
+    fun loadMoreWalksAllPagesThenStops() {
+        val (s, _) = makeSession()
+        s.handle(KeyAction.EngineKey(ascii('a')))
+        val total = s.snapshot.optionsCount
+        val totalPages = s.snapshot.totalPages
+        var seen = s.snapshot.options.size
+        var fetches = 0
+        while (true) {
+            val more = s.loadMoreCandidates() ?: break
+            seen += more.size
+            fetches++
+            assertTrue("prefetch ran past the page count", fetches <= totalPages)
+        }
+        assertEquals("each remaining page should be fetched exactly once", totalPages - 1, fetches)
+        assertEquals("prefetch should surface every candidate exactly once", total, seen)
+    }
 }

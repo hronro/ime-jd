@@ -62,6 +62,16 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
     private val separatorPaint = Paint()
     private var shownCount = 0
 
+    /**
+     * True while reset() rebuilds the strip. The programmatic scrollTo fires the
+     * scroll-change listener synchronously against the STALE stack width (layout
+     * hasn't run yet), and re-entering onNeedMore mid-rebuild would append a
+     * prefetched page ahead of page 1 — cells would no longer line up with the
+     * owner's item indices, so taps would commit a different candidate than
+     * displayed.
+     */
+    private var isResetting = false
+
     init {
         orientation = HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -82,7 +92,7 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
         scroll.isHorizontalScrollBarEnabled = false
         scroll.addView(stack, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT))
         scroll.setOnScrollChangeListener { _, scrollX, _, _, _ ->
-            if (scrollX + scroll.width * 2 >= stack.width) onNeedMore?.invoke()
+            if (!isResetting && scrollX + scroll.width * 2 >= stack.width) onNeedMore?.invoke()
         }
         addView(scroll, LayoutParams(0, LayoutParams.MATCH_PARENT, 1f))
 
@@ -108,10 +118,12 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
     /** Replace the strip with a fresh page. */
     fun reset(composing: String, items: List<Candidate>, canExpand: Boolean) {
         composingLabel.text = composing
+        isResetting = true
         stack.removeAllViews()
         shownCount = 0
         scroll.scrollTo(0, 0)
         append(items)
+        isResetting = false
         expandButton.visibility = if (canExpand) View.VISIBLE else View.GONE
     }
 

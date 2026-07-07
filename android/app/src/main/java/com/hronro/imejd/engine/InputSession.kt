@@ -28,6 +28,13 @@ class InputSession(pageSize: Byte = 9) {
     var snapshot: QuerySnapshot = QuerySnapshot.EMPTY
         private set
 
+    /**
+     * Highest engine page fetched into the UI's append-only candidate strip.
+     * Runs ahead of `snapshot.currentPage` during lazy pagination — see
+     * `loadMoreCandidates`, which parks the engine back on the snapshot's page.
+     */
+    private var lastFetchedPage: Int = 0
+
     /** Fired after every state change. UI re-renders the composing label + candidates. */
     var onChange: ((snapshot: QuerySnapshot, rawBuffer: String) -> Unit)? = null
 
@@ -154,15 +161,23 @@ class InputSession(pageSize: Byte = 9) {
     }
 
     /**
-     * For the candidate bar's lazy pagination: advance one page and return its
-     * candidates WITHOUT firing `onChange` (the bar appends them itself, keeping
-     * already-shown candidates). Returns null at the last page.
+     * For the candidate bar's lazy pagination: fetch the page after the last
+     * fetched one and return its candidates WITHOUT firing `onChange` (the bar
+     * appends them itself, keeping already-shown candidates). Returns null at
+     * the last page.
+     *
+     * The engine is parked back on `snapshot.currentPage` before returning:
+     * engine auto-commits (space, drill-in, punctuation fallback) act on the
+     * first option of the engine's CURRENT page, so leaving the paginator on a
+     * prefetched page would commit a candidate the user isn't looking at.
      */
     fun loadMoreCandidates(): List<Candidate>? {
-        if (snapshot.currentPage >= snapshot.totalPages) return null
-        val snap = engine.nextPage()
-        snapshot = snap
-        return snap.options
+        if (lastFetchedPage >= snapshot.totalPages) return null
+        val next = engine.jumpToPage(lastFetchedPage + 1)
+        engine.jumpToPage(snapshot.currentPage)
+        if (next.options.isEmpty()) return null
+        lastFetchedPage = next.currentPage
+        return next.options
     }
 
     /** Release the engine context. */
@@ -180,6 +195,7 @@ class InputSession(pageSize: Byte = 9) {
 
     private fun setSnapshot(snap: QuerySnapshot) {
         snapshot = snap
+        lastFetchedPage = snap.currentPage
         onChange?.invoke(snap, rawBuffer)
     }
 }
