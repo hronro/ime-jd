@@ -564,11 +564,21 @@ jobs:
             abi="${pair%%:*}" arch="${pair##*:}"
             unsigned="android/app/build/outputs/apk/release/app-$abi-release-unsigned.apk"
             "$bt/zipalign" -f 4 "$unsigned" "aligned-$abi.apk"
+            # --v4-signing-enabled false: v4 emits a detached <apk>.idsig used
+            # only for incremental `adb install`, useless for a downloaded APK.
+            # Without this, apksigner writes it next to --out and the upload
+            # glob below publishes it as a stray release asset. v2/v3 (embedded)
+            # stay on by default and are what installs actually verify.
             "$bt/apksigner" sign --ks signing.jks --ks-pass "pass:$pass" \
+              --v4-signing-enabled false \
               --out "release/jd-ime-${GITHUB_REF_NAME}-android-$arch.apk" "aligned-$abi.apk"
           done
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
+        # Scope to *.apk (not release/*): this is the one job whose signing
+        # tool writes sibling files, and apksigner's v4 default has drifted
+        # across build-tools versions — pin the asset set to APKs so a future
+        # default flip can't leak a stray .idsig again.
+        run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/*.apk --clobber
