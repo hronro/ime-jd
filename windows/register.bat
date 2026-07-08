@@ -44,18 +44,28 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Delete renamed leftovers from earlier upgrades. Copies still loaded by
+REM some process can't be deleted — del skips them silently and they get
+REM another chance on the next run.
+del /q "%INSTALL_DIR%\%DLL_NAME%.old-*" >nul 2>&1
+
 REM If a previous copy is still loaded by some process, rename it out of the
 REM way. Windows allows rename-while-loaded; the old name remains valid for
-REM processes already holding it.
+REM processes already holding it. The rename lives in a subroutine on
+REM purpose: cmd expands %VARS% inside a parenthesized block when the block
+REM is PARSED, so the old inline `move ... .old-%STAMP%` always saw an empty
+REM STAMP and renamed to one constant name — the second upgrade-while-loaded
+REM then collided with the loaded leftover and the install aborted until
+REM reboot. (The stamp also came from wmic, which Windows 11 24H2 removed.)
 if exist "%INSTALL_DIR%\%DLL_NAME%" (
     regsvr32 /s /u "%INSTALL_DIR%\%DLL_NAME%" >nul 2>&1
-    for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /value ^| find "="') do set "STAMP=%%I"
-    move /Y "%INSTALL_DIR%\%DLL_NAME%" "%INSTALL_DIR%\%DLL_NAME%.old-%STAMP%" >nul
+    call :RenameOldDll
 )
 
 copy /Y "%SOURCE_DLL%" "%INSTALL_DIR%\" >nul
 if errorlevel 1 (
-    echo 复制 DLL 失败。
+    echo 复制 DLL 失败。可能有程序仍在占用旧版本 ——
+    echo 注销并重新登录（或重启）后再运行本脚本。
     pause
     exit /b 1
 )
@@ -80,3 +90,14 @@ echo     选项 ^> 添加键盘 ^> 键道
 echo.
 pause
 endlocal
+exit /b 0
+
+REM Rename the loaded DLL to a unique .old-* name. Lines in a CALLed label
+REM are parsed one at a time, so %RANDOM% expands at run time here (unlike
+REM inside a parenthesized block). Redraw if the name is taken — a stale
+REM .old-* can linger loaded from a previous upgrade.
+:RenameOldDll
+set "OLD_TARGET=%INSTALL_DIR%\%DLL_NAME%.old-%RANDOM%%RANDOM%"
+if exist "%OLD_TARGET%" goto :RenameOldDll
+move /Y "%INSTALL_DIR%\%DLL_NAME%" "%OLD_TARGET%" >nul
+exit /b 0
