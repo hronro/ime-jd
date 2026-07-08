@@ -92,7 +92,7 @@ The four numeric fields and two pointer fields together encode three mutually ex
 | Committed + drilled in    | non-`NULL`  | non-`NULL`    | total candidates| ≥ 1           | 1-based        |
 | Empty (no-op)             | `NULL`      | `NULL`        | 0               | 0             | 0              |
 
-The third row happens when the user types a key that isn't a child of the current trie node but *is* a child of the root: the in-flight candidate is committed *and* the user is now navigating fresh from the root with the just-pressed key.
+The third row happens when the user types a key that isn't a child of the current trie node but *is* a child of the root: the current page's first candidate is committed *and* the user is now navigating fresh from the root with the just-pressed key.
 
 `options_count` is the total candidates across all pages — not the length of the visible `options` array. The visible length is:
 
@@ -101,6 +101,8 @@ visible = (current_page == total_pages)
         ? (options_count - 1) % page_size + 1
         : page_size
 ```
+
+All of the engine's automatic commits are **page-relative**: space, the commit-and-jump in the third row, and the literal-byte fallback each commit the first option of the paginator's **current page** — and `;` picks the current page's second — not global option 0. An IME that moves the paginator for reasons the user can't see (e.g. prefetching pages into an append-only candidate strip) must park it back on the visible page with `jd_jump_to_page` before the next key reaches the engine, or those commits target a page the user isn't looking at. This is exactly the bug the iOS/Android frontends had in their `loadMoreCandidates`; see how they fetch ahead and immediately jump back.
 
 ### Pointer lifetimes (important)
 
@@ -146,9 +148,9 @@ The table below is the recommended dispatch policy across all platforms. Followi
 |---|---|---|
 | Modifier chords (Ctrl / Cmd / Alt / Win+anything) | IME | pass through to the host — these are host shortcuts (select-all, copy/paste, menu accelerators, system commands) |
 | `a`–`z` | engine | `jd_press_key(byte)` — descends the trie / starts a composition |
-| Punctuation (the keys mapped in `src/punctuation-marks/normal.txt` + `paired.txt`, plus `;`) | engine **or** IME — implementer's choice | **Delegate to the engine**: `jd_press_key(byte)` resolves the byte to a Chinese mark (auto-commit, paired-toggle, or a candidate window — see "Punctuation handling" below). **Or bypass the engine** and insert the mark in the IME yourself, replicating the engine's semantics: if a composition is in flight, commit the top candidate first, then append the mark; otherwise insert the mark directly. **Desktop IMEs usually delegate** (the hardware key already shows the ASCII glyph); **mobile IMEs usually bypass**, so the on-screen keyboard shows the Chinese marks directly and the user taps the exact one. Either way, dispatch the **actually-typed byte** (`Shift+/` → `?`, `Shift+1` → `!`). **`;` is a special case**: the engine routes it through its trie *symbol scheme* (`;`→`；`, `;;`→`：`, `;e`→`（`, … — opening a candidate window when not composing) rather than the punctuation tables, and reuses it as the built-in **2nd-candidate selector** while composing (it picks option 1, not commit-then-append). A delegating desktop IME gets both behaviors for free; a bypassing mobile IME usually omits the `;` key, since a candidate tap already selects the 2nd one. |
+| Punctuation (the keys mapped in `src/punctuation-marks/normal.txt` + `paired.txt`, plus `;`) | engine **or** IME — implementer's choice | **Delegate to the engine**: `jd_press_key(byte)` resolves the byte to a Chinese mark (auto-commit, paired-toggle, or a candidate window — see "Punctuation handling" below). **Or bypass the engine** and insert the mark in the IME yourself, replicating the engine's semantics: if a composition is in flight, commit the top candidate first, then append the mark; otherwise insert the mark directly. **Desktop IMEs usually delegate** (the hardware key already shows the ASCII glyph); **mobile IMEs usually bypass**, so the on-screen keyboard shows the Chinese marks directly and the user taps the exact one. Either way, dispatch the **actually-typed byte** (`Shift+/` → `?`, `Shift+1` → `!`). **`;` is a special case**: the engine routes it through its trie *symbol scheme* (`;`→`；`, `;;`→`：`, `;e`→`（`, … — opening a candidate window when not composing) rather than the punctuation tables, and reuses it as the built-in **2nd-candidate selector** while composing a trie code (it picks the current page's option 1, not commit-then-append; on a *punctuation* candidate window it instead commits the window's first option and then opens its own symbol window). A delegating desktop IME gets both behaviors for free; a bypassing mobile IME usually omits the `;` key, since a candidate tap already selects the 2nd one. |
 | Other printable ASCII (digits `0`-`9`, uppercase letters, other `Shift`/`Caps Lock`-modified bytes not in the punctuation tables …) | engine | `jd_press_key(byte)` — commits the current state and appends the byte literally, so `Shift+K` → `K` yields `…K`. |
-| Space | engine | `jd_press_key(' ')` — engine commits the top candidate and appends nothing |
+| Space | engine | `jd_press_key(' ')` — engine commits the current page's first candidate and appends nothing |
 | Candidate-selector keys / gestures | IME (bindings up to the implementer) | `commit_text(option_at(N).value)` then `jd_reset()` |
 | Page-navigation keys / gestures | IME (bindings up to the implementer) | `jd_next_page` / `jd_prev_page` — separate functions, not bytes |
 | Backspace | IME | `jd_backspace` plus shrink the IME's composition |
@@ -177,11 +179,11 @@ The engine ships a build-time-generated punctuation table that maps selected ASC
 
 - **Paired** (e.g. `"` → `“` / `”`): single-press commit; consecutive presses of the same key alternate halves. The toggle state is per-context, indexed by ASCII byte, and survives `jd_reset()` — it is cleared only by `jd_deinit`. Different paired keys (`"` vs `'` vs `(`) have independent toggles.
 - **Normal, single candidate** (e.g. `.` → `。`): single-press commit, no window.
-- **Normal, multiple candidates** (e.g. `[` → `「`/`【`/`〔`/`［`): opens a candidate window — `query_result.options` is non-`NULL`. The IME paginates and selects via the usual flow (`jd_next_page` / `jd_prev_page` / `jd_press_key('1'-'9')` / `jd_press_key(' ')` to commit the first option). Pagination honors `page_size` from `jd_init`.
+- **Normal, multiple candidates** (e.g. `[` → `「`/`【`/`〔`/`［`): opens a candidate window — `query_result.options` is non-`NULL`. The IME paginates via `jd_next_page` / `jd_prev_page` and selects with its own bindings, exactly as for trie candidates (commit `option_at(N).value`, then `jd_reset`). Do **not** route selector keys to the engine here: it treats `1`-`9` as literal input (`[` then `2` commits `「2`), and `;` does not pick option 1 on a punctuation window (it commits the window's first option, then opens its own symbol window). `jd_press_key(' ')` commits the current page's first option. Pagination honors `page_size` from `jd_init`.
 
 Mixed-state behavior:
 
-- If a trie composition is in flight (some letters typed) when a punctuation key is pressed, the engine commits the trie's first candidate **and** the punctuation in one step (e.g. typing `n` then `.` yields a commit of `你。`).
+- If a trie composition is in flight (some letters typed) when a punctuation key is pressed, the engine commits the trie page's first candidate **and** the punctuation in one step (e.g. typing `n` then `.` yields a commit of `你。`).
 - If a punctuation candidate window is open when the user presses a non-punctuation key, the engine commits the window's first candidate and then processes the new key (e.g. `[` opens the bracket window, pressing `n` commits `「` and starts a fresh trie composition with `n`).
 - `jd_backspace` while a punctuation candidate window is open closes the window without committing.
 
@@ -191,7 +193,7 @@ If the IME **delegates** punctuation to the engine, it doesn't have to do anythi
 
 **Bypassing the engine (recommended for mobile IMEs).** Instead of routing punctuation to `jd_press_key`, a mobile IME typically shows the Chinese marks *directly* on the on-screen keyboard and inserts the tapped mark itself — the pressed key already *is* the mark, with no ASCII byte or table lookup involved. This is more intuitive on touch: the user sees and taps the exact mark, and paired marks (`“`/`”`, `‘`/`’`) become two separate keys rather than a press-toggle. To stay consistent with the delegating path, replicate the engine's commit-then-append rule:
 
-- **Composing**: commit the current top candidate — `query_result.options[0].value`, which the IME already has from the last result — then `jd_reset(ctx)` and insert the mark. No engine call is needed: option 0 is exactly what the engine would have committed.
+- **Composing**: commit the current top candidate — `query_result.options[0].value`, which the IME already has from the last result — then `jd_reset(ctx)` and insert the mark. No engine call is needed: option 0 is exactly what the engine would have committed — provided the paginator still sits on the page that produced that result (see the page-relative note under "Reading `query_result`").
 - **Not composing**: insert the mark directly.
 
 In this mode the engine's punctuation table goes unused; the engine still owns the trie and the candidate list, and the IME just commits option 0 of the current result to flush an in-flight candidate — so behavior stays identical to a delegating IME, mark for mark.

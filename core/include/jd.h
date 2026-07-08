@@ -9,6 +9,18 @@ typedef struct {
   const char *value, *hint;
 } query_option;
 
+/**
+ * One page of candidates plus paging state. `options_count` is the TOTAL
+ * number of candidates across all pages — NOT the length of the `options`
+ * array, which holds only the current page:
+ *
+ *   visible = (current_page == total_pages)
+ *           ? (options_count - 1) % page_size + 1
+ *           : page_size
+ *
+ * Reading `options` past `visible` is out of bounds. See "Reading
+ * `query_result`" in docs/integration.md for the full field semantics.
+ */
 typedef struct {
   const char *commit;
   const query_option *options;
@@ -39,17 +51,23 @@ jd_context *jd_init(unsigned char page_size);
 /**
  * Feed one keystroke to the engine. `key` is interpreted as a literal ASCII
  * byte; the engine resolves it in this order:
- *   1. If a candidate page is on screen, special keys pick from it (space
- *      commits option 0; `;` picks option 1 when not part of an active
- *      trie code). Numeric candidate-selector bindings (`1`-`9` and the
- *      like) are the IME's responsibility — see docs/integration.md.
+ *   1. If a candidate page is on screen, special keys pick from it —
+ *      always relative to the CURRENT page, not the full list: space
+ *      commits the page's first option; `;` picks its second, on trie
+ *      pages only (a punctuation candidate window treats `;` like any
+ *      other non-punctuation key: the window's first option is committed,
+ *      then `;` opens its own trie symbol scheme). Digits are literal
+ *      input to the engine — numeric candidate-selector bindings (`1`-`9`
+ *      and the like) are the IME's responsibility — see
+ *      docs/integration.md.
  *   2. The punctuation tables — paired entries auto-commit with toggle,
  *      single-candidate normals auto-commit, multi-candidate normals open a
  *      paginated candidate window. See docs/integration.md.
  *   3. The trie — descend, or commit-and-jump when the key is a child of
- *      the root but not of the current node.
- *   4. Fallback — commit the in-flight first candidate (if any) with the
- *      key byte appended.
+ *      the root but not of the current node (the commit is the current
+ *      page's first candidate).
+ *   4. Fallback — commit the current page's first candidate (if any) with
+ *      the key byte appended.
  *
  * The returned result encodes one of: candidates available, committed,
  * committed-and-drilled-in (both `commit` and `options` non-NULL), or empty.
