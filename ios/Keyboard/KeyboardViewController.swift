@@ -22,6 +22,11 @@ final class KeyboardViewController: UIInputViewController {
     /// measured in one orientation under the other orientation's key.
     private var presentingKey: String?
 
+    /// When we last edited the host ourselves (commit / literal / delete).
+    /// `textDidChange` uses it to tell our own edits' echoes apart from
+    /// external changes — see there.
+    private var lastOwnHostEdit: CFTimeInterval = 0
+
     override func viewDidLoad() {
         super.viewDidLoad()
         session.host = self
@@ -88,7 +93,27 @@ final class KeyboardViewController: UIInputViewController {
         session.cancelAndReset()
     }
 
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        // Apple documents needsInputModeSwitchKey as only reliable from layout
+        // time on; the viewDidLoad read can be wrong (and can change later,
+        // e.g. when the keyboard list changes). The didSet no-ops unless the
+        // value actually flips, so re-asserting every pass is free.
+        keyboard?.showsNextKeyboardKey = needsInputModeSwitchKey
+    }
+
     override func textDidChange(_ textInput: UITextInput?) {
+        // The host's text or caret changed. If it wasn't us — the user tapped
+        // another field, moved the caret, or the app edited the text — the
+        // in-flight composition's context is gone: drop it (like the system
+        // keyboards) instead of letting a later commit land stale text at the
+        // new cursor. Our own proxy edits echo here too, and one of them
+        // arrives while a composition is legitimately live (a drill-in
+        // commits text AND starts a fresh composition in the same keystroke),
+        // so edits inside the grace window are treated as our own echo.
+        if session.isComposing, CACurrentMediaTime() - lastOwnHostEdit > 0.15 {
+            session.cancelAndReset()
+        }
         refreshAppearance()
     }
 
@@ -202,7 +227,7 @@ final class KeyboardViewController: UIInputViewController {
         if session.isComposing {
             session.handle(.commitRaw)
         } else {
-            textDocumentProxy.insertText("\n")
+            insertText("\n")   // via KeyboardHost, so the edit is stamped as our own
         }
     }
 }
@@ -210,6 +235,13 @@ final class KeyboardViewController: UIInputViewController {
 // MARK: - KeyboardHost
 
 extension KeyboardViewController: KeyboardHost {
-    func insertText(_ text: String) { textDocumentProxy.insertText(text) }
-    func deleteBackward() { textDocumentProxy.deleteBackward() }
+    func insertText(_ text: String) {
+        lastOwnHostEdit = CACurrentMediaTime()
+        textDocumentProxy.insertText(text)
+    }
+
+    func deleteBackward() {
+        lastOwnHostEdit = CACurrentMediaTime()
+        textDocumentProxy.deleteBackward()
+    }
 }
