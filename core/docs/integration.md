@@ -20,6 +20,8 @@ Outputs land in `zig-out/lib/` (and `zig-out/bin/` for the DLL on Windows):
 
 On Windows the static archive is named `jd_static.lib` to avoid colliding with the DLL's import library (`jd.lib`) — both would otherwise be written as `jd.lib` and overwrite each other in `zig-out/lib/`. Link against `jd_static.lib` for static linking; link against `jd.lib` and ship `jd.dll` for dynamic linking.
 
+Targeting `wasm32-freestanding` produces neither — it emits a single WebAssembly reactor module at `zig-out/bin/jd.wasm`. See [WebAssembly](#webassembly).
+
 The public header is at `include/jd.h`; a Clang/Swift module map is at `include/module.modulemap` (module name `Libjd`).
 
 ## Cross-compiling
@@ -32,12 +34,13 @@ zig build -Dtarget=aarch64-linux-musl
 zig build -Dtarget=aarch64-ios
 zig build -Dtarget=x86_64-windows
 zig build -Dtarget=powerpc-linux-musl   # big-endian target
+zig build -Dtarget=wasm32-freestanding   # WebAssembly reactor module
 ```
 
 The blob's multi-byte fields are written in the target's endianness — the build-time generator runs on the host and, when the host and target differ, byte-swaps every u32 field before embedding the blob. Cross-compiling between little-endian and big-endian platforms is fully supported.
 ## The C API
 
-Rust consumers should not hand-roll these declarations — depend on the shared bindings crate at `bindings/rust` (a Cargo path dependency; used by `cli/` and `windows/`), which links libjd and upholds the pointer-lifetime contract below by copying every result into owned data. Swift consumers likewise share the wrapper at `bindings/swift` (compiled directly into the `macos/` and `ios/` targets via their project.yml source paths).
+Rust consumers should not hand-roll these declarations — depend on the shared bindings crate at `bindings/rust` (a Cargo path dependency; used by `cli/` and `windows/`), which links libjd and upholds the pointer-lifetime contract below by copying every result into owned data. Swift consumers likewise share the wrapper at `bindings/swift` (compiled directly into the `macos/` and `ios/` targets via their project.yml source paths). JavaScript/TypeScript consumers use the `bindings/javascript` package, which wraps the WebAssembly build — see [WebAssembly](#webassembly).
 
 From `include/jd.h`:
 
@@ -133,7 +136,15 @@ Each `jd_init` call returns an independent context owned by the caller. Contexts
 | A single context called from multiple threads concurrently | No — wrap calls in an external lock. |
 | Multiple threads racing the very first `jd_init`           | Yes — the trie's one-time init is atomic. |
 
-The library uses `std.heap.smp_allocator` internally (thread-safe, pure Zig, no libc dependency).
+The library uses `std.heap.smp_allocator` internally (thread-safe, pure Zig, no libc dependency) — except on WebAssembly, which uses `std.heap.wasm_allocator` (see [WebAssembly](#webassembly)).
+
+## WebAssembly
+
+`zig build -Dtarget=wasm32-freestanding` produces a standalone reactor module at `zig-out/bin/jd.wasm` instead of the static/dynamic libraries. It has no `_start`, imports nothing (no WASI), and exports linear `memory`, the full `jd_*` C ABI, and one wasm-only helper — `jd_wasm_result_ptr`. The engine swaps `smp_allocator` for `std.heap.wasm_allocator` (the former needs threads and an OS page allocator, neither of which `wasm32-freestanding` has); everything else — including the embedded dictionary — is identical to the native build.
+
+Calling the C ABI from a host has one wrinkle. `query_result` is a five-field struct, so the wasm32 C ABI returns it through an implicit struct-return pointer (sret): each result-returning `jd_*` export compiles to `fn(sret_ptr, ...args) void` and writes the struct through the caller-provided pointer. `jd_wasm_result_ptr()` returns the address of a single static `query_result` to use as that pointer — read its five little-endian `u32` fields out of `memory` after each call, then follow the `commit` / `options` pointers (also offsets into `memory`). The [pointer-lifetime contract](#pointer-lifetimes-important) still applies: copy the strings out before the next `jd_*` call.
+
+You rarely want to do that by hand. The **`bindings/javascript`** package wraps all of it behind an ergonomic JavaScript API (`JdModule` / `Engine`, with TypeScript types) that copies every result into owned JS values. Point it at the `jd.wasm` from `zig build` or the `libjd-<ver>-wasm.wasm.tar.xz` release asset.
 
 ## Key routing for IMEs
 
@@ -278,6 +289,6 @@ The candidate-selector and page-prev / page-next lines are where the per-platfor
 
 ## Allocator
 
-All builds use `std.heap.smp_allocator` — pure Zig, thread-safe, no libc dependency — and only ever touch it twice per context: one `alignedAlloc` inside `jd_init`, one matching `free` inside `jd_deinit`. Everything else (commit composition, BFS state, per-page candidate arrays, hint strings) lives in fixed-size regions carved from the per-context buffer at init time.
+Native builds use `std.heap.smp_allocator` (WebAssembly uses `std.heap.wasm_allocator` instead — see [WebAssembly](#webassembly)) — pure Zig, no libc dependency — and only ever touch it twice per context: one `alignedAlloc` inside `jd_init`, one matching `free` inside `jd_deinit`. Everything else (commit composition, BFS state, per-page candidate arrays, hint strings) lives in fixed-size regions carved from the per-context buffer at init time.
 
 Because there is no runtime allocator traffic, there is no per-context leak detection to enable in Debug builds — leaks would only ever come from a misuse of `jd_init` / `jd_deinit` on the caller's side, which any standard heap-checker (Valgrind, AddressSanitizer, etc.) will surface against the one alloc/free pair.

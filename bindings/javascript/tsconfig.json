@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    // DOM gives WebAssembly / Response / TextDecoder; ESNext gives Symbol.dispose
+    // (the `using` / [Symbol.dispose] path on Engine).
+    "lib": ["ESNext", "DOM"],
+    "types": ["node"],
+    "strict": true,
+    // The JS test uses untyped local helpers; the value here is checking that
+    // the hand-written index.d.ts is well-formed and that the test drives the
+    // public API correctly, not annotating the test.
+    "noImplicitAny": false,
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  // Validate the public declarations and the JS test that exercises them.
+  // index.js is plain runtime JavaScript, checked by `npm test`, not by tsc.
+  "include": ["src/index.d.ts", "test"]
+}

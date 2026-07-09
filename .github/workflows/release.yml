@@ -92,6 +92,11 @@ jobs:
           - platform: android
             arch: x86_64
             zig_target: x86_64-linux-android
+          # WebAssembly reactor module (bin/jd.wasm), consumed by bindings/javascript
+          # and any browser/Node host.
+          - platform: wasm
+            arch: wasm32
+            zig_target: wasm32-freestanding
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -101,8 +106,10 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Build static + dynamic libraries
+      - name: Build libjd
         working-directory: core
+        # Non-wasm targets build a static + dynamic lib; the wasm target builds
+        # a reactor .wasm. All ship ReleaseFast.
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
 
       - name: Stage libjd bundle
@@ -148,6 +155,12 @@ jobs:
             # (see android/scripts/build-libjd.sh), so it's a footgun there.
             cp "$bundle/lib/libjd.so" "$stage/"
             tar -cf - -C "$stage" libjd.so include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-android-$arch.so.tar.xz"
+          elif [[ "$platform" == "wasm" ]]; then
+            # A single self-contained reactor module; ship it alongside include/
+            # (the C ABI it exports) as one archive. No arch split — wasm32 is
+            # the only slice, so the asset name drops $arch.
+            cp "$bundle/bin/jd.wasm" "$stage/"
+            tar -cf - -C "$stage" jd.wasm include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-wasm.wasm.tar.xz"
           else
             case "$platform" in
               linux) dyn="libjd.so";    dynext="so"    ;;

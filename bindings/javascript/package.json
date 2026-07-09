@@ -1,0 +1,32 @@
+{
+  "name": "jd",
+  "version": "0.0.0",
+  "description": "WebAssembly bindings for libjd, the 键道 input-method core engine.",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "pretest": "node scripts/build-wasm.mjs",
+    "test": "node --test",
+    "typecheck": "tsc"
+  },
+  "engines": {
+    "node": ">=20.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^7.0.2"
+  },
+  "license": "GPL-3.0-or-later"
+}

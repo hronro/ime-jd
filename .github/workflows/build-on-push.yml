@@ -45,6 +45,11 @@ jobs:
           - platform: android
             arch: x86_64
             zig_target: x86_64-linux-android
+          # WebAssembly reactor module (bin/jd.wasm), consumed by bindings/javascript
+          # and any browser/Node host.
+          - platform: wasm
+            arch: wasm32
+            zig_target: wasm32-freestanding
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -54,8 +59,10 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Build static + dynamic libraries
+      - name: Build libjd
         working-directory: core
+        # Non-wasm targets build a static + dynamic lib; the wasm target builds
+        # a reactor .wasm. All ship ReleaseFast.
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
 
       - name: Stage libjd bundle
@@ -64,7 +71,8 @@ jobs:
           set -euo pipefail
           out="dist/libjd-${{ matrix.platform }}-${{ matrix.arch }}"
           mkdir -p "$out"
-          # Keeps zig-out's lib/ + bin/ split (DLLs live in bin/ on Windows).
+          # Keeps zig-out's lib/ + bin/ split (DLLs live in bin/ on Windows;
+          # the wasm reactor lands in bin/jd.wasm).
           cp -R core/zig-out/. "$out/"
           cp -R core/include "$out/include"
 

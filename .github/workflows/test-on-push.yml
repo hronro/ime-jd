@@ -37,6 +37,41 @@ jobs:
         working-directory: core
         run: zig build test --summary all
 
+  # JavaScript bindings: type-check the hand-written .d.ts, then drive the real
+  # engine through the wasm C ABI in Node. `npm test`'s pretest zig-builds core
+  # to wasm32-freestanding first, so this job needs both zig and node.
+  test-js:
+    name: js (node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # 24 is the current Node LTS. `node --test` runs the plain-JS tests
+      # directly (no type-stripping); 24 also covers the engine's `using` support.
+      - name: Install Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install dev dependencies
+        working-directory: bindings/javascript
+        run: npm install
+
+      - name: Type-check
+        working-directory: bindings/javascript
+        run: npm run typecheck
+
+      - name: Run binding tests
+        working-directory: bindings/javascript
+        run: npm test
+
   # Rust: the shared bindings crate (FFI contract tests against the real
   # engine, dynamic-linkage dev path) and the CLI's renderer tests.
   test-rust:

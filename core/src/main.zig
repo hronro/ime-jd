@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const query = @import("./query.zig");
 const pagination = @import("./pagination.zig");
@@ -9,12 +10,24 @@ const punc_tables = @import("./punctuation_marks.zig");
 
 const QueryOption = pagination.QueryOption;
 
+/// Whether we're compiling for a WebAssembly target. Selects the allocator
+/// (below) and gates the wasm-only result shim at the bottom of this file.
+const is_wasm = builtin.target.cpu.arch.isWasm();
+
 /// Single process-wide allocator. Each `jd_init` makes exactly one
 /// allocation via this allocator (the per-context buffer); each `jd_deinit`
 /// makes exactly one matching `free`. Nothing else in the library calls
 /// into an allocator at runtime — all internal containers are pre-sized
 /// slices and FixedBufferAllocators carved from the per-context buffer.
-const shared_allocator = std.heap.smp_allocator;
+///
+/// `smp_allocator` is thread-safe but reaches for the OS page allocator
+/// (mmap / VirtualAlloc) and a CPU-count probe, none of which exist on
+/// `wasm32-freestanding`. WebAssembly gets `wasm_allocator` instead — pure
+/// Zig, backed by the `memory.grow` intrinsic and single-threaded (which
+/// every wasm build here is). The `if` is comptime-folded, so non-wasm
+/// builds never analyze `wasm_allocator` — its vtable is a `@compileError`
+/// off-wasm.
+const shared_allocator = if (is_wasm) std.heap.wasm_allocator else std.heap.smp_allocator;
 
 /// The trie is parsed once from the embedded blob on the first jd_init call
 /// and shared read-only across every context. Slice headers live in BSS;
@@ -178,6 +191,34 @@ export fn jd_reset(handle: *JdContext) void {
 
 export fn jd_deinit(handle: *JdContext) void {
     shared_allocator.free(ctxOf(handle).raw);
+}
+
+// =========================================================================
+// WebAssembly result-return shim.
+//
+// `query_result` has five fields, so the wasm32 C ABI returns it through an
+// implicit struct-return pointer (sret): every result-returning `jd_*`
+// export compiles to `fn(sret_ptr, ...args) void` and writes the struct
+// through the caller-provided pointer. A JS host has no libc `malloc` to
+// carve that pointer from, so we hand it a stable one — a single static
+// `query_result` whose address this function returns. The host reads the
+// address once and passes it as the sret argument on every call.
+//
+// One shared buffer is safe: the string/option pointers inside a result are
+// only valid until the next `jd_*` call on the same context (the caller
+// copies them out first, per the C contract), the 20-byte struct itself is
+// copied into the buffer by the sret write, and every wasm build here is
+// single-threaded. The export is gated to wasm so it never appears in the
+// public symbol table of the native static/shared libraries.
+// =========================================================================
+var wasm_result_buf: query.QueryResult = undefined;
+
+fn wasmResultPtr() callconv(.c) *query.QueryResult {
+    return &wasm_result_buf;
+}
+
+comptime {
+    if (is_wasm) @export(&wasmResultPtr, .{ .name = "jd_wasm_result_ptr" });
 }
 
 // =========================================================================

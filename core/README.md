@@ -54,4 +54,12 @@ zig build -Doptimize=ReleaseFast   # fastest binary
 zig build -Doptimize=ReleaseSmall  # smallest binary
 ```
 
+Targeting `wasm32-freestanding` builds a standalone WebAssembly reactor module (`zig-out/bin/jd.wasm`) exporting the same C ABI, instead of the static/dynamic libraries:
+
+```sh
+zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast   # zig-out/bin/jd.wasm
+```
+
+See [docs/integration.md](./docs/integration.md#webassembly) for the WebAssembly specifics, and `bindings/javascript` for the ergonomic JavaScript wrapper.
+
 The `-Dtables_eol=lf|crlf` option controls how the build-time generator splits table files. Defaults to `lf`; pass `crlf` on Windows checkouts that may have CRLF endings.

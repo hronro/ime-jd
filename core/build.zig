@@ -134,35 +134,52 @@ pub fn build(b: *std.Build) void {
     lib_mod.addImport("punc_format", punc_format_target_mod);
     lib_mod.addImport("punc_blob", punc_blob_module);
 
-    // On Windows, both a static lib and a DLL's import lib are named `<name>.lib`,
-    // so installing both as "jd" would overwrite one. Rename the static archive
-    // to avoid the collision.
-    const static_lib_name = if (target.result.os.tag == .windows) "jd_static" else "jd";
-    const static_lib = b.addLibrary(.{
-        .name = static_lib_name,
-        .root_module = lib_mod,
-        .linkage = .static,
-    });
-    // PIE only applies to the static lib (shared libs are PIC by definition).
-    static_lib.pie = true;
+    if (target.result.cpu.arch.isWasm()) {
+        // WebAssembly ships a standalone reactor module (`jd.wasm`) rather
+        // than the static/shared libraries the native targets produce.
+        // A reactor has no `_start` (`entry = .disabled`); `rdynamic` exports
+        // every `export fn` — the `jd_*` C ABI plus the wasm-only
+        // `jd_wasm_result_ptr` shim — and wasm-lld exports linear `memory` by
+        // default, which is everything a JS host needs. See bindings/js for
+        // the consumer that wraps this module.
+        const wasm_reactor = b.addExecutable(.{
+            .name = "jd",
+            .root_module = lib_mod,
+        });
+        wasm_reactor.entry = .disabled;
+        wasm_reactor.rdynamic = true;
+        b.installArtifact(wasm_reactor);
+    } else {
+        // On Windows, both a static lib and a DLL's import lib are named `<name>.lib`,
+        // so installing both as "jd" would overwrite one. Rename the static archive
+        // to avoid the collision.
+        const static_lib_name = if (target.result.os.tag == .windows) "jd_static" else "jd";
+        const static_lib = b.addLibrary(.{
+            .name = static_lib_name,
+            .root_module = lib_mod,
+            .linkage = .static,
+        });
+        // PIE only applies to the static lib (shared libs are PIC by definition).
+        static_lib.pie = true;
 
-    const dynamic_lib = b.addLibrary(.{
-        .name = "jd",
-        .root_module = lib_mod,
-        .linkage = .dynamic,
-    });
+        const dynamic_lib = b.addLibrary(.{
+            .name = "jd",
+            .root_module = lib_mod,
+            .linkage = .dynamic,
+        });
 
-    // `bundle_compiler_rt` was set in Debug builds in the original build.zig
-    // to inline compiler-rt into the archive, but on macOS that produces an
-    // additional archive member that knocks the main object out of 8-byte
-    // alignment, which Apple's `ld` rejects. The consumer (cli/, etc.) gets
-    // compiler-rt symbols from libSystem on macOS / libgcc on Linux anyway,
-    // so leaving this off is fine.
+        // `bundle_compiler_rt` was set in Debug builds in the original build.zig
+        // to inline compiler-rt into the archive, but on macOS that produces an
+        // additional archive member that knocks the main object out of 8-byte
+        // alignment, which Apple's `ld` rejects. The consumer (cli/, etc.) gets
+        // compiler-rt symbols from libSystem on macOS / libgcc on Linux anyway,
+        // so leaving this off is fine.
 
-    b.installArtifact(static_lib);
-    // On iOS the linker complains about missing symbols for shared libs.
-    if (target.result.os.tag != .ios) {
-        b.installArtifact(dynamic_lib);
+        b.installArtifact(static_lib);
+        // On iOS the linker complains about missing symbols for shared libs.
+        if (target.result.os.tag != .ios) {
+            b.installArtifact(dynamic_lib);
+        }
     }
 
     // ========== Tests ==========
