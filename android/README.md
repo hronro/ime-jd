@@ -18,7 +18,7 @@ android/
       java/com/hronro/imejd/
         engine/                 # Engine (JNI), QuerySnapshot, KeyAction, InputSession (dispatch core)
         ime/JdInputMethodService.kt   # the IME service; InputConnection host; lifecycle
-        ui/                     # KeyLayout, KeyboardView, key plane, candidate bar/grid, theme
+        ui/                     # KeyLayout, KeyboardView, key plane, key previews, candidate bar/grid, theme
         app/MainActivity.kt     # container app: enable flow + a field to try the keyboard
     src/androidTest/            # InputSession logic tests (instrumented; drive the real engine)
   scripts/build-libjd.sh        # zig core per-ABI + NDK-clang JNI shim → src/main/jniLibs/<abi>/
@@ -81,6 +81,11 @@ selection, backspace semantics, space-commits-top, raw commit, cancel.
   local-exec TLS relocations `ld` rejects in a shared object) and ships both `.so`s; `Engine` loads
   only `libjdjni`, whose `DT_NEEDED` pulls in `libjd.so` + `libc.so` as one group so libjd's libc
   references (e.g. `getauxval`) resolve.
+- **Key previews.** Character keys pop a Gboard-style balloon (`KeyPreview.kt`): instant on
+  press, 70ms linger on release (AOSP's timing), slide-off cancels, one balloon per finger. In
+  dark themes the balloon gets a Material elevation tint so it stands out over the keys. Balloons
+  are children of the keyboard view — top-row previews float over the candidate bar — so there
+  are no popup windows. Phone-only: tablets don't pop previews, matching Gboard/AOSP.
 
 ## CI & releases
 
@@ -98,6 +103,5 @@ selection, backspace semantics, space-commits-top, raw commit, cancel.
 
 ## Known limitations (MVP)
 
-- Key-preview popups, in-app embedded preview surface, and `armeabi-v7a` / `x86` ABIs are not yet
-  implemented. Play Store packaging (an AAB) is a follow-up — releases ship per-ABI APKs on
-  GitHub.
+- The in-app embedded preview surface and `armeabi-v7a` / `x86` ABIs are not yet implemented.
+  Play Store packaging (an AAB) is a follow-up — releases ship per-ABI APKs on GitHub.

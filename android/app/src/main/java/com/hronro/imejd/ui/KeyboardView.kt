@@ -43,6 +43,10 @@ class KeyboardView(
     private val keyGrid = KeyboardLayoutView(context, theme, idiom)
     private var gridOverlay: CandidateGridView? = null
 
+    // Key-preview balloons; phone only — tablets don't pop previews (Gboard/AOSP behavior).
+    private val previews: KeyPreviewController? =
+        if (idiom == KeyboardIdiom.PHONE) KeyPreviewController(this, theme) else null
+
     /** Accumulated candidates for the current composition (across loaded pages). */
     private var items: List<Candidate> = emptyList()
 
@@ -57,6 +61,7 @@ class KeyboardView(
         clipChildren = false
 
         keyGrid.onKey = { cap -> handle(cap) }
+        keyGrid.onKeyPreview = { key, event -> previews?.handle(key, event) }
         candidateBar.onSelect = { i -> select(i) }
         candidateBar.onExpand = { expandGrid() }
         candidateBar.onNeedMore = { loadMore() }
@@ -114,6 +119,7 @@ class KeyboardView(
         candidateBar.apply(theme)
         keyGrid.apply(theme)
         gridOverlay?.apply(theme)
+        previews?.apply(theme)
     }
 
     // MARK: - Keys

@@ -21,6 +21,9 @@ class KeyboardLayoutView(
 
     var onKey: ((KeyCap) -> Unit)? = null
 
+    /** Forwarded KeyButton preview events; the owner routes them to the balloon layer. */
+    var onKeyPreview: ((KeyButton, KeyPreviewEvent) -> Unit)? = null
+
     var returnLabel: String = "换行"
         set(value) {
             field = value
@@ -53,6 +56,7 @@ class KeyboardLayoutView(
                     val b = KeyButton(context, spec, theme)
                     if (spec.cap is KeyCap.Return) b.displayText = returnLabel
                     b.onTap = { cap -> onKey?.invoke(cap) }
+                    b.onPreview = { key, event -> onKeyPreview?.invoke(key, event) }
                     addView(b)
                     RowItem(spec, b)
                 }

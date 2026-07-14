@@ -5,12 +5,15 @@ package com.hronro.imejd.ui
 
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.Color
 import android.os.Build
 import android.view.inputmethod.EditorInfo
+import androidx.core.graphics.ColorUtils
 
 data class KeyboardTheme(
     val keyboardBackground: Int,
     val keyBackground: Int,         // letter/character keys
+    val keyPreviewBackground: Int,  // the preview balloon above a pressed key
     val specialKeyBackground: Int,  // shift / 123 / backspace / globe
     val keyText: Int,
     val specialKeyText: Int,
@@ -64,6 +67,12 @@ data class KeyboardTheme(
         ) = KeyboardTheme(
             keyboardBackground = keyboardBackground,
             keyBackground = keyBackground,
+            // The balloon floats above the keys and often overlaps them, so dark
+            // palettes give it a Material elevation tint (lighter surface, like
+            // Gboard's dark popup); on light palettes the key white stays as is
+            // and the shadow does the separating.
+            keyPreviewBackground = if (ColorUtils.calculateLuminance(keyBackground) < 0.5)
+                ColorUtils.blendARGB(keyBackground, Color.WHITE, 0.12f) else keyBackground,
             specialKeyBackground = specialKeyBackground,
             keyText = keyText,
             specialKeyText = keyText,

@@ -30,6 +30,9 @@ class KeyButton(
 
     var onTap: ((KeyCap) -> Unit)? = null
 
+    /** Preview-balloon lifecycle, emitted only for character keys (Char/InsertLiteral). */
+    var onPreview: ((KeyButton, KeyPreviewEvent) -> Unit)? = null
+
     var displayText: String = spec.cap.label
         set(value) { field = value; invalidate() }
 
@@ -42,6 +45,7 @@ class KeyButton(
         set(value) { field = value?.mutate(); invalidate() }
 
     private val isRepeating get() = spec.cap is KeyCap.Backspace
+    private val hasPreview get() = spec.cap is KeyCap.Char || spec.cap is KeyCap.InsertLiteral
 
     private val density = context.resources.displayMetrics.density
     private val corner = 8f * density
@@ -151,16 +155,17 @@ class KeyButton(
             MotionEvent.ACTION_DOWN -> {
                 isPressed = true
                 drawableHotspotChanged(event.x, event.y)
+                preview(KeyPreviewEvent.SHOW)
                 if (isRepeating) { fire(); startRepeat() }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 val inside = insideExpanded(event.x, event.y)
                 if (inside) {
-                    if (!isPressed) isPressed = true
+                    if (!isPressed) { isPressed = true; preview(KeyPreviewEvent.SHOW) }
                     drawableHotspotChanged(event.x, event.y)
                 } else {
-                    if (isPressed) isPressed = false
+                    if (isPressed) { isPressed = false; preview(KeyPreviewEvent.CANCEL) }
                     stopRepeat()
                 }
                 return true
@@ -169,12 +174,14 @@ class KeyButton(
                 val inside = insideExpanded(event.x, event.y)
                 isPressed = false
                 stopRepeat()
+                preview(KeyPreviewEvent.RELEASE)
                 if (!isRepeating && inside) fire()
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
                 isPressed = false
                 stopRepeat()
+                preview(KeyPreviewEvent.CANCEL)
                 return true
             }
         }
@@ -185,6 +192,10 @@ class KeyButton(
         x >= -expand && y >= -expand && x <= width + expand && y <= height + expand
 
     private fun fire() = onTap?.invoke(spec.cap)
+
+    private fun preview(event: KeyPreviewEvent) {
+        if (hasPreview) onPreview?.invoke(this, event)
+    }
 
     // Fire immediately on down, then after 350ms repeat every 100ms (matches iOS).
     private fun startRepeat() {
@@ -203,5 +214,7 @@ class KeyButton(
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         stopRepeat()
+        // Layer switches rebuild the key plane mid-press; don't strand a balloon.
+        preview(KeyPreviewEvent.CANCEL)
     }
 }
