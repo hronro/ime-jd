@@ -11,7 +11,7 @@ shared Zig engine, reached through a thin C JNI shim.
 ```
 android/
   app/
-    build.gradle.kts            # AGP 8.7.3 / Kotlin 2.0.21; abiFilters; the buildLibjd task
+    build.gradle.kts            # AGP 8.7.3 / Kotlin 2.0.21; ABI splits; the buildLibjd task
     src/main/
       AndroidManifest.xml       # the IME <service> (BIND_INPUT_METHOD + android.view.InputMethod)
       cpp/jd_jni.c              # C JNI shim over libjd's C ABI (marshals query_result → Kotlin)
@@ -39,7 +39,7 @@ The `engine/` files are ports of `ios/Keyboard/Engine/` — keep them in sync.
 ```sh
 cd android
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-./gradlew :app:assembleDebug          # APK at app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDebug          # per-ABI APKs at app/build/outputs/apk/debug/
 ./gradlew :app:installDebug           # install on a connected device/emulator
 ```
 
@@ -82,8 +82,22 @@ selection, backspace semantics, space-commits-top, raw commit, cancel.
   only `libjdjni`, whose `DT_NEEDED` pulls in `libjd.so` + `libc.so` as one group so libjd's libc
   references (e.g. `getauxval`) resolve.
 
+## CI & releases
+
+- **Push** (`.github/workflows/`): `test-on-push.yml` runs the instrumented tests on an emulator;
+  `build-on-push.yml` builds the per-ABI release APKs, signed with an ephemeral CI key — fine for
+  grab-and-test, but each run's signature differs, so uninstall before installing a newer build.
+- **Version tags**: `release.yml` rebuilds the APKs with versionName/versionCode derived from the
+  tag, signs them with the keystore from the `ANDROID_SIGNING_KEYSTORE` /
+  `ANDROID_SIGNING_PASSWORD` repo secrets (ephemeral-key fallback until those are configured),
+  and uploads them to the GitHub Release. Each APK is ~7.6 MB (the embedded dictionary blob is
+  ~5 MB per ABI).
+- The APK jobs reuse the engine `.so`s prebuilt by the shared `build-libs` job via
+  `build-libjd.sh`'s `LIBJD_SO_DIR` fast-path, so they need no zig; only the emulator test job
+  compiles the engine itself.
+
 ## Known limitations (MVP)
 
 - Key-preview popups, in-app embedded preview surface, and `armeabi-v7a` / `x86` ABIs are not yet
-  implemented. Release signing / Play packaging and a CI job are follow-ups. APK is ~13 MB
-  (the embedded dictionary blob is ~5 MB per ABI).
+  implemented. Play Store packaging (an AAB) is a follow-up — releases ship per-ABI APKs on
+  GitHub.
