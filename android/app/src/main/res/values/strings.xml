@@ -7,5 +7,7 @@
     <string name="enable_steps">键道是一个开箱即用、完全离线的键道方案输入法。\n\n启用方法：\n1. 点击下方「在设置中启用键道」并打开开关\n2. 在任意输入框中点击「切换输入法」选择键道\n\n无需任何特殊权限，所有词库已内置，离线运行。</string>
     <string name="enable_in_settings">在设置中启用键道</string>
     <string name="switch_ime">切换输入法</string>
+    <string name="preview_keyboard">试用键盘（无需启用）</string>
+    <string name="preview_title">试用键盘</string>
     <string name="try_hint">在此试打：输入 jd 试试</string>
 </resources>

@@ -169,6 +169,9 @@ class KeyboardView(
         rebuildKeys()
     }
 
+    /** Present a specific plane directly (QA/preview hook; mirrors iOS `showLayer`). */
+    fun showLayer(layer: KeyboardLayer) = setLayer(layer)
+
     // MARK: - Candidates
 
     private fun renderCandidates(snap: QuerySnapshot, raw: String) {

@@ -45,6 +45,12 @@ class MainActivity : AppCompatActivity() {
                 (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
             }
         }
+        val previewBtn = Button(this).apply {
+            text = getString(R.string.preview_keyboard)
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, KeyboardPreviewActivity::class.java))
+            }
+        }
         val tryField = EditText(this).apply {
             hint = getString(R.string.try_hint)
         }
@@ -58,8 +64,16 @@ class MainActivity : AppCompatActivity() {
         root.addView(steps, lp)
         root.addView(enableBtn, lp)
         root.addView(switchBtn, lp)
+        root.addView(previewBtn, lp)
         root.addView(tryField, lp)
 
         setContentView(root)
+
+        // QA fast-path (the iOS -preview launch arg's counterpart): forward to
+        // the embedded preview, so one adb command reaches that non-exported
+        // screen through this exported launcher — see KeyboardPreviewActivity.
+        if (intent.getBooleanExtra(KeyboardPreviewActivity.EXTRA_PREVIEW, false)) {
+            startActivity(Intent(this, KeyboardPreviewActivity::class.java).putExtras(intent))
+        }
     }
 }

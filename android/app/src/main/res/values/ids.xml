@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Stable id for the preview field so its text survives rotation. -->
+    <item name="preview_field" type="id" />
+</resources>

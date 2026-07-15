@@ -17,6 +17,13 @@
             </intent-filter>
         </activity>
 
+        <!-- Embedded keyboard preview (same KeyboardView + engine, no enabling
+             needed). Not exported; MainActivity forwards the jd.* QA extras. -->
+        <activity
+            android:name=".app.KeyboardPreviewActivity"
+            android:label="@string/preview_title"
+            android:exported="false" />
+
         <!-- The IME itself: a Service the system binds to. This is the mandatory
              JVM entry point — Android has no native IME entry point. -->
         <service
