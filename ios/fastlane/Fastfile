@@ -1,0 +1,113 @@
+# Builds a signed App Store archive of the iOS app + keyboard extension and
+# uploads the binary to App Store Connect. Driven by release.yml's
+# `upload-ios-appstore` job (tags only); all signing material arrives via env as
+# base64 blobs, decoded here. No account-specific values are committed.
+#
+# Local Xcode development and the unsigned CI .ipa are unaffected: this lane sets
+# manual signing on the *ephemeral* xcodegen-generated .xcodeproj at CI time
+# only — project.yml stays signing-agnostic, so `xcodegen generate` + ⌘R still
+# uses your own automatic/personal-team signing.
+
+require "base64"
+require "fileutils"
+require "tmpdir"
+
+default_platform(:ios)
+
+# Decode a base64 .mobileprovision, install it where xcodebuild looks for it, and
+# return its Name (referenced by signing/export) and UUID (the on-disk filename).
+def install_base64_profile(b64, label)
+  data = Base64.decode64(b64)
+  src = File.join(Dir.tmpdir, "#{label}.mobileprovision")
+  File.binwrite(src, data)
+  plist = `security cms -D -i "#{src}"`
+  name = plist[%r{<key>Name</key>\s*<string>([^<]+)</string>}, 1]
+  uuid = plist[%r{<key>UUID</key>\s*<string>([^<]+)</string>}, 1]
+  UI.user_error!("Could not read Name/UUID from the #{label} provisioning profile") unless name && uuid
+  dest_dir = File.expand_path("~/Library/MobileDevice/Provisioning Profiles")
+  FileUtils.mkdir_p(dest_dir)
+  FileUtils.cp(src, File.join(dest_dir, "#{uuid}.mobileprovision"))
+  UI.message("Installed provisioning profile '#{name}' (#{uuid}) for the #{label}")
+  { name: name, uuid: uuid }
+end
+
+platform :ios do
+  desc "Build a signed App Store archive and upload the binary to App Store Connect"
+  lane :release_appstore do
+    project = "JdIME-iOS.xcodeproj"
+    app_id  = "com.hronro.ime-jd"
+    kbd_id  = "com.hronro.ime-jd.keyboard"
+    team_id = ENV.fetch("IOS_TEAM_ID")
+
+    # Temporary CI keychain, then import the Apple Distribution certificate.
+    setup_ci
+    cert = File.join(Dir.tmpdir, "dist.p12")
+    File.binwrite(cert, Base64.decode64(ENV.fetch("IOS_DIST_CERT_P12")))
+    import_certificate(
+      certificate_path: cert,
+      certificate_password: ENV.fetch("IOS_DIST_CERT_PASSWORD"),
+      keychain_name: ENV["MATCH_KEYCHAIN_NAME"] || "fastlane_tmp_keychain",
+      keychain_password: ENV["MATCH_KEYCHAIN_PASSWORD"] || ""
+    )
+
+    app_profile = install_base64_profile(ENV.fetch("IOS_PROFILE_APP"), "app")
+    kbd_profile = install_base64_profile(ENV.fetch("IOS_PROFILE_KEYBOARD"), "keyboard")
+
+    # Manual signing, per target, on the generated project (Release config only).
+    update_code_signing_settings(
+      path: project, use_automatic_signing: false, team_id: team_id,
+      code_sign_identity: "Apple Distribution", profile_name: app_profile[:name],
+      targets: ["JdIME-iOS"], build_configurations: ["Release"]
+    )
+    update_code_signing_settings(
+      path: project, use_automatic_signing: false, team_id: team_id,
+      code_sign_identity: "Apple Distribution", profile_name: kbd_profile[:name],
+      targets: ["JdKeyboard"], build_configurations: ["Release"]
+    )
+
+    # Reuse the prebuilt device libjd (LIBJD_A fast-path) and stamp the versions,
+    # exactly like release.yml's unsigned build-ios job.
+    build_app(
+      project: project,
+      scheme: "JdIME-iOS",
+      configuration: "Release",
+      export_method: "app-store",
+      xcargs: [
+        "MARKETING_VERSION='#{ENV.fetch('JD_MARKETING_VERSION')}'",
+        "CURRENT_PROJECT_VERSION='#{ENV.fetch('JD_BUILD_NUMBER')}'",
+        "LIBJD_A='#{ENV.fetch('LIBJD_A')}'"
+      ].join(" "),
+      export_options: {
+        method: "app-store",
+        signingStyle: "manual",
+        teamID: team_id,
+        provisioningProfiles: {
+          app_id => app_profile[:name],
+          kbd_id => kbd_profile[:name]
+        }
+      }
+    )
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_content: ENV.fetch("ASC_KEY_P8"),
+      is_key_content_base64: true
+    )
+
+    # Upload the binary only: no testers, no metadata, no auto-submit. The build
+    # lands in App Store Connect for you to attach to a version and submit for
+    # review from the website — the "direct to store" first-release flow. (Every
+    # uploaded build also shows under the TestFlight tab in ASC; that is just
+    # where ASC lists builds and does NOT invite any testers.)
+    upload_to_app_store(
+      api_key: api_key,
+      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
+      skip_screenshots: true,
+      skip_metadata: true,
+      submit_for_review: false,
+      run_precheck_before_submit: false,
+      force: true
+    )
+  end
+end

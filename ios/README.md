@@ -17,6 +17,7 @@ ios/
   KeyboardUITests/            # QA-only driver for the real extension (JdKeyboardQA scheme)
   scripts/
     build-libjd.sh              # Xcode prebuild: thin per-platform libjd.a (+ LIBJD_A fast-path)
+  fastlane/                     # App Store upload lane (release_appstore); CI-only signing
 ```
 
 ## Requirements
@@ -93,4 +94,26 @@ A from-source Xcode build targets one platform at a time, so `build-libjd.sh` pr
 
 ## Distribution
 
-On tagged releases, CI's `build-ios` job builds an **unsigned `.ipa`** (reusing the prebuilt device `libjd.a`) and uploads it to the GitHub Release. It's unsigned because public CI has no Apple signing credentials, so install it with a sideloading tool (AltStore / Sideloadly / TrollStore) that re-signs with your own Apple ID — it won't install by double-clicking. (A properly signed build / TestFlight upload would need an Apple Developer account and signing secrets.) On every push, CI also builds and uploads an unsigned `.ipa` as a workflow artifact.
+On tagged releases, CI's `build-ios` job builds an **unsigned `.ipa`** (reusing the prebuilt device `libjd.a`) and uploads it to the GitHub Release. It's unsigned because public CI has no Apple signing credentials, so install it with a sideloading tool (AltStore / Sideloadly / TrollStore) that re-signs with your own Apple ID — it won't install by double-clicking. On every push, CI also builds and uploads an unsigned `.ipa` as a workflow artifact.
+
+### App Store (signed, tags only)
+
+`release.yml`'s `upload-ios-appstore` job builds a **signed** archive and uploads the binary to App Store Connect through the `ios/fastlane` `release_appstore` lane. It runs **only on version tags**, **alongside** the unsigned `.ipa` (which is left untouched — sideloaders still get it), and **skips itself** when the signing secrets are absent (forks / credential-less runs stay green).
+
+Signing is injected onto the *ephemeral* xcodegen project at CI time (per-target manual signing via fastlane), so `project.yml` carries no account-specific values and local `xcodegen generate` + ⌘R keeps using your own automatic/personal-team signing.
+
+Configure these repo **Secrets** (base64-encode the binary blobs, e.g. `base64 -i dist.p12 | pbcopy`):
+
+| Secret | What |
+| --- | --- |
+| `IOS_DIST_CERT_P12` | Apple Distribution certificate exported as `.p12`, base64 |
+| `IOS_DIST_CERT_PASSWORD` | the `.p12` export password |
+| `IOS_PROFILE_APP` | App Store provisioning profile for `com.hronro.ime-jd`, base64 |
+| `IOS_PROFILE_KEYBOARD` | App Store provisioning profile for `com.hronro.ime-jd.keyboard`, base64 |
+| `IOS_TEAM_ID` | 10-character Apple Developer Team ID |
+| `ASC_KEY_ID` / `ASC_ISSUER_ID` | App Store Connect API key ID + issuer ID |
+| `ASC_KEY_P8` | the App Store Connect API key `.p8`, base64 |
+
+One-time prerequisites on Apple's side: a paid **Apple Developer Program** membership; the **App record** created in App Store Connect for `com.hronro.ime-jd` (metadata, screenshots, privacy-policy URL, App Privacy = *Data Not Collected*); and the Distribution certificate + both App Store profiles generated. The lane uploads the binary only (`skip_metadata`, `skip_screenshots`, `submit_for_review: false`) — once it lands, attach the build to your App Store version and submit for review from the ASC website (the "direct to store" flow, no TestFlight distribution). Re-uploading the **same** marketing version needs a higher build number (bump the tag's patch).
+
+> This lane can only be validated by running it on macOS — it can't be exercised from the Linux dev box, so expect to shake out signing specifics (profile names, keychain) on the first real tag.

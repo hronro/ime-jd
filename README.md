@@ -59,3 +59,5 @@
 ## 📄 许可证
 
 GPL-3.0，详见 [LICENSE](./LICENSE)。
+
+通过 Apple App Store / TestFlight 分发的版本另受一条 GPLv3 第 7 条附加许可约束，详见 [APPSTORE-EXCEPTION.md](./APPSTORE-EXCEPTION.md)——它允许经由 Apple 的应用分发渠道分发本项目，源码仍完整地以 GPL-3.0 提供。

@@ -20,6 +20,11 @@
     <string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key>
     <string>$(CURRENT_PROJECT_VERSION)</string>
+    <!-- No encryption beyond Apple's exempt defaults: declaring this skips the
+         export-compliance prompt on every App Store Connect upload (and lets the
+         automated upload lane run unattended). -->
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>UILaunchScreen</key>
