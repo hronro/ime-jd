@@ -1,0 +1,5 @@
+# Minimal on purpose: the app identifier is the only stable, non-secret value.
+# The Team ID and all App Store Connect credentials come from the environment
+# at CI time (see the release_appstore lane in Fastfile), so no account-specific
+# data is committed to the repo.
+app_identifier("com.hronro.ime-jd")

@@ -5,6 +5,11 @@ DerivedData/
 # XcodeGen-generated project — regenerate from project.yml
 JdIME-iOS.xcodeproj/
 
+# fastlane output (App Store upload lane)
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/test_output/
+
 # macOS metadata
 .DS_Store
 

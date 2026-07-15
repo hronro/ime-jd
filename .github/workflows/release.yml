@@ -488,6 +488,92 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
 
+  # The iOS app + keyboard extension, SIGNED and uploaded to App Store Connect
+  # (fastlane `release_appstore` lane). Runs on tags ALONGSIDE build-ios — it
+  # never touches or replaces the unsigned .ipa, which build-ios still ships for
+  # sideloaders. Skips itself cleanly when the App Store secrets are absent (e.g.
+  # forks, or PRs from contributors without Apple credentials), so a release is
+  # never blocked for lack of signing material.
+  #
+  # Required repo secrets (base64 the binary ones exactly like build-android's
+  # keystore; full setup in ios/README.md → Distribution):
+  #   IOS_DIST_CERT_P12      — Apple Distribution certificate (.p12), base64
+  #   IOS_DIST_CERT_PASSWORD — the .p12 export password
+  #   IOS_PROFILE_APP        — App Store profile for com.hronro.ime-jd, base64
+  #   IOS_PROFILE_KEYBOARD   — App Store profile for com.hronro.ime-jd.keyboard, base64
+  #   IOS_TEAM_ID            — 10-character Apple Developer Team ID
+  #   ASC_KEY_ID             — App Store Connect API key ID
+  #   ASC_ISSUER_ID          — App Store Connect API issuer ID
+  #   ASC_KEY_P8             — the API key (.p8), base64
+  upload-ios-appstore:
+    name: ios App Store upload
+    runs-on: macos-26
+    needs: build-libs
+    steps:
+      # Secrets can't be read in a job-level `if:`, so gate every step on a
+      # presence check instead. No secrets → notice + no-op (release stays green
+      # and build-ios still publishes the unsigned .ipa).
+      - name: Check for App Store signing secrets
+        id: guard
+        env:
+          CERT: ${{ secrets.IOS_DIST_CERT_P12 }}
+          ASC: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          if [ -n "$CERT" ] && [ -n "$ASC" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::iOS App Store secrets not configured — skipping upload" \
+              "(build-ios still publishes the unsigned .ipa)."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.guard.outputs.enabled == 'true'
+        uses: actions/checkout@v6
+
+      - name: Install XcodeGen
+        if: steps.guard.outputs.enabled == 'true'
+        run: brew install xcodegen
+
+      - name: Download prebuilt libs
+        if: steps.guard.outputs.enabled == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-ios-arm64
+          path: prebuilt-libs
+
+      - name: Generate Xcode project
+        if: steps.guard.outputs.enabled == 'true'
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build, sign & upload to App Store Connect
+        if: steps.guard.outputs.enabled == 'true'
+        working-directory: ios
+        env:
+          IOS_DIST_CERT_P12: ${{ secrets.IOS_DIST_CERT_P12 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          IOS_PROFILE_APP: ${{ secrets.IOS_PROFILE_APP }}
+          IOS_PROFILE_KEYBOARD: ${{ secrets.IOS_PROFILE_KEYBOARD }}
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          LIBJD_A: ${{ github.workspace }}/prebuilt-libs/lib/libjd.a
+        # Version/build match build-ios exactly: the full version drives
+        # CFBundleShortVersionString, the build-android numeric code drives
+        # CFBundleVersion. NOTE: re-uploading the SAME marketing version to App
+        # Store Connect needs a HIGHER build number — bump the tag's patch, or
+        # override CURRENT_PROJECT_VERSION, before re-running.
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          core="${ver%%[-+]*}"   # strip -prerelease/+build for the numeric code
+          IFS=. read -r major minor patch <<<"$core"
+          export JD_MARKETING_VERSION="$ver"
+          export JD_BUILD_NUMBER="$((major * 10000 + minor * 100 + patch))"
+          fastlane release_appstore
+
   # Android app + IME service, one APK per ABI (arm64-v8a + x86_64). Reuses
   # the prebuilt engine slices from build-libs via the script's LIBJD_SO_DIR
   # fast-path (like build-ios's LIBJD_A); only the JNI shim is linked here,
