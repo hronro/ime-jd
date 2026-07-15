@@ -100,6 +100,11 @@ final class KeyboardViewController: UIInputViewController {
         // e.g. when the keyboard list changes). The didSet no-ops unless the
         // value actually flips, so re-asserting every pass is free.
         keyboard?.showsNextKeyboardKey = needsInputModeSwitchKey
+        // Re-resolve the theme too: a live light/dark flip reaches a presented
+        // extension's traits erratically (traitCollectionDidChange can lag or
+        // skip), but a layout pass follows whenever they do move. applyTheme
+        // and the returnLabel setter no-op when nothing changed.
+        refreshAppearance()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {

@@ -431,7 +431,7 @@ jobs:
   # re-signs with their own Apple ID — not by double-clicking.
   build-ios:
     name: ios .ipa
-    runs-on: macos-15
+    runs-on: macos-26
     needs: build-libs
     steps:
       - name: Checkout

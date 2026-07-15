@@ -87,14 +87,16 @@ targets:
         outputFiles:
           - "$(DERIVED_FILE_DIR)/libjd-thin/libjd.a"
 
-  # Hostless logic tests: compile the engine + session sources directly and link
-  # libjd, so InputSession dispatch is verified without the keyboard-enable flow.
+  # Hostless logic tests: compile the engine + session + keyboard UI sources
+  # directly and link libjd, so InputSession dispatch and theme resolution are
+  # verified without the keyboard-enable flow.
   JdKeyboardTests:
     type: bundle.unit-test
     platform: iOS
     sources:
       - path: KeyboardTests
       - path: Keyboard/Engine
+      - path: Keyboard/UI
       - path: ../bindings/swift
         includes:
           - "*.swift"
@@ -113,6 +115,23 @@ targets:
         outputFiles:
           - "$(DERIVED_FILE_DIR)/libjd-thin/libjd.a"
 
+  # QA-only UI test driver (NOT in the CI test scheme): performs the two
+  # tap-requiring steps simctl can't — enabling 键道 in Settings and switching
+  # to it via the globe — so the real extension can be exercised and
+  # screenshotted. See KeyboardUITests/KeyboardExtensionQA.swift.
+  JdKeyboardUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: KeyboardUITests
+    dependencies:
+      - target: JdIME-iOS
+    settings:
+      base:
+        TEST_TARGET_NAME: JdIME-iOS
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.hronro.ime-jd.keyboard.uitests
+
 schemes:
   JdIME-iOS:
     build:
@@ -127,3 +146,16 @@ schemes:
         - JdKeyboardTests
     archive:
       config: Release
+
+  # Extension-context QA (manual): xcodebuild test -scheme JdKeyboardQA …
+  JdKeyboardQA:
+    build:
+      targets:
+        JdIME-iOS: all
+        JdKeyboardUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - JdKeyboardUITests

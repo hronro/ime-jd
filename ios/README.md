@@ -13,14 +13,15 @@ ios/
     Engine/                   # InputSession — the iOS dispatch core (the FFI wrapper itself
                               # is shared source at ../bindings/swift, listed in project.yml)
     UI/                       # KeyboardView, key grid, candidate bar/grid, theme, popups
-  KeyboardTests/              # InputSession logic tests (hostless)
+  KeyboardTests/              # InputSession + theme logic tests (hostless)
+  KeyboardUITests/            # QA-only driver for the real extension (JdKeyboardQA scheme)
   scripts/
     build-libjd.sh              # Xcode prebuild: thin per-platform libjd.a (+ LIBJD_A fast-path)
 ```
 
 ## Requirements
 
-- Xcode 15+ (deployment target **iOS 13**)
+- Xcode 26+ — the liquid-glass style references iOS 26 SDK symbols (`UIGlassEffect`); the deployment target stays **iOS 13**
 - [`zig`](https://ziglang.org) 0.16.0 — `brew install zig`
 - [`xcodegen`](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
 
@@ -36,7 +37,7 @@ The "Build libjd" prebuild phase compiles `../core` for the platform being built
 
 ```sh
 xcodebuild -project JdIME-iOS.xcodeproj -scheme JdIME-iOS \
-  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' \
+  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
@@ -48,14 +49,39 @@ After installing the container app: **Settings ▸ General ▸ Keyboard ▸ Keyb
 
 ```sh
 xcodebuild -project JdIME-iOS.xcodeproj -scheme JdIME-iOS \
-  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' \
+  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
   CODE_SIGNING_ALLOWED=NO test
 ```
 
-`KeyboardTests` covers the `InputSession` dispatch core (composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top).
+`KeyboardTests` covers the `InputSession` dispatch core (composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top) and `KeyboardTheme` resolution (style gate, appearance, return-key tinting).
+
+### QA launch args (in-app preview)
+
+The container app's preview screen takes launch args for screenshot-driven QA (`simctl launch <udid> com.hronro.ime-jd -preview …`):
+
+- `-preview` — open the preview screen directly; `-landscape` — force landscape
+- `-type ni` — feed keys into the engine so the candidate bar is populated
+- `-numbers` / `-symbols` — show that key plane
+- `-expand` — open the expanded candidate grid (combine with `-type`)
+- `-popup r` — render the key-press bubble (it only lives during a touch otherwise)
+- `-classic` — force the pre-iOS-26 style on an iOS 26 simulator
+- `-system` — use the SYSTEM keyboard instead of the inline preview: with the extension enabled, that is the real 键道 extension in its real hosting context
+
+### Extension-context QA (JdKeyboardQA scheme)
+
+`simctl` cannot synthesize taps, and third-party keyboards are trust-gated behind the Settings enable flow (writing `AppleKeyboards` defaults is not enough). The `JdKeyboardQA` scheme runs a UI test that enables 键道 in Settings, switches to it via the globe key inside the preview app (`-preview -system`), then holds the app open and drops a marker file so a host-side loop can take screenshots:
+
+```sh
+TEST_RUNNER_JD_QA_MARKER=/tmp/jd-qa-ready \
+xcodebuild test -project JdIME-iOS.xcodeproj -scheme JdKeyboardQA \
+  -destination "id=$UDID" -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO &
+# wait for /tmp/jd-qa-ready, screenshot via `simctl io`, then rm the marker
+# (the test exits once the marker disappears)
+```
 
 ## Architecture notes
 
+- **Two visual styles, one code path.** `KeyboardTheme` carries a `style` axis: **liquid glass** on iOS 26+ (fully transparent over the system keyboard panel's material — painting our own would seam against the panel's top strip and globe/mic chin; translucent key fills with continuous corners; a real `UIGlassEffect` key-press bubble; the in-app preview supplies a stand-in material since it has no system panel) and **classic** below (the opaque pre-26 look, byte-for-byte the old palette). Resolved at runtime in `KeyboardTheme.resolve`; everything downstream is theme-driven. Keys are deliberately NOT per-key `UIGlassEffect` views — ~30 live backdrop layers, rebuilt on every plane switch, would blow the extension's memory/GPU budget, and translucent fills over the shared material are what the stock keys read as anyway. A live light/dark flip while the keyboard is presented can lag (the system doesn't reliably deliver trait changes to a presented extension); it self-heals on the next keystroke or re-present.
 - **No inline marked text.** iOS forbids third-party keyboards from showing preedit text in the host app, so the in-flight code and candidates render in the keyboard's own candidate bar; only the final string is sent via `textDocumentProxy.insertText`. This matches the engine, which keeps composition state internally and emits only commits.
 - **Selection = tap, pagination = scroll.** No number-key selectors. The 123/#+= layers show Chinese punctuation directly and insert the tapped mark themselves, **bypassing libjd's punctuation table** but matching its behavior: while composing, commit the top candidate first, then append the mark; otherwise insert it directly (see `core/docs/integration.md`).
 - **No sound / haptics.** Both require Full Access on iOS, which this keyboard never requests.

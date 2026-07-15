@@ -16,7 +16,11 @@ final class KeyboardView: UIView {
     var showsNextKeyboardKey = true { didSet { if showsNextKeyboardKey != oldValue { rebuildKeys() } } }
 
     /// Localized label for the return key (set from the host's returnKeyType).
-    var returnLabel: String = "换行" { didSet { keyGrid.returnLabel = returnLabel } }
+    /// Guarded: the setter walks every key, and the owner re-asserts it on
+    /// every layout pass (see KeyboardViewController.viewWillLayoutSubviews).
+    var returnLabel: String = "换行" {
+        didSet { if returnLabel != oldValue { keyGrid.returnLabel = returnLabel } }
+    }
 
     private(set) var theme: KeyboardTheme
     private var idiom: KeyboardIdiom = .phone { didSet { if idiom != oldValue { rebuildKeys() } } }
@@ -46,6 +50,7 @@ final class KeyboardView: UIView {
 
         clipsToBounds = false
         backgroundColor = theme.keyboardBackground
+        syncAppearance()
 
         keyGrid.popupHost = self
         keyGrid.clipsToBounds = false
@@ -105,12 +110,48 @@ final class KeyboardView: UIView {
     /// Switch the visible plane (QA / preview convenience).
     func showLayer(_ layer: KeyboardLayer) { setLayer(layer) }
 
+    /// Expand the candidate grid (QA / preview convenience, mirrors the chevron).
+    func expandCandidates() { expandGrid() }
+
+    /// Show a character key's pressed state + preview bubble (QA / preview
+    /// convenience — popups only live during a touch, so screenshots need this).
+    func showKeyPopup(_ ch: Character) {
+        guard let byte = ch.asciiValue else { return }
+        keyGrid.subviews.compactMap { $0 as? KeyButton }
+            .first { $0.spec.cap == .char(byte) }?
+            .showPressedForQA()
+    }
+
     func applyTheme(_ theme: KeyboardTheme) {
+        // The owner re-applies on every layout pass (the extension's trait
+        // updates can lag a live appearance flip, so layout is the only
+        // reliable hook) — the guard makes that ~free.
+        guard theme != self.theme else { return }
         self.theme = theme
         backgroundColor = theme.keyboardBackground
+        syncAppearance()
         candidateBar.apply(theme: theme)
         keyGrid.apply(theme: theme)
         gridOverlay?.apply(theme: theme)
+    }
+
+    private func syncAppearance() {
+        // Mirror the resolved appearance into this subtree's traits, so
+        // trait-driven chrome (the glass popup) follows the HOST's requested
+        // keyboardAppearance even when it differs from the system style.
+        // Scoped to the keyboard view — overriding the controller's view
+        // would feed the override back into the next `resolve(traits:)` and
+        // wedge the theme after the host reverts to `.default`. No-op
+        // visually for classic (its colors are explicit).
+        //
+        // NB: liquid glass draws NO background of its own
+        // (`keyboardBackground` is `.clear`): the extension rides the system
+        // keyboard panel's material, which also covers the strip above and
+        // the globe/mic chin below our view — any material of ours would tint
+        // just our rectangle and show as a seam against them. The in-app
+        // preview, which has no system panel, supplies its own stand-in
+        // (see KeyboardPreviewViewController).
+        overrideUserInterfaceStyle = theme.isDark ? .dark : .light
     }
 
     // MARK: - Keys
@@ -201,10 +242,16 @@ final class KeyboardView: UIView {
             grid.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         gridOverlay = grid
+        // The overlay is translucent in liquid glass (the material shows through),
+        // so the plane and bar must actually vanish, not merely be covered.
+        keyGrid.isHidden = true
+        candidateBar.isHidden = true
     }
 
     private func collapseGrid() {
         gridOverlay?.removeFromSuperview()
         gridOverlay = nil
+        keyGrid.isHidden = false
+        candidateBar.isHidden = false
     }
 }

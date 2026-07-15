@@ -311,7 +311,7 @@ jobs:
   # CI scope; the .ipa installs via a sideloading tool that re-signs.)
   build-ios:
     name: ios .ipa
-    runs-on: macos-15
+    runs-on: macos-26
     needs: build-libs
     steps:
       - name: Checkout

@@ -33,11 +33,7 @@ final class KeyButton: UIControl {
         self.displayText = spec.cap.label
         super.init(frame: .zero)
 
-        layer.cornerRadius = 5
-        layer.shadowColor = theme.keyShadow.cgColor
-        layer.shadowOpacity = 1
-        layer.shadowRadius = 0
-        layer.shadowOffset = CGSize(width: 0, height: 1)
+        applyChrome()
 
         titleLabel.text = displayText
         titleLabel.textAlignment = .center
@@ -58,8 +54,18 @@ final class KeyButton: UIControl {
 
     func apply(theme: KeyboardTheme) {
         self.theme = theme
-        layer.shadowColor = theme.keyShadow.cgColor
+        applyChrome()
         applyColors(pressed: false)
+    }
+
+    /// Style-dependent key shape and shadow (see `KeyboardTheme`'s chrome vars).
+    private func applyChrome() {
+        layer.cornerRadius = theme.keyCornerRadius
+        layer.cornerCurve = theme.keyCornerCurve
+        layer.shadowColor = theme.keyShadow.cgColor
+        layer.shadowOpacity = theme.keyShadowOpacity
+        layer.shadowRadius = theme.keyShadowBlur
+        layer.shadowOffset = CGSize(width: 0, height: 1)
     }
 
     private static func font(for cap: KeyCap) -> UIFont {
@@ -80,12 +86,13 @@ final class KeyButton: UIControl {
     }
 
     private func applyColors(pressed: Bool) {
-        titleLabel.textColor = isReturnKey ? theme.returnText
+        titleLabel.textColor = isAccented ? theme.shiftActiveText
+            : isReturnKey ? theme.returnText
             : (isLightKey ? theme.keyText : theme.specialKeyText)
 
         let base: UIColor
         if isAccented {
-            base = theme.keyBackground          // active shift: light
+            base = theme.shiftActiveBackground  // active shift: light
         } else if isReturnKey {
             base = theme.returnBackground
         } else if isLightKey {
@@ -134,6 +141,14 @@ final class KeyButton: UIControl {
     private var expanded: CGRect { bounds.insetBy(dx: -8, dy: -8) }
 
     private func fire() { onTap?(spec.cap) }
+
+    /// QA hook: render the pressed state + preview bubble without a touch.
+    /// Popups only live during a touch, so screenshots need this (see the
+    /// preview app's `-popup` launch arg).
+    func showPressedForQA() {
+        applyColors(pressed: true)
+        showPopupIfCharacter()
+    }
 
     // MARK: - Repeat
 
