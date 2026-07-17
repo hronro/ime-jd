@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.JdIME" parent="Theme.AppCompat.DayNight.NoActionBar" />
+    <!-- Material3 so the container app gets modern widgets (MaterialButton,
+         M3 text fields); the IME itself is untouched — KeyboardView draws from
+         KeyboardTheme's explicit color resources, not theme attributes. -->
+    <style name="Theme.JdIME" parent="Theme.Material3.DayNight.NoActionBar" />
 </resources>

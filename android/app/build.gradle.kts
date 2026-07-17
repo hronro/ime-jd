@@ -58,6 +58,13 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
+    // Container-app widgets only (MaterialButton, M3 theming); the IME draws
+    // itself. Pinned to 1.12: 1.13+ inflates the release APK by ~0.7 MB of
+    // resource table alone (expressive-token style graph is reachable from the
+    // theme, so shrinkResources cannot drop it) and drags in more transitive
+    // deps. 1.12's lack of a materialButtonTonalStyle attr is worked around in
+    // MainActivity with two theme colors.
+    implementation("com.google.android.material:material:1.12.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
 }
