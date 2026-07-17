@@ -143,13 +143,18 @@ private class KeyPreviewBalloon(context: Context) : View(context) {
     fun textWidth(): Float = textPaint.measureText(text)
 
     override fun onDraw(canvas: Canvas) {
-        val fm = textPaint.fontMetrics
-        val baseline = height / 2f - (fm.ascent + fm.descent) / 2f
+        if (text.isEmpty()) return
+        textPaint.getTextBounds(text, 0, text.length, inkBounds)
+        // Vertically center the INK box, not the font's ascent/descent span.
+        // The balloon shows one glyph alone, and metric centering leaves
+        // descender letters (y g p q j) visibly low at the enlarged size.
+        // KeyButton keeps the metric baseline — a key row wants one shared
+        // baseline — but a balloon optically centers each glyph on its own.
+        val baseline = height / 2f - inkBounds.exactCenterY()
         var x = width / 2f
-        if (inkCenter && text.isNotEmpty()) {
-            // Same ink-box centering as KeyButton: fullwidth CJK punctuation inks
-            // only the bottom-left of its em box, so center on ink, horizontally.
-            textPaint.getTextBounds(text, 0, text.length, inkBounds)
+        if (inkCenter) {
+            // Same horizontal ink-centering as KeyButton: fullwidth CJK
+            // punctuation inks only the left half of its em advance.
             x += textPaint.measureText(text) / 2f - inkBounds.exactCenterX()
         }
         canvas.drawText(text, x, baseline, textPaint)
