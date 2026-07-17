@@ -673,11 +673,25 @@ jobs:
               --out "release/jd-ime-${GITHUB_REF_NAME}-android-$arch.apk" "aligned-$abi.apk"
           done
 
+      - name: Stage R8 mapping
+        shell: bash
+        # The APKs are minified, so crash traces are obfuscated without this
+        # mapping. One file covers both APKs — the ABI splits share identical
+        # bytecode, only the packaged libjd.so differs.
+        run: |
+          set -euo pipefail
+          cp android/app/build/outputs/mapping/release/mapping.txt \
+            "release/jd-ime-${GITHUB_REF_NAME}-android-mapping.txt"
+
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
-        # Scope to *.apk (not release/*): this is the one job whose signing
-        # tool writes sibling files, and apksigner's v4 default has drifted
-        # across build-tools versions — pin the asset set to APKs so a future
-        # default flip can't leak a stray .idsig again.
-        run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/*.apk --clobber
+        # Scope to *.apk plus the explicitly named mapping (not release/*):
+        # this is the one job whose signing tool writes sibling files, and
+        # apksigner's v4 default has drifted across build-tools versions — pin
+        # the asset set so a future default flip can't leak a stray .idsig again.
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" \
+            release/*.apk \
+            "release/jd-ime-${GITHUB_REF_NAME}-android-mapping.txt" \
+            --clobber
