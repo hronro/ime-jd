@@ -20,12 +20,17 @@ class Engine(private val pageSize: Byte = 9) : Closeable {
         handle
     }
 
-    fun pressKey(byte: Byte): QuerySnapshot = nativePressKey(ctx, byte, pageSize)
-    fun backspace(): QuerySnapshot = nativeBackspace(ctx, pageSize)
-    fun nextPage(): QuerySnapshot = nativeNextPage(ctx, pageSize)
-    fun prevPage(): QuerySnapshot = nativePrevPage(ctx, pageSize)
-    fun jumpToPage(page: Int): QuerySnapshot = nativeJumpToPage(ctx, page, pageSize)
-    fun reset() = nativeReset(ctx)
+    // close() zeroes ctx; passing that through JNI would hand libjd a NULL
+    // context and segfault the IME process. Fail with a clear error instead,
+    // matching the JS binding's disposed poisoning.
+    private fun requireCtx(): Long = ctx.also { check(it != 0L) { "Engine is closed" } }
+
+    fun pressKey(byte: Byte): QuerySnapshot = nativePressKey(requireCtx(), byte, pageSize)
+    fun backspace(): QuerySnapshot = nativeBackspace(requireCtx(), pageSize)
+    fun nextPage(): QuerySnapshot = nativeNextPage(requireCtx(), pageSize)
+    fun prevPage(): QuerySnapshot = nativePrevPage(requireCtx(), pageSize)
+    fun jumpToPage(page: Int): QuerySnapshot = nativeJumpToPage(requireCtx(), page, pageSize)
+    fun reset() = nativeReset(requireCtx())
 
     override fun close() {
         if (ctx != 0L) {
