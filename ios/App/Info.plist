@@ -27,8 +27,12 @@
     <false/>
     <key>LSRequiresIPhoneOS</key>
     <true/>
-    <key>UILaunchScreen</key>
-    <dict/>
+    <!-- Storyboard launch screen (not the dict-based UILaunchScreen): the app's
+         deployment floor is iOS 13, and App Store validation only accepts the
+         UILaunchScreen key when MinimumOSVersion is 14+. A storyboard is honored
+         on every version, satisfying the iPad-multitasking launch-screen rule. -->
+    <key>UILaunchStoryboardName</key>
+    <string>LaunchScreen</string>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
