@@ -110,6 +110,8 @@ final class KeyboardPreviewViewController: UIViewController {
         if CommandLine.arguments.contains("-expand") { keyboard.expandCandidates() }
         // `-popup r` renders the key-press bubble for a character key — popups
         // only live during a touch, so screenshots can't capture them otherwise.
+        // iPhone only: on iPad the key just shows its pressed state (KeyButton
+        // suppresses the bubble there, matching the system keyboard).
         if let i = CommandLine.arguments.firstIndex(of: "-popup"),
            CommandLine.arguments.indices.contains(i + 1),
            let ch = CommandLine.arguments[i + 1].first {

@@ -38,7 +38,8 @@ IPAD_NAME="${IPAD_NAME:-iPad Pro 13-inch (M5)}"   # 13" display
 SETTLE="${SETTLE:-3}"                              # seconds to let the UI render before capture
 
 # Each shot is "filename|launch args". `-type` feeds keys so the candidate bar
-# fills; `-popup <key>` floats the key-press bubble over that key; `-expand`
+# fills; `-popup <key>` floats the key-press bubble over that key (iPhone only —
+# on iPad the key just highlights, matching the system keyboard); `-expand`
 # opens the candidate grid; `-numbers`/`-symbols` switch planes. (See
 # ios/README.md → QA launch args.)
 SHOTS=(

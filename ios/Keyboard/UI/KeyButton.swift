@@ -168,6 +168,9 @@ final class KeyButton: UIControl {
     // MARK: - Popup
 
     private func showPopupIfCharacter() {
+        // iPhone only: the system keyboard shows no key previews on iPad,
+        // where keys are big enough that the finger doesn't cover the glyph.
+        guard traitCollection.userInterfaceIdiom != .pad else { return }
         guard spec.cap.isCharacter, let host = popupHost else { return }
         let frame = convert(bounds, to: host)
         let w = max(frame.width * 1.35, 38)

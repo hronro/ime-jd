@@ -64,7 +64,7 @@ The container app's preview screen takes launch args for screenshot-driven QA (`
 - `-type ni` — feed keys into the engine so the candidate bar is populated
 - `-numbers` / `-symbols` — show that key plane
 - `-expand` — open the expanded candidate grid (combine with `-type`)
-- `-popup r` — render the key-press bubble (it only lives during a touch otherwise)
+- `-popup r` — render the key-press bubble (it only lives during a touch otherwise; iPhone only — iPad shows no popups, like the system keyboard)
 - `-classic` — force the pre-iOS-26 style on an iOS 26 simulator
 - `-system` — use the SYSTEM keyboard instead of the inline preview: with the extension enabled, that is the real 键道 extension in its real hosting context
 
