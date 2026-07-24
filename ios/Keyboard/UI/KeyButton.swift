@@ -172,13 +172,9 @@ final class KeyButton: UIControl {
         // where keys are big enough that the finger doesn't cover the glyph.
         guard traitCollection.userInterfaceIdiom != .pad else { return }
         guard spec.cap.isCharacter, let host = popupHost else { return }
-        let frame = convert(bounds, to: host)
-        let w = max(frame.width * 1.35, 38)
-        let h = frame.height + 28
-        var x = frame.midX - w / 2
-        x = min(max(x, 2), host.bounds.width - w - 2)
-        let popup = KeyPopupView(text: displayText, theme: theme)
-        popup.frame = CGRect(x: x, y: frame.maxY - h, width: w, height: h)
+        let popup = KeyPopupView(text: displayText, theme: theme,
+                                 keyFrame: convert(bounds, to: host),
+                                 hostBounds: host.bounds)
         host.addSubview(popup)
         self.popup = popup
     }

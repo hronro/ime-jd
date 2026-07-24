@@ -11,12 +11,12 @@ import UIKit
 ///   keyboard panel, whose material also covers the strip above and the
 ///   globe/mic chin below, so painting our own would show as a seam. Keys are
 ///   translucent fills over that material, with rounder continuous corners;
-///   the key-press bubble is real glass (`UIGlassEffect`). Keys deliberately
-///   are NOT per-key `UIGlassEffect` views: ~30 live backdrop layers, rebuilt
-///   on every plane switch, blow the extension's memory/GPU budget —
-///   translucent fills over the shared material is what the stock keys read
-///   as anyway. (The in-app preview, which has no system panel, puts a
-///   stand-in material behind the keyboard.)
+///   the key-press callout is a masked blur material (see `KeyPopupView`).
+///   Keys deliberately are NOT per-key `UIGlassEffect` views: ~30 live
+///   backdrop layers, rebuilt on every plane switch, blow the extension's
+///   memory/GPU budget — translucent fills over the shared material is what
+///   the stock keys read as anyway. (The in-app preview, which has no system
+///   panel, puts a stand-in material behind the keyboard.)
 struct KeyboardTheme: Equatable {
     enum Style { case classic, liquidGlass }
 

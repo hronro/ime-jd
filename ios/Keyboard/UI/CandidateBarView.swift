@@ -4,7 +4,12 @@ import UIKit
 /// horizontally scrolling row of candidates, and an expand chevron on the right.
 /// A dumb renderer — the owner supplies items and handles selection / lazy loading.
 final class CandidateBarView: UIView, UIScrollViewDelegate {
-    static let height: CGFloat = 44
+    /// 54 rather than the English keyboard's 44: closer to the system Chinese
+    /// keyboard's taller bar, and — with the key plane's 5pt top margin — just
+    /// enough headroom for the key-press callout to keep its full system
+    /// proportions on the top key row (the balloon cannot rise above the
+    /// keyboard's own surface, see `KeyPopupView`).
+    static let height: CGFloat = 54
 
     var onSelect: ((Int) -> Void)?
     var onExpand: (() -> Void)?
