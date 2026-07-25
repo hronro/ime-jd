@@ -62,6 +62,11 @@ class KeyboardView(
 
         keyGrid.onKey = { cap -> handle(cap) }
         keyGrid.onKeyPreview = { key, event -> previews?.handle(key, event) }
+        // No previews (tablets) → expand refuses, and long-press stays inert,
+        // matching the no-balloon behavior there.
+        keyGrid.onAlternatesExpand = { key -> previews?.expandAlternates(key) ?: false }
+        keyGrid.onAlternatesSlide = { key, x, y -> previews?.slideAlternates(key, x, y) }
+        keyGrid.onAlternatesCommit = { key -> previews?.commitAlternates(key) }
         candidateBar.onSelect = { i -> select(i) }
         candidateBar.onExpand = { expandGrid() }
         candidateBar.onNeedMore = { loadMore() }

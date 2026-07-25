@@ -24,6 +24,11 @@ class KeyboardLayoutView(
     /** Forwarded KeyButton preview events; the owner routes them to the balloon layer. */
     var onKeyPreview: ((KeyButton, KeyPreviewEvent) -> Unit)? = null
 
+    /** Forwarded press-and-hold alternates callbacks (see KeyButton). */
+    var onAlternatesExpand: ((KeyButton) -> Boolean)? = null
+    var onAlternatesSlide: ((KeyButton, Float, Float) -> Unit)? = null
+    var onAlternatesCommit: ((KeyButton) -> String?)? = null
+
     var returnLabel: String = "换行"
         set(value) {
             field = value
@@ -57,6 +62,9 @@ class KeyboardLayoutView(
                     if (spec.cap is KeyCap.Return) b.displayText = returnLabel
                     b.onTap = { cap -> onKey?.invoke(cap) }
                     b.onPreview = { key, event -> onKeyPreview?.invoke(key, event) }
+                    b.onAlternatesExpand = { key -> onAlternatesExpand?.invoke(key) ?: false }
+                    b.onAlternatesSlide = { key, x, y -> onAlternatesSlide?.invoke(key, x, y) }
+                    b.onAlternatesCommit = { key -> onAlternatesCommit?.invoke(key) }
                     addView(b)
                     RowItem(spec, b)
                 }

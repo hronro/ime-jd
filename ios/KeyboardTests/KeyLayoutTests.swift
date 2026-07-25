@@ -83,7 +83,7 @@ final class KeyLayoutTests: XCTestCase {
             return s
         })
         for primary in ["0", "“", "”", "「", "」", "【", "】", "｜", "《", "》",
-                        "。", "·", "…", "－", "＄", "℃", "√", "→", "★", "♥", "©"] {
+                        "。", "·", "…", "－", "＄", "℃", "√", "→", "★", "♡", "©"] {
             XCTAssertTrue(mounted.contains(primary), "group on \(primary) is not on any plane")
         }
     }

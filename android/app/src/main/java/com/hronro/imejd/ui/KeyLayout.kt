@@ -45,8 +45,18 @@ sealed interface KeyCap {
     val isCharacter: Boolean get() = this is Char
 }
 
-/** A key plus its relative width within its row (1 = a standard letter key). */
-data class KeySpec(val cap: KeyCap, val weight: Float = 1f)
+/**
+ * A key plus its relative width within its row (1 = a standard letter key).
+ * [alternates] are extra marks reachable by press-and-hold: the preview balloon
+ * expands into a row (primary first) and the finger slides to pick one.
+ * Inserted via [KeyCap.InsertLiteral], so they can carry marks the engine
+ * inventory deliberately lacks.
+ */
+data class KeySpec(
+    val cap: KeyCap,
+    val weight: Float = 1f,
+    val alternates: List<String> = emptyList(),
+)
 
 enum class KeyboardIdiom { PHONE, PAD }
 
@@ -70,42 +80,88 @@ object KeyLayout {
     private fun charRow(s: String): List<KeySpec> =
         s.map { KeySpec(KeyCap.Char(it.code.toByte())) }
 
-    private fun litRow(marks: List<String>): List<KeySpec> =
-        marks.map { KeySpec(KeyCap.InsertLiteral(it)) }
+    private fun lit(mark: String, weight: Float = 1f): KeySpec =
+        KeySpec(KeyCap.InsertLiteral(mark), weight, alternates[mark].orEmpty())
+
+    private fun litRow(marks: List<String>): List<KeySpec> = marks.map { lit(it) }
+
+    /**
+     * Press-and-hold groups (mirrors ios/Keyboard/UI/KeyLayout.swift): each key
+     * collects visually similar variants, so the mark you hold predicts what
+     * the row offers. Groups ride the engine-bypass path and may therefore
+     * carry marks the engine inventory has no key for (¥ ° • ⋯ 破折号 …).
+     * Grouping is what frees plane slots: a grouped mark deliberately has NO
+     * key of its own (enforced by KeyLayoutTest) — retiring the dedicated
+     * ‘ ’ 『 』 〖 〗 〔 〕 ［ ］ ¦ keys made room for ； · × ÷ ※ ℃ √ → ★ ♡ ©.
+     */
+    private val alternates: Map<String, List<String>> = mapOf(
+        "0" to listOf("〇"),
+        "“" to listOf("‘"),
+        "”" to listOf("’"),
+        "「" to listOf("『"),
+        "」" to listOf("』"),
+        "【" to listOf("〖", "［", "〔"),
+        "】" to listOf("〗", "］", "〕"),
+        "｜" to listOf("¦"),
+        "《" to listOf("〈", "＜", "«"),
+        "》" to listOf("〉", "＞", "»"),
+        "。" to listOf("°"),
+        "·" to listOf("•"),
+        "…" to listOf("⋯", "……"),
+        "－" to listOf("——", "—"),
+        "＄" to listOf("￥", "€", "£"),
+        "％" to listOf("‰"),
+        "＋" to listOf("±"),
+        "＝" to listOf("≠", "≈"),
+        "℃" to listOf("℉"),
+        "√" to listOf("✓"),
+        "→" to listOf("←", "↑", "↓"),
+        "★" to listOf("☆"),
+        // ♡ is the key, ♥ the alternate: U+2665 falls to the color-emoji font
+        // on Android, so the always-text U+2661 carries the flat key face.
+        "♡" to listOf("♥"),
+        "©" to listOf("®", "™"),
+    )
 
     private fun letters(idiom: KeyboardIdiom): List<List<KeySpec>> = listOf(
         charRow("qwertyuiop"),
         // 9-key home row, centered. ';' is omitted: on desktop it picks the 2nd
-        // candidate, but on mobile you tap the candidate instead.
+        // candidate, but on mobile you tap the candidate instead. (The engine
+        // reserves ';' as that shortcut, so its inventory has no '；' — the ?123
+        // plane carries a '；' key that inserts via the engine-bypass path.)
         listOf(KeySpec(KeyCap.Spacer, 0.5f)) + charRow("asdfghjkl") + listOf(KeySpec(KeyCap.Spacer, 0.5f)),
         listOf(KeySpec(KeyCap.Shift, 1.5f)) + charRow("zxcvbnm") + listOf(KeySpec(KeyCap.Backspace, 1.5f)),
         bottomRow(idiom),
     )
 
     // Digits + Chinese punctuation, shown directly (not the ASCII forms). The two
-    // pages together cover every mark in core/src/punctuation-marks/, arranged by
-    // frequency the way Gboard's symbol pages are: this ?123 page mirrors Gboard's
-    // (its `@ # ￥ _ & - + ( ) /` and `* " ' : ; ! ?` rows, with ＄ in the ￥ slot,
-    // the directional quote pairs in the "/' slots, and 、 in the ; slot), while
-    // ，/。 stay on the bottom row of every plane. Keys insert their mark via the
-    // engine-bypass path (InputSession.insertLiteral).
+    // pages plus their long-press groups cover every mark in
+    // core/src/punctuation-marks/, arranged by frequency the way Gboard's symbol
+    // pages are: this ?123 page mirrors Gboard's (its `@ # ￥ _ & - + ( ) /` and
+    // `* " ' : ; ! ?` rows, with ＄ in the ￥ slot and 、 beside the ：；pair),
+    // while ，/。 stay on the bottom row of every plane. Keys insert their mark
+    // via the engine-bypass path (InputSession.insertLiteral); visually similar
+    // variants — including marks beyond the engine inventory — hang off
+    // `alternates`.
     private fun numbers(idiom: KeyboardIdiom): List<List<KeySpec>> = listOf(
         litRow(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")),
         litRow(listOf("＠", "＃", "＄", "＿", "＆", "－", "＋", "（", "）", "／")),
         listOf(KeySpec(KeyCap.ToLayer(KeyboardLayer.SYMBOLS), 1.5f)) +
-            litRow(listOf("“", "”", "‘", "’", "：", "、", "！", "？")) +
+            litRow(listOf("“", "”", "：", "；", "、", "！", "？", "·")) +
             listOf(KeySpec(KeyCap.Backspace, 1.5f)),
         bottomRow(idiom, leftLayer = KeyboardLayer.LETTERS),
     )
 
     // The rare marks, grouped like Gboard's =\< page: misc symbols up top (starting
-    // ~ ` | as Gboard does), the bracket pairs in the middle, and a short wide
-    // third row for the rarest CJK bracket variants.
+    // ~ ` | as Gboard does, with × ÷ in the middle like Gboard's math cluster),
+    // the bracket pairs in the middle, and a short wide third row for the marks
+    // beyond the engine inventory. The bracket/quote variants (『〖〔［ and the
+    // closers) live under their long-press primaries, not on keys.
     private fun symbols(idiom: KeyboardIdiom): List<List<KeySpec>> = listOf(
-        litRow(listOf("～", "｀", "｜", "¦", "·", "＼", "％", "＊", "……", "＝")),
-        litRow(listOf("《", "》", "「", "」", "『", "』", "｛", "｝", "【", "】")),
+        litRow(listOf("～", "｀", "｜", "×", "÷", "＼", "％", "＊", "…", "＝")),
+        litRow(listOf("《", "》", "「", "」", "｛", "｝", "【", "】", "※", "℃")),
         listOf(KeySpec(KeyCap.ToLayer(KeyboardLayer.NUMBERS), 1.5f)) +
-            litRow(listOf("〔", "〕", "［", "］", "〖", "〗")) +
+            litRow(listOf("√", "→", "★", "♡", "©")) +
             listOf(KeySpec(KeyCap.Backspace, 1.5f)),
         bottomRow(idiom, leftLayer = KeyboardLayer.LETTERS),
     )
@@ -119,9 +175,9 @@ object KeyLayout {
         leftLayer: KeyboardLayer = KeyboardLayer.NUMBERS,
     ): List<KeySpec> = listOf(
         KeySpec(KeyCap.ToLayer(leftLayer), 2.0f),
-        KeySpec(KeyCap.InsertLiteral("，")),
+        lit("，"),
         KeySpec(KeyCap.Space, 4.0f),
-        KeySpec(KeyCap.InsertLiteral("。")),
+        lit("。"),
         KeySpec(KeyCap.Return, 2.0f),
     )
 }

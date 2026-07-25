@@ -94,7 +94,7 @@ enum KeyLayout {
     /// engine inventory has no key for (¥, °, •, ⋯, 破折号, …). Grouping is
     /// what frees plane slots: a grouped mark deliberately has NO key of its
     /// own (enforced by KeyLayoutTests) — retiring the dedicated ‘ ’ 『 』
-    /// 〖 〗 〔 〕 ［ ］ ¦ keys made room for ； · × ÷ ※ ℃ √ → ★ ♥ ©.
+    /// 〖 〗 〔 〕 ［ ］ ¦ keys made room for ； · × ÷ ※ ℃ √ → ★ ♡ ©.
     private static let alternates: [String: [String]] = [
         "0": ["〇"],
         "“": ["‘"],
@@ -118,7 +118,10 @@ enum KeyLayout {
         "√": ["✓"],
         "→": ["←", "↑", "↓"],
         "★": ["☆"],
-        "♥": ["♡"],
+        // ♡ is the key, ♥ the alternate: U+2665 falls to the color-emoji font
+        // on Android, so the always-text U+2661 carries the key face — kept
+        // identical here so the two keyboards stay in step.
+        "♡": ["♥"],
         "©": ["®", "™"],
     ]
 
@@ -162,7 +165,7 @@ enum KeyLayout {
             // Seven keys, no spacers: weights sum to 10, so the grid aligns
             // with the 10-key rows above and the row reads as full.
             [KeySpec(.toLayer(.numbers), 1.5)]
-                + litRow(["※", "℃", "√", "→", "★", "♥", "©"])
+                + litRow(["※", "℃", "√", "→", "★", "♡", "©"])
                 + [KeySpec(.backspace, 1.5)],
         ]
         rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe, leftLayer: .letters))

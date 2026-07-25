@@ -1,6 +1,8 @@
 // A single key, Material-styled: rounded surface with a touch ripple, centered
-// glyph, slide-off cancel, and press-and-hold repeat for backspace. (Logic
-// follows ios/Keyboard/UI/KeyButton.swift; the look is native Android.)
+// glyph, slide-off cancel, press-and-hold repeat for backspace, and
+// press-and-hold alternates on grouped punctuation (hold expands the balloon
+// into a row; sliding moves the selection; release commits it). (Logic follows
+// ios/Keyboard/UI/KeyButton.swift; the look is native Android.)
 package com.hronro.imejd.ui
 
 import android.annotation.SuppressLint
@@ -33,6 +35,13 @@ class KeyButton(
     /** Preview-balloon lifecycle, emitted only for character keys (Char/InsertLiteral). */
     var onPreview: ((KeyButton, KeyPreviewEvent) -> Unit)? = null
 
+    /** Press-and-hold alternates: expand the balloon into the group row (false
+     *  when the owner shows no previews, e.g. tablets), slide the selection
+     *  (key-local coordinates), and commit it (null when deselected). */
+    var onAlternatesExpand: ((KeyButton) -> Boolean)? = null
+    var onAlternatesSlide: ((KeyButton, Float, Float) -> Unit)? = null
+    var onAlternatesCommit: ((KeyButton) -> String?)? = null
+
     var displayText: String = spec.cap.label
         set(value) { field = value; invalidate() }
 
@@ -60,6 +69,10 @@ class KeyButton(
 
     private val handler = Handler(Looper.getMainLooper())
     private var repeatRunnable: Runnable? = null
+    private var alternatesRunnable: Runnable? = null
+    /** True once a press-and-hold expanded the balloon into the alternates row:
+     *  tracking then slides the selection instead of press-highlighting. */
+    private var showingAlternates = false
     private val inkBounds = Rect()
 
     init {
@@ -156,10 +169,15 @@ class KeyButton(
                 isPressed = true
                 drawableHotspotChanged(event.x, event.y)
                 preview(KeyPreviewEvent.SHOW)
+                if (spec.alternates.isNotEmpty()) startAlternatesDelay()
                 if (isRepeating) { fire(); startRepeat() }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if (showingAlternates) {
+                    onAlternatesSlide?.invoke(this, event.x, event.y)
+                    return true
+                }
                 val inside = insideExpanded(event.x, event.y)
                 if (inside) {
                     if (!isPressed) { isPressed = true; preview(KeyPreviewEvent.SHOW) }
@@ -167,10 +185,24 @@ class KeyButton(
                 } else {
                     if (isPressed) { isPressed = false; preview(KeyPreviewEvent.CANCEL) }
                     stopRepeat()
+                    stopAlternatesDelay()
                 }
                 return true
             }
             MotionEvent.ACTION_UP -> {
+                stopAlternatesDelay()
+                if (showingAlternates) {
+                    showingAlternates = false
+                    isPressed = false
+                    val value = onAlternatesCommit?.invoke(this)
+                    if (value != null) {
+                        // The primary commits like a plain tap (a future Char
+                        // group must still go through the engine); alternates
+                        // bypass it.
+                        if (value == displayText) fire() else onTap?.invoke(KeyCap.InsertLiteral(value))
+                    }
+                    return true
+                }
                 val inside = insideExpanded(event.x, event.y)
                 isPressed = false
                 stopRepeat()
@@ -179,6 +211,8 @@ class KeyButton(
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                stopAlternatesDelay()
+                showingAlternates = false
                 isPressed = false
                 stopRepeat()
                 preview(KeyPreviewEvent.CANCEL)
@@ -211,9 +245,26 @@ class KeyButton(
         repeatRunnable = null
     }
 
+    // Hold ~450ms on a grouped key to swap the balloon for the alternates row.
+    private fun startAlternatesDelay() {
+        val r = Runnable {
+            alternatesRunnable = null
+            if (onAlternatesExpand?.invoke(this) == true) showingAlternates = true
+        }
+        alternatesRunnable = r
+        handler.postDelayed(r, 450)
+    }
+
+    private fun stopAlternatesDelay() {
+        alternatesRunnable?.let { handler.removeCallbacks(it) }
+        alternatesRunnable = null
+    }
+
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         stopRepeat()
+        stopAlternatesDelay()
+        showingAlternates = false
         // Layer switches rebuild the key plane mid-press; don't strand a balloon.
         preview(KeyPreviewEvent.CANCEL)
     }
