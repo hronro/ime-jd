@@ -1,8 +1,10 @@
 import UIKit
 
 /// A single key. A `UIControl` so we get precise touch phases for: press
-/// highlight, slide-off cancel, a preview bubble on character keys, and
-/// press-and-hold repeat for backspace.
+/// highlight, slide-off cancel, a preview bubble on character/punctuation
+/// keys, press-and-hold repeat for backspace, and press-and-hold alternates
+/// on grouped punctuation (hold expands the bubble into a row; sliding moves
+/// the selection; release commits it).
 final class KeyButton: UIControl {
     let spec: KeySpec
     var onTap: ((KeyCap) -> Void)?
@@ -24,6 +26,10 @@ final class KeyButton: UIControl {
     private var popup: KeyPopupView?
     private var delayTimer: Timer?
     private var repeatTimer: Timer?
+    private var alternatesTimer: Timer?
+    /// True once a press-and-hold expanded the popup into the alternates row:
+    /// tracking then slides the selection instead of press-highlighting.
+    private var showingAlternates = false
 
     private var isRepeating: Bool { spec.cap == .backspace }
 
@@ -109,13 +115,18 @@ final class KeyButton: UIControl {
 
     override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
         applyColors(pressed: true)
-        showPopupIfCharacter()
+        showPopupIfPreviewable()
+        if !spec.alternates.isEmpty { startAlternatesDelay() }
         if isRepeating { fire(); startRepeat() }
         return true
     }
 
     override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        let inside = expanded.contains(touch.location(in: self))
+        if showingAlternates, let popup {
+            popup.updateSelection(forTouch: touch.location(in: popup))
+            return true
+        }
+        let inside = hitSlop.contains(touch.location(in: self))
         applyColors(pressed: inside)
         if !inside {
             hidePopup()
@@ -126,9 +137,19 @@ final class KeyButton: UIControl {
 
     override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
         applyColors(pressed: false)
-        hidePopup()
         stopRepeat()
-        let inside = touch.map { expanded.contains($0.location(in: self)) } ?? false
+        if showingAlternates {
+            let selected = popup?.selectedValue
+            hidePopup()
+            if let selected {
+                // The primary commits like a plain tap (a future .char group
+                // must still go through the engine); alternates bypass it.
+                selected == displayText ? fire() : onTap?(.insertLiteral(selected))
+            }
+            return
+        }
+        hidePopup()
+        let inside = touch.map { hitSlop.contains($0.location(in: self)) } ?? false
         if !isRepeating, inside { fire() }
     }
 
@@ -138,7 +159,7 @@ final class KeyButton: UIControl {
         stopRepeat()
     }
 
-    private var expanded: CGRect { bounds.insetBy(dx: -8, dy: -8) }
+    private var hitSlop: CGRect { bounds.insetBy(dx: -8, dy: -8) }
 
     private func fire() { onTap?(spec.cap) }
 
@@ -147,7 +168,15 @@ final class KeyButton: UIControl {
     /// preview app's `-popup` launch arg).
     func showPressedForQA() {
         applyColors(pressed: true)
-        showPopupIfCharacter()
+        showPopupIfPreviewable()
+    }
+
+    /// QA hook: render the expanded press-and-hold row with the given group
+    /// index highlighted (0 = primary; see the preview app's `-alts` arg).
+    func showAlternatesForQA(selected: Int) {
+        applyColors(pressed: true)
+        expandAlternates()
+        popup?.selectValue(at: selected)
     }
 
     // MARK: - Repeat
@@ -167,11 +196,18 @@ final class KeyButton: UIControl {
 
     // MARK: - Popup
 
-    private func showPopupIfCharacter() {
+    private var isPreviewable: Bool {
+        // Letters and direct-insert marks, like the system keyboard (special
+        // keys show no bubble).
+        if case .insertLiteral = spec.cap { return true }
+        return spec.cap.isCharacter
+    }
+
+    private func showPopupIfPreviewable() {
         // iPhone only: the system keyboard shows no key previews on iPad,
         // where keys are big enough that the finger doesn't cover the glyph.
         guard traitCollection.userInterfaceIdiom != .pad else { return }
-        guard spec.cap.isCharacter, let host = popupHost else { return }
+        guard isPreviewable, let host = popupHost else { return }
         let popup = KeyPopupView(text: displayText, theme: theme,
                                  keyFrame: convert(bounds, to: host),
                                  hostBounds: host.bounds)
@@ -179,10 +215,36 @@ final class KeyButton: UIControl {
         self.popup = popup
     }
 
+    // MARK: - Alternates (press-and-hold)
+
+    private func startAlternatesDelay() {
+        alternatesTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
+            self?.expandAlternates()
+        }
+    }
+
+    /// Swap the single-glyph bubble for the sliding alternates row.
+    private func expandAlternates() {
+        guard traitCollection.userInterfaceIdiom != .pad else { return }
+        guard !spec.alternates.isEmpty, let host = popupHost else { return }
+        popup?.removeFromSuperview()
+        let popup = KeyPopupView(alternates: [displayText] + spec.alternates, theme: theme,
+                                 keyFrame: convert(bounds, to: host),
+                                 hostBounds: host.bounds)
+        host.addSubview(popup)
+        self.popup = popup
+        showingAlternates = true
+    }
+
     private func hidePopup() {
+        alternatesTimer?.invalidate(); alternatesTimer = nil
+        showingAlternates = false
         popup?.removeFromSuperview()
         popup = nil
     }
 
-    deinit { stopRepeat() }
+    deinit {
+        stopRepeat()
+        alternatesTimer?.invalidate()
+    }
 }

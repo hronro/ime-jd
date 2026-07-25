@@ -113,13 +113,25 @@ final class KeyboardView: UIView {
     /// Expand the candidate grid (QA / preview convenience, mirrors the chevron).
     func expandCandidates() { expandGrid() }
 
-    /// Show a character key's pressed state + preview bubble (QA / preview
-    /// convenience — popups only live during a touch, so screenshots need this).
-    func showKeyPopup(_ ch: Character) {
-        guard let byte = ch.asciiValue else { return }
-        keyGrid.subviews.compactMap { $0 as? KeyButton }
-            .first { $0.spec.cap == .char(byte) }?
-            .showPressedForQA()
+    /// Show a key's pressed state + preview bubble (QA / preview convenience —
+    /// popups only live during a touch, so screenshots need this). Keys are
+    /// looked up by their displayed label, so `r` and `：` both work.
+    func showKeyPopup(_ label: String) {
+        keyButton(labeled: label)?.showPressedForQA()
+    }
+
+    /// Show a key's expanded press-and-hold row with the given group index
+    /// highlighted (QA / preview convenience, mirrors hold + slide).
+    func showKeyAlternates(_ label: String, selected: Int) {
+        keyButton(labeled: label)?.showAlternatesForQA(selected: selected)
+    }
+
+    private func keyButton(labeled label: String) -> KeyButton? {
+        // QA args run right after a plane switch; the popup geometry needs the
+        // rebuilt keys to have real frames.
+        layoutIfNeeded()
+        return keyGrid.subviews.compactMap { $0 as? KeyButton }
+            .first { $0.displayText == label }
     }
 
     func applyTheme(_ theme: KeyboardTheme) {

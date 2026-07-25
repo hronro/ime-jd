@@ -94,6 +94,12 @@ final class KeyboardPreviewViewController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // The left key column sits inside the screen-edge pan region, so a
+        // press-and-hold + rightward slide (the punctuation-alternates gesture)
+        // would also drive the interactive back-swipe and pop the page
+        // mid-press. Back stays available via the navigation bar. In-app
+        // concern only: the extension has no navigation controller.
+        navigationController?.interactivePopGestureRecognizer?.isEnabled = false
         textView.becomeFirstResponder()
         // The remaining QA flags drive the inline preview keyboard.
         guard keyboard != nil else { return }
@@ -108,15 +114,30 @@ final class KeyboardPreviewViewController: UIViewController {
         }
         // `-expand` opens the candidate grid over the keys (combine with -type).
         if CommandLine.arguments.contains("-expand") { keyboard.expandCandidates() }
-        // `-popup r` renders the key-press bubble for a character key — popups
-        // only live during a touch, so screenshots can't capture them otherwise.
-        // iPhone only: on iPad the key just shows its pressed state (KeyButton
-        // suppresses the bubble there, matching the system keyboard).
+        // `-popup r` (or `-popup ：`, by key label) renders the key-press
+        // bubble — popups only live during a touch, so screenshots can't
+        // capture them otherwise. iPhone only: on iPad the key just shows its
+        // pressed state (KeyButton suppresses the bubble there, matching the
+        // system keyboard).
         if let i = CommandLine.arguments.firstIndex(of: "-popup"),
-           CommandLine.arguments.indices.contains(i + 1),
-           let ch = CommandLine.arguments[i + 1].first {
-            keyboard.showKeyPopup(ch)
+           CommandLine.arguments.indices.contains(i + 1) {
+            keyboard.showKeyPopup(CommandLine.arguments[i + 1])
         }
+        // `-alts ：` renders the expanded press-and-hold row for a grouped key
+        // (combine with -numbers/-symbols); `-altsel 1` highlights that group
+        // index instead of the primary.
+        if let i = CommandLine.arguments.firstIndex(of: "-alts"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let selected = CommandLine.arguments.firstIndex(of: "-altsel")
+                .flatMap { CommandLine.arguments.indices.contains($0 + 1)
+                    ? Int(CommandLine.arguments[$0 + 1]) : nil } ?? 0
+            keyboard.showKeyAlternates(CommandLine.arguments[i + 1], selected: selected)
+        }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        navigationController?.interactivePopGestureRecognizer?.isEnabled = true
     }
 
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {

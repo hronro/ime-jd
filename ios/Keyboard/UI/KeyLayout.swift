@@ -44,9 +44,15 @@ enum KeyCap: Equatable {
 struct KeySpec {
     let cap: KeyCap
     let weight: CGFloat
-    init(_ cap: KeyCap, _ weight: CGFloat = 1) {
+    /// Extra marks reachable by press-and-hold: the callout expands into a row
+    /// (primary first) and the finger slides to pick one, like the built-in
+    /// keyboard. Inserted via `.insertLiteral`, so they can carry marks the
+    /// engine inventory deliberately lacks.
+    let alternates: [String]
+    init(_ cap: KeyCap, _ weight: CGFloat = 1, alternates: [String] = []) {
         self.cap = cap
         self.weight = weight
+        self.alternates = alternates
     }
 }
 
@@ -79,16 +85,51 @@ enum KeyLayout {
 
     /// A row of direct-insert keys (digits / Chinese punctuation).
     private static func litRow(_ marks: [String]) -> [KeySpec] {
-        marks.map { KeySpec(.insertLiteral($0)) }
+        marks.map { KeySpec(.insertLiteral($0), alternates: alternates[$0] ?? []) }
     }
+
+    /// Press-and-hold groups: each key collects visually similar variants, so
+    /// the mark you hold predicts what the row offers. Groups ride the
+    /// `.insertLiteral` engine-bypass path and may therefore carry marks the
+    /// engine inventory has no key for (¥, °, •, ⋯, 破折号, …). Grouping is
+    /// what frees plane slots: a grouped mark deliberately has NO key of its
+    /// own (enforced by KeyLayoutTests) — retiring the dedicated ‘ ’ 『 』
+    /// 〖 〗 〔 〕 ［ ］ ¦ keys made room for ； · × ÷ ※ ℃ √ → ★ ♥ ©.
+    private static let alternates: [String: [String]] = [
+        "0": ["〇"],
+        "“": ["‘"],
+        "”": ["’"],
+        "「": ["『"],
+        "」": ["』"],
+        "【": ["〖", "［", "〔"],
+        "】": ["〗", "］", "〕"],
+        "｜": ["¦"],
+        "《": ["〈", "＜", "«"],
+        "》": ["〉", "＞", "»"],
+        "。": ["°"],
+        "·": ["•"],
+        "…": ["⋯", "……"],
+        "－": ["——", "—"],
+        "＄": ["￥", "€", "£"],
+        "％": ["‰"],
+        "＋": ["±"],
+        "＝": ["≠", "≈"],
+        "℃": ["℉"],
+        "√": ["✓"],
+        "→": ["←", "↑", "↓"],
+        "★": ["☆"],
+        "♥": ["♡"],
+        "©": ["®", "™"],
+    ]
 
     private static func letters(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
         var rows: [[KeySpec]] = []
         rows.append(charRow("qwertyuiop"))
         // 9-key home row, centered like the built-in keyboard. ';' is omitted: on
         // desktop it's a shortcut to pick the 2nd candidate, but on mobile you tap
-        // the candidate instead. (The engine reserves ';' as that shortcut, so the
-        // punctuation inventory has no '；' either — no plane carries one.)
+        // the candidate instead. (The engine reserves ';' as that shortcut, so its
+        // punctuation inventory has no '；' — the #+= plane carries a '；' key
+        // that inserts via the engine-bypass path, leaving the shortcut intact.)
         rows.append([KeySpec(.spacer, 0.5)] + charRow("asdfghjkl") + [KeySpec(.spacer, 0.5)])
         rows.append([KeySpec(.shift, 1.5)] + charRow("zxcvbnm") + [KeySpec(.backspace, 1.5)])
         rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe))
@@ -96,16 +137,18 @@ enum KeyLayout {
     }
 
     // Digits + Chinese punctuation, shown directly (not the ASCII forms). The two
-    // pages together cover every mark in core/src/punctuation-marks/, arranged by
-    // frequency like the built-in Pinyin keyboard: the most common marks sit on
-    // this page's bottom row within thumb reach, the rare ones live on #+=. Keys
-    // insert their mark via the engine-bypass path (see InputSession.insertLiteral).
+    // pages plus their long-press groups cover every mark in
+    // core/src/punctuation-marks/, arranged by frequency like the built-in Pinyin
+    // keyboard: the most common marks sit on this page's bottom row within thumb
+    // reach, the rare ones live on #+=. Keys insert their mark via the engine-
+    // bypass path (see InputSession.insertLiteral); visually similar variants —
+    // including marks beyond the engine inventory — hang off `alternates`.
     private static func numbers(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
         var rows: [[KeySpec]] = [
             litRow(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]),
             litRow(["－", "／", "：", "～", "（", "）", "＄", "＠", "“", "”"]),
             [KeySpec(.toLayer(.symbols), 1.5)]
-                + litRow(["。", "，", "、", "？", "！", "……", "‘", "’"])
+                + litRow(["。", "，", "、", "；", "？", "！", "…", "·"])
                 + [KeySpec(.backspace, 1.5)],
         ]
         rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe, leftLayer: .letters))
@@ -115,9 +158,11 @@ enum KeyLayout {
     private static func symbols(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
         var rows: [[KeySpec]] = [
             litRow(["「", "」", "【", "】", "｛", "｝", "＃", "％", "＆", "＊"]),
-            litRow(["＿", "＝", "＋", "＼", "｜", "¦", "《", "》", "·", "｀"]),
+            litRow(["＿", "＝", "＋", "×", "÷", "＼", "｜", "《", "》", "｀"]),
+            // Seven keys, no spacers: weights sum to 10, so the grid aligns
+            // with the 10-key rows above and the row reads as full.
             [KeySpec(.toLayer(.numbers), 1.5)]
-                + litRow(["『", "』", "〖", "〗", "〔", "〕", "［", "］"])
+                + litRow(["※", "℃", "√", "→", "★", "♥", "©"])
                 + [KeySpec(.backspace, 1.5)],
         ]
         rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe, leftLayer: .letters))
