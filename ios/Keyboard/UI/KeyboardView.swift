@@ -60,7 +60,7 @@ final class KeyboardView: UIView {
         candidateBar.onExpand = { [weak self] in self?.expandGrid() }
         candidateBar.onNeedMore = { [weak self] in self?.loadMore() }
 
-        session.onChange = { [weak self] snap, raw in self?.renderCandidates(snap, raw) }
+        session.onChange = { [weak self] snap in self?.renderCandidates(snap) }
 
         candidateBar.translatesAutoresizingMaskIntoConstraints = false
         keyGrid.translatesAutoresizingMaskIntoConstraints = false
@@ -215,13 +215,15 @@ final class KeyboardView: UIView {
 
     // MARK: - Candidates
 
-    private func renderCandidates(_ snap: QuerySnapshot, _ raw: String) {
-        items = snap.options
-        // Chevron keyed to a fixed count, not totalPages, so the expand affordance
-        // doesn't vanish for mid-size candidate sets when the engine page size grows.
-        candidateBar.reset(composing: raw, items: items, canExpand: snap.optionsCount > 9)
+    private func renderCandidates(_ snap: SessionSnapshot) {
+        items = snap.candidates
+        candidateBar.reset(
+            composing: snap.rawBuffer,
+            items: items,
+            canExpand: snap.canExpand
+        )
         if let grid = gridOverlay {
-            if raw.isEmpty { collapseGrid() } else { grid.setItems(items) }
+            if snap.rawBuffer.isEmpty { collapseGrid() } else { grid.setItems(items) }
         }
     }
 

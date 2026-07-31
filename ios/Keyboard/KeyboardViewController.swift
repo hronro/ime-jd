@@ -7,7 +7,7 @@ import Libjd
 final class KeyboardViewController: UIInputViewController {
     // 16 per fetch — iOS selects by tap, so pages aren't capped at 9 the way
     // macOS's 1-9 digit labels cap them; bigger pages = fewer grid-fill round trips.
-    private let session = InputSession(pageSize: 16)
+    private let session = InputSession()
     private var keyboard: KeyboardView!
     private var heightConstraint: NSLayoutConstraint!
 

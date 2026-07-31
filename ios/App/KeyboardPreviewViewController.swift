@@ -4,7 +4,7 @@ import UIKit
 /// extension in Settings. It drives the SAME `KeyboardView` + `InputSession`, with
 /// committed text routed into a real text view (which conforms to `UIKeyInput`).
 final class KeyboardPreviewViewController: UIViewController {
-    private let session = InputSession(pageSize: 16)   // mirrors the extension
+    private let session = InputSession()   // mirrors the extension
     private let host = FieldHost()
     private let textView = UITextView()
     private var keyboard: KeyboardView!
