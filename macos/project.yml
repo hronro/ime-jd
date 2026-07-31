@@ -43,7 +43,7 @@ targets:
         excludes:
           - "Info.plist"
       # Engine FFI wrapper shared with the iOS frontend (source-level, no
-      # package) — Engine / QuerySnapshot / KeyAction.
+      # package) — Engine / Candidate / KeyAction.
       - path: ../bindings/swift
         includes:
           - "*.swift"

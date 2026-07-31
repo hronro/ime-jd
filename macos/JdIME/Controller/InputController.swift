@@ -3,10 +3,21 @@ import InputMethodKit
 
 @objc(JdIME_InputController)
 final class InputController: IMKInputController {
-    private let engine = Engine(pageSize: 9)
+    /// Candidates shown per panel page. Purely a display choice — the engine
+    /// addresses candidates by flat index and has no page concept — so the page
+    /// arithmetic lives here. 9 matches IMK's per-line element cap and the
+    /// panel's 1-9 number labels (see Candidates.swift).
+    private static let pageSize: UInt32 = 9
+
+    private let engine = Engine()
     private let composition = Composition()
     private var candidatePanel: Candidates?
-    private var lastSnapshot: QuerySnapshot = .empty
+
+    /// The candidates currently on screen.
+    private var visible: [Candidate] = []
+    /// Flat index of the first visible candidate; always a multiple of
+    /// `pageSize`.
+    private var pageStart: UInt32 = 0
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
@@ -38,10 +49,8 @@ final class InputController: IMKInputController {
                 composition.commitRaw(client: client)
             }
         }
-        engine.reset()
         composition.reset()
-        candidatePanel?.hide()
-        lastSnapshot = .empty
+        endComposition()
     }
 
     override func commitComposition(_ sender: Any!) {
@@ -49,43 +58,73 @@ final class InputController: IMKInputController {
         if composition.isActive {
             composition.commitRaw(client: client)
         }
-        engine.reset()
-        candidatePanel?.hide()
-        lastSnapshot = .empty
+        endComposition()
     }
 
     override func cancelComposition() {
         if let client = self.client() {
             composition.cancel(client: client)
         }
-        engine.reset()
-        candidatePanel?.hide()
-        lastSnapshot = .empty
+        endComposition()
     }
 
     // MARK: - IMKCandidates callbacks
 
     override func candidates(_ sender: Any!) -> [Any]! {
-        lastSnapshot.options.map { CandidateFormatter.display($0) }
+        visible.map { CandidateFormatter.display($0) }
     }
 
     override func candidateSelected(_ candidateString: NSAttributedString!) {
         guard let client = self.client() else { return }
-        // The panel hands back the displayed string (value + 〔hint〕). Map it
-        // back to the candidate's committable value so a click commits 你, not
-        // 你 〔…〕.
+        // The panel hands back the *displayed* string (value + 〔hint〕), so map
+        // it back to the candidate's committable value — a click should commit
+        // 你, not 你 〔…〕. A collision here would need two candidates with the
+        // same value AND the same hint, in which case either one commits
+        // identical text, so the round-trip is sound.
         let shown = candidateString?.string ?? ""
-        let value = lastSnapshot.options.first {
+        let value = visible.first {
             CandidateFormatter.display($0).string == shown
         }?.value ?? shown
         composition.commit(text: value, client: client)
-        engine.reset()
-        candidatePanel?.hide()
-        lastSnapshot = .empty
+        endComposition()
     }
 
     override func candidateSelectionChanged(_ candidateString: NSAttributedString!) {
         // No-op; engine drives selection.
+    }
+
+    // MARK: - Candidate window
+
+    /// Re-read the visible page and point the engine's anchor at it.
+    ///
+    /// Pointing the anchor first is what keeps the engine's *automatic* commits
+    /// (space, `;`, the literal-byte fallback) resolving to a candidate the user
+    /// can actually see. Reads themselves are pure, so nothing else needs
+    /// restoring afterwards.
+    private func refreshCandidates() {
+        let total = engine.state.optionsCount
+        guard total > 0 else {
+            visible = []
+            pageStart = 0
+            candidatePanel?.hide()
+            return
+        }
+        if pageStart >= total { pageStart = 0 }
+        engine.setAnchor(pageStart)
+        visible = engine.readRange(from: pageStart, count: Int(Self.pageSize))
+        if visible.isEmpty {
+            candidatePanel?.hide()
+        } else {
+            candidatePanel?.show()
+        }
+    }
+
+    /// Drop the engine's composition and tear down the candidate window.
+    private func endComposition() {
+        engine.reset()
+        candidatePanel?.hide()
+        visible = []
+        pageStart = 0
     }
 
     // MARK: - Dispatch
@@ -97,54 +136,49 @@ final class InputController: IMKInputController {
 
         case .escape:
             composition.cancel(client: client)
-            engine.reset()
-            candidatePanel?.hide()
-            lastSnapshot = .empty
+            endComposition()
             return true
 
         case .commitRaw:
             composition.commitRaw(client: client)
-            engine.reset()
-            candidatePanel?.hide()
-            lastSnapshot = .empty
+            endComposition()
             return true
 
         case .backspace:
-            let snapshot = engine.backspace()
+            engine.backspace()
             let stillComposing = composition.backspace(client: client)
             if !stillComposing {
-                engine.reset()
-                candidatePanel?.hide()
-                lastSnapshot = .empty
+                endComposition()
             } else {
-                applyEngineResult(snapshot: snapshot, client: client, appendByte: nil)
+                pageStart = 0
+                refreshCandidates()
             }
             return true
 
         case .pageNext:
-            let snapshot = engine.nextPage()
-            applyEngineResult(snapshot: snapshot, client: client, appendByte: nil)
+            let next = pageStart + Self.pageSize
+            if next < engine.state.optionsCount {
+                pageStart = next
+                refreshCandidates()
+            }
             return true
 
         case .pagePrev:
-            let snapshot = engine.prevPage()
-            applyEngineResult(snapshot: snapshot, client: client, appendByte: nil)
+            pageStart = pageStart >= Self.pageSize ? pageStart - Self.pageSize : 0
+            refreshCandidates()
             return true
 
         case .selectIdx(let idx):
-            if idx < lastSnapshot.options.count {
-                let text = lastSnapshot.options[idx].value
-                composition.commit(text: text, client: client)
-                engine.reset()
-                candidatePanel?.hide()
-                lastSnapshot = .empty
+            if idx < visible.count {
+                composition.commit(text: visible[idx].value, client: client)
+                endComposition()
                 return true
             }
             // No candidate at that slot — fall through to the engine with
             // the digit as a literal byte. The engine treats `1`-`9` as
             // ordinary literal input (it does NOT pick from candidates;
             // that's our job — see core/docs/integration.md), so we end
-            // up with the current top candidate + digit appended via the
+            // up with the anchor candidate + digit appended via the
             // engine's commit-and-append path. Matches windows/src/tip.rs.
             let digitByte = UInt8(0x31 + idx)
             return dispatchEngineKey(byte: digitByte, client: client)
@@ -155,9 +189,9 @@ final class InputController: IMKInputController {
     }
 
     private func dispatchEngineKey(byte: UInt8, client: IMKTextInput) -> Bool {
-        let snapshot = engine.pressKey(byte)
+        let state = engine.pressKey(byte)
 
-        if let commit = snapshot.commit {
+        if let commit = state.commit {
             if composition.isActive {
                 composition.commit(text: commit, client: client)
             } else {
@@ -166,45 +200,26 @@ final class InputController: IMKInputController {
                     replacementRange: NSRange(location: NSNotFound, length: 0)
                 )
             }
-            if snapshot.options.isEmpty {
-                engine.reset()
-                candidatePanel?.hide()
-                lastSnapshot = .empty
+            if state.optionsCount == 0 {
+                endComposition()
             } else {
+                // Drilled in: committed text plus a fresh composition started
+                // by the just-pressed key.
                 composition.append(byte, client: client)
-                showCandidates(snapshot: snapshot)
+                pageStart = 0
+                refreshCandidates()
             }
             return true
         }
 
-        if !snapshot.options.isEmpty {
+        if state.optionsCount > 0 {
             composition.append(byte, client: client)
-            showCandidates(snapshot: snapshot)
+            pageStart = 0
+            refreshCandidates()
             return true
         }
 
         // Engine returned nothing — don't consume the key.
         return false
-    }
-
-    private func applyEngineResult(
-        snapshot: QuerySnapshot,
-        client: IMKTextInput,
-        appendByte: UInt8?
-    ) {
-        if let b = appendByte {
-            composition.append(b, client: client)
-        }
-        if snapshot.options.isEmpty {
-            candidatePanel?.hide()
-            lastSnapshot = snapshot
-        } else {
-            showCandidates(snapshot: snapshot)
-        }
-    }
-
-    private func showCandidates(snapshot: QuerySnapshot) {
-        lastSnapshot = snapshot
-        candidatePanel?.show(snapshot: snapshot)
     }
 }

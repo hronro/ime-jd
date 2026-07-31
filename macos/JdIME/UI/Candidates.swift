@@ -6,9 +6,11 @@ import InputMethodKit
 // Windows and CLI frontends (` 〔hint〕`). Used both to populate the panel and
 // to map a clicked candidate string back to its committable value.
 enum CandidateFormatter {
-    static func display(_ candidate: Candidate) -> NSAttributedString {
-        let result = NSMutableAttributedString(string: candidate.value)
-        if let hint = candidate.hint, !hint.isEmpty {
+    /// The primitive, taking plain strings so formatting can be unit-tested
+    /// without building an FFI-backed `Candidate`.
+    static func display(value: String, hint: String?) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: value)
+        if let hint = hint, !hint.isEmpty {
             result.append(NSAttributedString(
                 string: " 〔\(hint)〕",
                 attributes: [.foregroundColor: NSColor.secondaryLabelColor]
@@ -16,13 +18,17 @@ enum CandidateFormatter {
         }
         return result
     }
+
+    static func display(_ candidate: Candidate) -> NSAttributedString {
+        display(value: candidate.value, hint: candidate.hint)
+    }
 }
 
 final class Candidates {
     private let panel: IMKCandidates
 
-    // The panel is fed exactly one engine page (≤ pageSize candidates, see
-    // InputController.candidates(_:)), but the stepping panel re-paginates
+    // The panel is fed exactly one display page (≤ InputController.pageSize
+    // candidates, see InputController.candidates(_:)), but it re-paginates
     // whatever it's given by pixel width: each layout pass rebuilds an
     // IMKUICandidateLayoutTraits whose maxLengthOfLine (~369pt) caps the row,
     // and candidates that don't fit hide behind stepper arrows. The visible
@@ -69,11 +75,9 @@ final class Candidates {
         ])
     }
 
-    func show(snapshot: QuerySnapshot) {
-        guard !snapshot.options.isEmpty else {
-            hide()
-            return
-        }
+    /// Show (or refresh) the panel. The caller has already loaded the visible
+    /// candidates onto the controller, which `candidates(_:)` reads back.
+    func show() {
         panel.update()
         if !panel.isVisible() {
             panel.show(kIMKLocateCandidatesBelowHint)
