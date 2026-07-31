@@ -36,9 +36,14 @@ pub struct Renderer {
     output_string: String,
     output: Output,
     input: String,
-    /// The options currently displayed, retained so they can be redrawn after
-    /// a resize without re-querying (and thus mutating) the core.
-    current_options: Vec<jd::QueryOption>,
+    /// The candidates currently displayed, retained so they can be redrawn
+    /// after a resize without re-reading the core.
+    current_options: Vec<jd::Candidate>,
+    /// Flat index of the first displayed candidate. Paging is entirely a
+    /// frontend concern now — the core addresses candidates by index — so this
+    /// plus `option_rows` is our "current page", and we keep the engine's
+    /// anchor pointed at it so its automatic commits match what's on screen.
+    page_start: u32,
     jd: jd::JdContext,
 }
 impl Renderer {
@@ -50,7 +55,7 @@ impl Renderer {
         let option_rows = (height.saturating_sub(3) / 2).saturating_sub(2).clamp(1, 4);
         let output_rows = height.saturating_sub(4 + option_rows + 1);
 
-        let jd = jd::JdContext::new(option_rows as u8).expect("failed to initialize the jd engine");
+        let jd = jd::JdContext::new().expect("failed to initialize the jd engine");
 
         Self {
             width,
@@ -68,18 +73,42 @@ impl Renderer {
             ),
             input: String::from(""),
             current_options: Vec::new(),
+            page_start: 0,
             jd,
         }
     }
 
     /// Store the latest options and draw them. Used by every key handler so
     /// `current_options` always mirrors what's on screen (for resize redraws).
-    fn update_options<W>(&mut self, w: &mut W, options: Vec<jd::QueryOption>) -> Result<()>
+    fn update_options<W>(&mut self, w: &mut W, options: Vec<jd::Candidate>) -> Result<()>
     where
         W: Write,
     {
         self.current_options = options;
         self.draw_options(w, &self.current_options)
+    }
+
+    /// Re-read the visible window from the engine and redraw it.
+    ///
+    /// The engine's anchor is pointed at `page_start` first, so its automatic
+    /// commits (space, the literal-byte fallback) always resolve to a candidate
+    /// the user can actually see. Reading is a pure operation, so nothing else
+    /// has to be restored afterwards.
+    fn refresh_options<W>(&mut self, w: &mut W) -> Result<()>
+    where
+        W: Write,
+    {
+        let total = self.jd.state().options_count;
+        if total == 0 {
+            self.page_start = 0;
+            return self.update_options(w, Vec::new());
+        }
+        if self.page_start >= total {
+            self.page_start = 0;
+        }
+        self.jd.set_anchor(self.page_start);
+        let options = self.jd.candidates(self.page_start, self.option_rows as u32);
+        self.update_options(w, options)
     }
 
     /// Re-layout and redraw everything for a new terminal size.
@@ -152,7 +181,7 @@ impl Renderer {
         Ok(())
     }
 
-    fn draw_options<W>(&self, w: &mut W, options: &[jd::QueryOption]) -> Result<()>
+    fn draw_options<W>(&self, w: &mut W, options: &[jd::Candidate]) -> Result<()>
     where
         W: Write,
     {
@@ -170,8 +199,8 @@ impl Renderer {
                 let option_string = format!(
                     "[{}] {}{}",
                     index + 1,
-                    option.value,
-                    if let Some(hint) = &option.hint {
+                    option.value(),
+                    if let Some(hint) = option.hint() {
                         format!(" 〔{hint}〕")
                     } else {
                         String::from("")
@@ -256,8 +285,11 @@ impl Renderer {
                                 if self.input.is_empty() {
                                     self.output.scroll_down(w)?;
                                 } else {
-                                    let query_result = self.jd.next_page();
-                                    self.update_options(w, query_result.options)?;
+                                    let next = self.page_start + self.option_rows as u32;
+                                    if next < self.jd.state().options_count {
+                                        self.page_start = next;
+                                        self.refresh_options(w)?;
+                                    }
                                 }
                             }
 
@@ -265,28 +297,32 @@ impl Renderer {
                                 if self.input.is_empty() {
                                     self.output.scroll_up(w)?;
                                 } else {
-                                    let query_result = self.jd.prev_page();
-                                    self.update_options(w, query_result.options)?;
+                                    self.page_start = self
+                                        .page_start
+                                        .saturating_sub(self.option_rows as u32);
+                                    self.refresh_options(w)?;
                                 }
                             }
 
                             _ => {
-                                let query_result = self.jd.press_key(c as u8);
+                                self.jd.press_key(c as u8);
 
-                                if let Some(commit) = query_result.commit {
-                                    self.output_string.push_str(&commit);
-                                    self.output.push_unicode_char(&commit, w)?;
+                                if let Some(commit) = self.jd.commit() {
+                                    let text = commit.to_string();
+                                    self.output_string.push_str(&text);
+                                    self.output.push_unicode_char(&text, w)?;
 
-                                    self.input = if !query_result.options.is_empty() {
+                                    self.input = if self.jd.state().options_count > 0 {
                                         String::from(c)
                                     } else {
                                         String::new()
                                     };
-                                    self.update_options(w, query_result.options)?;
                                 } else {
                                     self.input = format!("{}{}", self.input, c);
-                                    self.update_options(w, query_result.options)?;
                                 }
+                                // Any keystroke starts a fresh candidate list.
+                                self.page_start = 0;
+                                self.refresh_options(w)?;
                                 self.draw_input(w)?;
                             }
                         },
@@ -297,8 +333,9 @@ impl Renderer {
                             } else {
                                 _ = self.input.pop();
                                 self.draw_input(w)?;
-                                let query_result = self.jd.backspace();
-                                self.update_options(w, query_result.options)?;
+                                self.jd.backspace();
+                                self.page_start = 0;
+                                self.refresh_options(w)?;
                             }
                         }
                         event::KeyCode::Esc => {
