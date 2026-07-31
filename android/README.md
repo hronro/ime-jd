@@ -10,9 +10,9 @@ android/
     build.gradle.kts            # AGP 8.7.3 / Kotlin 2.0.21; ABI splits; the buildLibjd task
     src/main/
       AndroidManifest.xml       # the IME <service> (BIND_INPUT_METHOD + android.view.InputMethod)
-      cpp/jd_jni.c              # C JNI shim over libjd's C ABI (marshals query_result → Kotlin)
+      cpp/jd_jni.c              # C JNI shim over libjd's C ABI (marshals jd_state / query_option → Kotlin)
       java/com/hronro/imejd/
-        engine/                 # Engine (JNI), QuerySnapshot, KeyAction, InputSession (dispatch core)
+        engine/                 # Engine (JNI), EngineState/Candidate, KeyAction, InputSession (dispatch core)
         ime/JdInputMethodService.kt   # the IME service; InputConnection host; lifecycle
         ui/                     # KeyLayout, KeyboardView, key plane, key previews, candidate bar/grid, theme
         app/                    # MainActivity (enable flow) + KeyboardPreviewActivity (embedded try-out)

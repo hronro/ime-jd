@@ -18,7 +18,7 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
 
     // 16 per fetch — selection is by tap, so pages aren't capped at 9 the way
     // macOS's 1-9 digit labels cap them; bigger pages = fewer grid-fill round trips.
-    private val session: InputSession by lazy { InputSession(pageSize = 16).also { it.host = this } }
+    private val session: InputSession by lazy { InputSession().also { it.host = this } }
     private var keyboard: KeyboardView? = null
 
     /**

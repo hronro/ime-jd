@@ -7,8 +7,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.hronro.imejd.engine.InputSession
 import com.hronro.imejd.engine.KeyAction
 import com.hronro.imejd.engine.KeyboardHost
+import com.hronro.imejd.engine.SessionSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,22 +30,28 @@ private fun ascii(c: Char): Byte = c.code.toByte()
 class InputSessionTest {
 
     private fun makeSession(): Pair<InputSession, MockHost> {
-        val s = InputSession(pageSize = 9)
+        val s = InputSession()
         val h = MockHost()
         s.host = h
         return s to h
     }
 
+    /**
+     * A letter starts a composition shown in the keyboard's own bar — nothing
+     * must leak to the host until commit (the cardinal on-screen-keyboard rule).
+     */
     @Test
     fun letterStartsCompositionWithoutInserting() {
         val (s, h) = makeSession()
         s.handle(KeyAction.EngineKey(ascii('n')))
         assertTrue(s.isComposing)
-        assertFalse(s.snapshot.options.isEmpty())
-        assertEquals(emptyList<String>(), h.inserted)
+        assertFalse(s.snapshot.candidates.isEmpty())
+        assertTrue(s.snapshot.optionsCount > 0)
+        assertTrue("composition must not leak to the host", h.inserted.isEmpty())
         assertEquals("n", s.rawBuffer)
     }
 
+    /** Bare '.' resolves to the Chinese full stop via the engine's punctuation table. */
     @Test
     fun barePunctuationCommitsToHost() {
         val (s, h) = makeSession()
@@ -51,6 +60,7 @@ class InputSessionTest {
         assertFalse(s.isComposing)
     }
 
+    /** 'n' then '.' commits the top candidate AND appends 。 in one step. */
     @Test
     fun punctuationCommitsAndAppendsAfterComposition() {
         val (s, h) = makeSession()
@@ -65,10 +75,27 @@ class InputSessionTest {
     fun selectVisibleCommitsCandidate() {
         val (s, h) = makeSession()
         s.handle(KeyAction.EngineKey(ascii('b')))
-        val first = s.snapshot.options.first().value
+        val first = s.snapshot.candidates.first().value
         s.handle(KeyAction.SelectIdx(0))
         assertEquals(first, h.joined)
         assertFalse(s.isComposing)
+    }
+
+    /**
+     * The session tracks everything the bar has loaded, so a tap on a
+     * scrolled-in candidate resolves too — not just the first window.
+     */
+    @Test
+    fun selectVisibleReachesScrolledInCandidates() {
+        val (s, h) = makeSession()
+        s.handle(KeyAction.EngineKey(ascii('b')))
+        val firstWindow = s.snapshot.candidates.size
+        assertNotNull(s.loadMoreCandidates())
+        assertTrue(s.snapshot.candidates.size > firstWindow)
+
+        val scrolledIn = s.snapshot.candidates[firstWindow]
+        s.handle(KeyAction.SelectIdx(firstWindow))
+        assertEquals(scrolledIn.value, h.joined)
     }
 
     @Test
@@ -77,8 +104,9 @@ class InputSessionTest {
         s.handle(KeyAction.EngineKey(ascii('b')))
         assertTrue(s.isComposing)
         s.handle(KeyAction.Backspace)
-        assertEquals(0, h.deletes)
+        assertEquals("deleting composition must not delete host text", 0, h.deletes)
         assertFalse(s.isComposing)
+        assertEquals(0, s.snapshot.optionsCount)
     }
 
     @Test
@@ -86,7 +114,7 @@ class InputSessionTest {
         val (s, h) = makeSession()
         s.handle(KeyAction.Backspace)
         assertEquals(1, h.deletes)
-        assertEquals(emptyList<String>(), h.inserted)
+        assertTrue(h.inserted.isEmpty())
     }
 
     @Test
@@ -104,14 +132,15 @@ class InputSessionTest {
         s.handle(KeyAction.EngineKey(ascii('b')))
         s.cancelAndReset()
         assertFalse(s.isComposing)
-        assertEquals(emptyList<String>(), h.inserted)
+        assertEquals(SessionSnapshot.EMPTY, s.snapshot)
+        assertTrue(h.inserted.isEmpty())
     }
 
     @Test
     fun onChangeFiresOnKey() {
         val (s, _) = makeSession()
         var calls = 0
-        s.onChange = { _, _ -> calls++ }
+        s.onChange = { calls++ }
         s.handle(KeyAction.EngineKey(ascii('b')))
         assertTrue(calls > 0)
     }
@@ -128,8 +157,9 @@ class InputSessionTest {
     fun insertLiteralWhileComposingCommitsTopThenAppends() {
         val (s, h) = makeSession()
         s.handle(KeyAction.EngineKey(ascii('n')))
-        val top = s.snapshot.options.first().value
+        val top = s.snapshot.candidates.first().value
         s.insertLiteral("。")
+        // Matches libjd: top candidate committed, then the punctuation appended.
         assertEquals(top + "。", h.joined)
         assertFalse(s.isComposing)
     }
@@ -139,26 +169,26 @@ class InputSessionTest {
         val (s, h) = makeSession()
         s.handle(KeyAction.EngineKey(ascii('n')))
         assertTrue(s.isComposing)
+        // space → engine commits the anchor candidate, appends nothing
         s.handle(KeyAction.EngineKey(0x20))
-        assertFalse("space should commit the top candidate", h.joined.isEmpty())
+        assertEquals("你", h.joined)
         assertFalse(s.isComposing)
     }
 
-    // MARK: - Lazy pagination (prefetch must not move the engine's page)
+    // ---- Lazy loading -----------------------------------------------------
+    //
+    // Under the old page-based ABI, prefetching moved the engine's only cursor,
+    // which doubled as the commit anchor — so the strip had to jump the engine
+    // back or space would commit a candidate the user wasn't looking at. Reads
+    // are pure now, but the *property* is what matters, so these stay.
 
-    /**
-     * Regression: engine auto-commits (space, drill-in, punctuation fallback)
-     * act on the first option of the engine's CURRENT page. Prefetching pages
-     * for the strip must park the engine back on the visible page, or space
-     * commits a candidate the user isn't looking at.
-     */
     @Test
     fun spaceCommitsFirstVisibleCandidateAfterPrefetch() {
         val (s, h) = makeSession()
-        s.handle(KeyAction.EngineKey(ascii('a'))) // 'a' has > 9 candidates → multi-page
-        assertTrue("test needs a multi-page code", s.snapshot.totalPages > 1)
-        val firstVisible = s.snapshot.options.first().value
-        assertTrue("prefetch should return a page", s.loadMoreCandidates() != null)
+        s.handle(KeyAction.EngineKey(ascii('b')))
+        val firstVisible = s.snapshot.candidates.first().value
+        assertNotNull("prefetch should return candidates", s.loadMoreCandidates())
+        assertNotNull(s.loadMoreCandidates())
         s.handle(KeyAction.EngineKey(0x20))
         assertEquals(firstVisible, h.joined)
     }
@@ -167,42 +197,74 @@ class InputSessionTest {
     @Test
     fun insertLiteralCommitsFirstVisibleCandidateAfterPrefetch() {
         val (s, h) = makeSession()
-        s.handle(KeyAction.EngineKey(ascii('a')))
-        val firstVisible = s.snapshot.options.first().value
+        s.handle(KeyAction.EngineKey(ascii('b')))
+        val firstVisible = s.snapshot.candidates.first().value
         s.loadMoreCandidates()
         s.insertLiteral("。")
         assertEquals(firstVisible + "。", h.joined)
     }
 
     /**
-     * Prefetch feeds an append-only strip whose first page stays on screen, so
-     * it must not touch the published snapshot.
+     * The bar appends prefetched candidates itself and keeps what's on screen,
+     * so a prefetch must extend the loaded list without re-rendering it.
      */
     @Test
-    fun prefetchLeavesSnapshotUntouched() {
+    fun prefetchAppendsWithoutFiringOnChange() {
         val (s, _) = makeSession()
-        s.handle(KeyAction.EngineKey(ascii('a')))
-        val before = s.snapshot
-        s.loadMoreCandidates()
-        assertEquals(before, s.snapshot)
+        s.handle(KeyAction.EngineKey(ascii('b')))
+        val before = s.snapshot.candidates
+
+        var calls = 0
+        s.onChange = { calls++ }
+        val more = s.loadMoreCandidates()
+
+        assertEquals("prefetch must not re-render the bar", 0, calls)
+        assertNotNull(more)
+        // The already-shown prefix is unchanged; the new candidates are appended.
+        assertEquals(before, s.snapshot.candidates.take(before.size))
+        assertEquals(before.size + more!!.size, s.snapshot.candidates.size)
     }
 
-    /** Consecutive prefetches walk each remaining page exactly once, then stop. */
+    /**
+     * Consecutive prefetches surface each remaining candidate exactly once,
+     * then stop. 'a' is small enough (29 candidates) to walk exhaustively.
+     */
     @Test
-    fun loadMoreWalksAllPagesThenStops() {
+    fun loadMoreWalksEveryCandidateThenStops() {
         val (s, _) = makeSession()
         s.handle(KeyAction.EngineKey(ascii('a')))
         val total = s.snapshot.optionsCount
-        val totalPages = s.snapshot.totalPages
-        var seen = s.snapshot.options.size
+        assertTrue(
+            "test needs a code with more candidates than one window",
+            total > s.snapshot.candidates.size,
+        )
+
         var fetches = 0
         while (true) {
             val more = s.loadMoreCandidates() ?: break
-            seen += more.size
+            assertFalse(more.isEmpty())
             fetches++
-            assertTrue("prefetch ran past the page count", fetches <= totalPages)
+            assertTrue("prefetch ran past the candidate count", fetches <= total)
         }
-        assertEquals("each remaining page should be fetched exactly once", totalPages - 1, fetches)
-        assertEquals("prefetch should surface every candidate exactly once", total, seen)
+        assertTrue(fetches > 0)
+        assertEquals(
+            "prefetch should surface every candidate exactly once",
+            total,
+            s.snapshot.candidates.size,
+        )
+        assertNull(s.loadMoreCandidates())
+    }
+
+    /** A new keystroke resets the loaded list — the strip starts over. */
+    @Test
+    fun newKeystrokeResetsTheLoadedList() {
+        val (s, _) = makeSession()
+        s.handle(KeyAction.EngineKey(ascii('b')))
+        s.loadMoreCandidates()
+        val grown = s.snapshot.candidates.size
+
+        s.handle(KeyAction.EngineKey(ascii('a')))
+        assertTrue(s.snapshot.candidates.size < grown)
+        assertEquals("ba", s.rawBuffer)
     }
 }

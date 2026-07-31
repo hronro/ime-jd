@@ -39,7 +39,7 @@ class KeyboardPreviewActivity : AppCompatActivity() {
         const val EXTRA_TYPE = "jd.type"     // keys fed into the session at launch
     }
 
-    private val session = InputSession(pageSize = 16) // mirrors JdInputMethodService
+    private val session = InputSession() // mirrors JdInputMethodService
     private val host = FieldHost()
 
     override fun onCreate(savedInstanceState: Bundle?) {

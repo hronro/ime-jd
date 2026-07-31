@@ -16,27 +16,45 @@ interface KeyboardHost {
     fun deleteBackward()
 }
 
-class InputSession(pageSize: Byte = 9) {
-    private val engine = Engine(pageSize)
+/**
+ * What the keyboard needs in order to draw: the candidates loaded so far (an
+ * append-only prefix of the engine's list), how many exist in total, and the
+ * in-flight raw code.
+ */
+data class SessionSnapshot(
+    val candidates: List<Candidate> = emptyList(),
+    val optionsCount: Int = 0,
+    val rawBuffer: String = "",
+) {
+    val isComposing: Boolean get() = rawBuffer.isNotEmpty()
+
+    /**
+     * Whether the bar should offer the expand-to-grid affordance. Keyed to a
+     * fixed count so it doesn't vanish for mid-size candidate sets if the fetch
+     * window changes.
+     */
+    val canExpand: Boolean get() = optionsCount > 9
+
+    companion object {
+        @JvmField
+        val EMPTY = SessionSnapshot()
+    }
+}
+
+class InputSession {
+    private val engine = Engine()
     var host: KeyboardHost? = null
 
     /** The in-flight raw code (e.g. "js"), shown in the keyboard's candidate bar. */
     var rawBuffer: String = ""
         private set
 
-    /** Candidates/commit for the current page. `options` is this page only. */
-    var snapshot: QuerySnapshot = QuerySnapshot.EMPTY
+    /** Candidates loaded so far, plus the totals the UI needs. */
+    var snapshot: SessionSnapshot = SessionSnapshot.EMPTY
         private set
 
-    /**
-     * Highest engine page fetched into the UI's append-only candidate strip.
-     * Runs ahead of `snapshot.currentPage` during lazy pagination — see
-     * `loadMoreCandidates`, which parks the engine back on the snapshot's page.
-     */
-    private var lastFetchedPage: Int = 0
-
     /** Fired after every state change. UI re-renders the composing label + candidates. */
-    var onChange: ((snapshot: QuerySnapshot, rawBuffer: String) -> Unit)? = null
+    var onChange: ((snapshot: SessionSnapshot) -> Unit)? = null
 
     val isComposing: Boolean get() = rawBuffer.isNotEmpty()
 
@@ -49,47 +67,48 @@ class InputSession(pageSize: Byte = 9) {
             is KeyAction.Backspace -> backspace()
             is KeyAction.Escape -> cancelAndReset()
             is KeyAction.CommitRaw -> commitRaw()
-            is KeyAction.PageNext -> applyEngineResult(engine.nextPage())
-            is KeyAction.PagePrev -> applyEngineResult(engine.prevPage())
             is KeyAction.SelectIdx -> selectVisible(action.idx)
+            // The on-screen keyboard binds no page keys — the candidate bar
+            // scrolls instead, pulling more in via `loadMoreCandidates`. These
+            // cases exist for the desktop key gate that shares `KeyAction`.
+            is KeyAction.PageNext, is KeyAction.PagePrev -> {}
         }
     }
 
     // MARK: - Engine key
 
     private fun engineKey(byte: Byte) {
-        val snap = engine.pressKey(byte)
+        val state = engine.pressKey(byte)
 
-        val commit = snap.commit
+        val commit = state.commit
         if (commit != null) {
             // Commit goes to the host whether or not a composition was active.
             host?.insertText(commit)
             rawBuffer = ""
-            if (snap.options.isEmpty()) {
+            if (state.optionsCount == 0) {
                 // Plain commit (and drill-in produced nothing) — end the composition.
                 engine.reset()
-                setSnapshot(QuerySnapshot.EMPTY)
             } else {
-                // Drilled-in: committed text + a fresh composition started by `byte`.
+                // Drilled in: committed text + a fresh composition started by `byte`.
                 appendToBuffer(byte)
-                setSnapshot(snap)
             }
+            reload()
             return
         }
 
-        if (snap.options.isNotEmpty()) {
+        if (state.optionsCount > 0) {
             appendToBuffer(byte)
-            setSnapshot(snap)
+            reload()
             return
         }
 
-        // Neither commit nor options. For printable ASCII this is effectively
+        // Neither commit nor candidates. For printable ASCII this is effectively
         // unreachable (the engine's fallback commits the byte), but insert the
         // literal byte so an on-screen tap is never silently dropped.
         host?.insertText(byteToString(byte))
         rawBuffer = ""
         engine.reset()
-        setSnapshot(QuerySnapshot.EMPTY)
+        reload()
     }
 
     // MARK: - Backspace
@@ -100,45 +119,43 @@ class InputSession(pageSize: Byte = 9) {
             host?.deleteBackward()
             return
         }
-        val snap = engine.backspace()
+        engine.backspace()
         rawBuffer = rawBuffer.dropLast(1)
         if (rawBuffer.isEmpty()) {
             engine.reset()
-            setSnapshot(QuerySnapshot.EMPTY)
-        } else {
-            applyEngineResult(snap)
         }
+        reload()
     }
 
     // MARK: - Commit / cancel
 
-    /** Commit a candidate the user tapped on the current page. */
+    /** Commit a candidate the user tapped in the bar or grid. */
     private fun selectVisible(idx: Int) {
-        if (idx < 0 || idx >= snapshot.options.size) return
-        commitCandidate(snapshot.options[idx].value)
+        if (idx < 0 || idx >= snapshot.candidates.size) return
+        commitCandidate(snapshot.candidates[idx].value)
     }
 
-    /** Commit an explicit candidate value (used by the paginated candidate bar/grid). */
+    /** Commit an explicit candidate value (used by the candidate bar/grid). */
     fun commitCandidate(value: String) {
         host?.insertText(value)
         rawBuffer = ""
         engine.reset()
-        setSnapshot(QuerySnapshot.EMPTY)
+        reload()
     }
 
     /**
      * Insert a digit or Chinese punctuation directly, bypassing libjd's
      * punctuation table. Matches libjd's behavior: while composing, first commit
-     * the top candidate exactly as the engine's space does (option 0), then
-     * append the literal; otherwise insert it directly.
+     * the top candidate exactly as the engine's space does, then append the
+     * literal; otherwise insert it directly.
      */
     fun insertLiteral(s: String) {
         if (isComposing) {
-            val snap = engine.pressKey(0x20) // space: commit option 0, append nothing
-            snap.commit?.let { host?.insertText(it) }
+            val state = engine.pressKey(0x20) // space: commit the anchor, append nothing
+            state.commit?.let { host?.insertText(it) }
             rawBuffer = ""
             engine.reset()
-            setSnapshot(QuerySnapshot.EMPTY)
+            reload()
         }
         host?.insertText(s)
     }
@@ -150,34 +167,35 @@ class InputSession(pageSize: Byte = 9) {
             rawBuffer = ""
         }
         engine.reset()
-        setSnapshot(QuerySnapshot.EMPTY)
+        reload()
     }
 
     /** Drop the in-flight composition without committing (focus change / dismiss). */
     fun cancelAndReset() {
         rawBuffer = ""
         engine.reset()
-        setSnapshot(QuerySnapshot.EMPTY)
+        reload()
     }
 
     /**
-     * For the candidate bar's lazy pagination: fetch the page after the last
-     * fetched one and return its candidates WITHOUT firing `onChange` (the bar
-     * appends them itself, keeping already-shown candidates). Returns null at
-     * the last page.
+     * For the candidate bar's lazy scrolling: fetch the next window of
+     * candidates and return them WITHOUT firing `onChange` (the bar appends them
+     * itself, keeping already-shown candidates). Returns null at the end of the
+     * list.
      *
-     * The engine is parked back on `snapshot.currentPage` before returning:
-     * engine auto-commits (space, drill-in, punctuation fallback) act on the
-     * first option of the engine's CURRENT page, so leaving the paginator on a
-     * prefetched page would commit a candidate the user isn't looking at.
+     * No bookkeeping beyond remembering how far we've got: engine reads are
+     * pure, so fetching ahead cannot change what the engine's automatic commits
+     * resolve to. (The page-based ABI this replaced needed a jump-back dance
+     * here, and getting it wrong committed a candidate the user wasn't looking
+     * at.)
      */
     fun loadMoreCandidates(): List<Candidate>? {
-        if (lastFetchedPage >= snapshot.totalPages) return null
-        val next = engine.jumpToPage(lastFetchedPage + 1)
-        engine.jumpToPage(snapshot.currentPage)
-        if (next.options.isEmpty()) return null
-        lastFetchedPage = next.currentPage
-        return next.options
+        val loaded = snapshot.candidates.size
+        if (loaded >= snapshot.optionsCount) return null
+        val more = engine.readRange(loaded, WINDOW_SIZE)
+        if (more.isEmpty()) return null
+        snapshot = snapshot.copy(candidates = snapshot.candidates + more)
+        return more
     }
 
     /** Release the engine context. */
@@ -185,17 +203,32 @@ class InputSession(pageSize: Byte = 9) {
 
     // MARK: - Helpers
 
-    private fun applyEngineResult(snap: QuerySnapshot) = setSnapshot(snap)
-
     private fun appendToBuffer(byte: Byte) {
         rawBuffer += byteToString(byte)
     }
 
     private fun byteToString(byte: Byte): String = (byte.toInt() and 0xFF).toChar().toString()
 
-    private fun setSnapshot(snap: QuerySnapshot) {
-        snapshot = snap
-        lastFetchedPage = snap.currentPage
-        onChange?.invoke(snap, rawBuffer)
+    /** Re-read the leading window from the engine and publish it. */
+    private fun reload() {
+        val state = engine.state
+        snapshot = SessionSnapshot(
+            candidates = if (state.optionsCount > 0) {
+                engine.readRange(0, WINDOW_SIZE)
+            } else {
+                emptyList()
+            },
+            optionsCount = state.optionsCount,
+            rawBuffer = rawBuffer,
+        )
+        onChange?.invoke(snapshot)
+    }
+
+    companion object {
+        /**
+         * How many candidates each fetch pulls in. The bar shows a handful and
+         * asks for more as it scrolls.
+         */
+        private const val WINDOW_SIZE = 16
     }
 }

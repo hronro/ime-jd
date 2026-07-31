@@ -12,7 +12,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.hronro.imejd.engine.Candidate
 import com.hronro.imejd.engine.KeyAction
-import com.hronro.imejd.engine.QuerySnapshot
+import com.hronro.imejd.engine.SessionSnapshot
 
 @SuppressLint("ViewConstructor")
 class KeyboardView(
@@ -70,7 +70,7 @@ class KeyboardView(
         candidateBar.onSelect = { i -> select(i) }
         candidateBar.onExpand = { expandGrid() }
         candidateBar.onNeedMore = { loadMore() }
-        session.onChange = { snap, raw -> renderCandidates(snap, raw) }
+        session.onChange = { snap -> renderCandidates(snap) }
 
         container.addView(
             candidateBar,
@@ -179,13 +179,11 @@ class KeyboardView(
 
     // MARK: - Candidates
 
-    private fun renderCandidates(snap: QuerySnapshot, raw: String) {
-        items = snap.options
-        // Chevron keyed to a fixed count, not totalPages, so the expand affordance
-        // doesn't vanish for mid-size candidate sets when the engine page size grows.
-        candidateBar.reset(raw, items, canExpand = snap.optionsCount > 9)
+    private fun renderCandidates(snap: SessionSnapshot) {
+        items = snap.candidates
+        candidateBar.reset(snap.rawBuffer, items, canExpand = snap.canExpand)
         gridOverlay?.let { grid ->
-            if (raw.isEmpty()) collapseGrid() else grid.setItems(items)
+            if (snap.rawBuffer.isEmpty()) collapseGrid() else grid.setItems(items)
         }
     }
 
