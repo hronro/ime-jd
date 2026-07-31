@@ -54,8 +54,10 @@ struct ElementState {
     /// All candidates across every page, in order. Pre-fetched once per
     /// `sync` so `GetString(i)` is an O(1) slice lookup — modern Win11
     /// Notepad iterates every index on each `UpdateUIElement` callback,
-    /// and round-tripping `jd::jump_to_page` per index was visibly
-    /// stalling fast typists (O(N²) BFS work per keystroke).
+    /// and round-tripping the engine per index was visibly stalling fast
+    /// typists (O(N²) BFS work per keystroke, back when a page read had to
+    /// move the engine's only cursor). Reads are flat and pure now, so the
+    /// pre-fetch is a single `jd::all_candidates()` call.
     all_items: Vec<CandidateItem>,
     /// 1-based, as the engine reports.
     current_page: u32,
@@ -184,7 +186,7 @@ pub fn sync(
     let need_begin = ELEMENT.with(|e| e.borrow().is_none());
 
     let all_items = if should_prefetch_all_pages(need_begin) {
-        collect_all_candidates(current_items, current_page, total_pages)
+        collect_all_candidates(current_items, total_pages)
     } else {
         current_items
     };
@@ -215,11 +217,11 @@ pub fn sync(
 ///   accessibility consumer) — it will iterate every index, so pre-fetch.
 ///   `IS_SHOWN == true` means our overlay popup is doing the rendering;
 ///   hosts in this mode either don't query UIElement at all, or only query
-///   the current page, so we skip the ~`total_pages` engine calls.
+///   the current page, so we skip materializing the whole list.
 ///
-/// Saves the ~120 µs pre-fetch cost on every keystroke after the first for
-/// regular hosts (most of them), while preserving correctness for UI-less
-/// consumers.
+/// The pre-fetch is much cheaper than it used to be — one flat read instead of
+/// a page-by-page walk plus a jump back — but a full list can still be ~12K
+/// candidates for a single-letter code, so the gate is still worth keeping.
 fn should_prefetch_all_pages(need_begin: bool) -> bool {
     if need_begin {
         return true;
@@ -228,40 +230,26 @@ fn should_prefetch_all_pages(need_begin: bool) -> bool {
 }
 
 /// Materialize every candidate across every page. For single-page results
-/// this is just the input; for multi-page results, we walk the engine
-/// through the other pages and stitch them in. The engine is restored to
-/// `current_page` before returning so subsequent page-nav (`prev`/`next`
-/// from the popup or arrow keys) operates from the user-visible page.
+/// this is just the input; otherwise it's one flat read.
+///
+/// This used to walk the engine page by page and then jump back, because the
+/// engine's paginator doubled as its commit anchor. It no longer does: reads
+/// are pure, so a single `all_candidates()` call leaves nothing to restore.
 fn collect_all_candidates(
     current_items: Vec<CandidateItem>,
-    current_page: u32,
     total_pages: u32,
 ) -> Vec<CandidateItem> {
     if total_pages <= 1 {
         return current_items;
     }
 
-    let page_size = PAGE_SIZE as usize;
-    let mut all = Vec::with_capacity(total_pages as usize * page_size);
-
-    for page in 1..=total_pages {
-        if page == current_page {
-            all.extend(current_items.iter().cloned());
-        } else {
-            let result = jd::jump_to_page(page);
-            for opt in result.options {
-                all.push(CandidateItem {
-                    value: opt.value,
-                    hint: opt.hint,
-                });
-            }
-        }
-    }
-
-    // Restore the engine cursor to the page our popup is showing so
-    // subsequent next/prev calls navigate relative to it.
-    let _ = jd::jump_to_page(current_page);
-    all
+    jd::all_candidates()
+        .into_iter()
+        .map(|c| CandidateItem {
+            value: c.value,
+            hint: c.hint,
+        })
+        .collect()
 }
 
 fn begin(

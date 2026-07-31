@@ -79,6 +79,6 @@ windows/
     registration.rs   COM + TSF profile/category registration (HKLM)
     guids.rs          CLSID + profile GUID + display attribute GUID
     jd.rs             TSF glue over the shared `jd` crate: UI-thread-local
-                      engine context + PAGE_SIZE (engine tests live in
+                      engine context + page arithmetic (engine tests live in
                       bindings/rust/tests)
 ```
