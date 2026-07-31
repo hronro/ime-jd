@@ -9,15 +9,49 @@ import { JdModule } from "jd";
 const wasm = await fetch(new URL("./jd.wasm", import.meta.url));
 const jd = await JdModule.instantiate(wasm);
 
-const engine = jd.createEngine(9); // page size (candidates per page)
+// Candidates drawn at once — a frontend choice. The engine has no page concept.
+const PAGE = 9;
+
+const draw = (window) =>
+  window.forEach((c, i) =>
+    console.log(c.hint ? `${i + 1}. ${c.value} 〔${c.hint}〕` : `${i + 1}. ${c.value}`),
+  );
+
+const engine = jd.createEngine();
 try {
-  engine.pressKey("a".charCodeAt(0)); // -> { options: [...], currentPage: 1, ... }
-  const committed = engine.pressKey(" ".charCodeAt(0)); // -> { commit: "那", ... }
-  console.log(committed.commit);
+  let typed = "";
+
+  // Feed one ASCII byte at a time. A keystroke may commit text, may open or
+  // extend a candidate list, or both (when the key restarts from the root).
+  for (const ch of "nk") {
+    const state = engine.pressKey(ch.charCodeAt(0));
+    if (state.commit) typed += state.commit;
+  }
+  console.log(engine.snapshot().optionsCount); // 330
+
+  // Read the window you actually draw. Reads are pure — they never change what
+  // the engine's own commits resolve to — so prefetch freely.
+  let start = 0;
+  draw(engine.readRange(start, PAGE)); // 1. 泥   2. 尼 〔a〕   …
+
+  // Turning a page: point the anchor at the first visible candidate, so that
+  // space — and every other commit the engine makes on its own — picks
+  // something that is on screen.
+  if (start + PAGE < engine.snapshot().optionsCount) {
+    start += PAGE;
+    engine.setAnchor(start);
+    draw(engine.readRange(start, PAGE)); // 1. 南柯梦 〔m〕   …
+  }
+
+  // Space commits the anchor candidate and ends the composition.
+  typed += engine.pressKey(" ".charCodeAt(0)).commit;
+  console.log(typed); // 南柯梦
 } finally {
   engine.dispose(); // or: using engine = jd.createEngine()
 }
 ```
+
+Committing a candidate the user clicked needs no engine call — insert `c.value` and then `engine.reset()`. For an append-only candidate strip, keep your own array and read `[loaded, loaded + PAGE)` as it scrolls.
 
 ## Getting the `jd.wasm`
 
@@ -31,9 +65,9 @@ or download the `libjd-<ver>-wasm.wasm.tar.xz` release asset. `JdModule.instanti
 
 ## Design
 
-- **Every returned value is owned data.** The C ABI's pointers are valid only until the next `jd_*` call on the same context (see the pointer-lifetime contract in `core/docs/integration.md`); `Engine` copies `commit` and every candidate `value`/`hint` into JS strings before returning, so a `QuerySnapshot` may be retained freely (load-bearing for pagination).
-- **The wasm32 struct-return (sret) ABI is hidden.** `query_result` is a five-field struct, so the module returns it through a pointer argument; the wrapper passes the core's static `jd_wasm_result_ptr()` buffer and reads the fields back out of linear `memory`. Callers never see this.
-- **`visibleCount`** is the one implementation of the "candidates visible on the current page" remainder math (`optionsCount` is the total across all pages, not the length of the current array) — don't reimplement it.
+- **Everything returned is an owned JS value.** JS strings have to be decoded out of linear memory regardless, so `Engine` does it eagerly for the commit and for each candidate in the window you asked for. Ask for the window you draw: `readRange(start, count)` is a pure read that never changes what the engine's automatic commits resolve to, so a candidate strip can prefetch freely and call `setAnchor` when the user's view moves.
+- **Candidates are addressed by flat index**, not by page — there is no `pageSize`, and no remainder math to get wrong. `readRange` returns fewer than asked at the end of the list.
+- **The wasm plumbing is hidden.** No export returns a struct by value, so there is no sret shim; state lives at the fixed address `jd_state_ptr(ctx)` returns, and larger `readRange` windows are decoded in chunks through the context's own scratch buffer (a JS host cannot allocate inside linear memory). `JdModule.fromInstance` verifies the module's struct layout against this binding's hand-written offsets via `jd_abi_layout` and throws on a mismatch.
 - **One module, many engines.** The embedded trie/punctuation tables are parsed once and shared read-only across every `Engine` of a `JdModule`; distinct engines have independent composition state. A single `Engine` must not be driven concurrently with itself.
 - **`dispose()` / `Symbol.dispose`** release the context (`jd_deinit`); idempotent, and poisons the engine so later calls throw. JS has no deterministic destructor, so release is explicit (a `using` binding works).
 
@@ -46,4 +80,4 @@ npm test              # pretest builds core to wasm, then `node --test`
 npm run typecheck     # tsc validates index.d.ts against the test (dev dep)
 ```
 
-`node --test` runs the plain-JS tests directly. They link the real dictionary and cover the FFI smoke contract, result ownership (retention across later calls), pagination consistency, punctuation, context independence, and the dispose lifecycle. Set `JD_WASM` to a prebuilt module to skip the zig build.
+`node --test` runs the plain-JS tests directly. They link the real dictionary and cover the FFI smoke contract, result ownership (retention across later calls), chunked reads larger than the scratch buffer, window clipping, the anchor's independence from reads, punctuation, context independence, and the dispose lifecycle. Set `JD_WASM` to a prebuilt module to skip the zig build.

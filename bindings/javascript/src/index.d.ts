@@ -9,34 +9,23 @@ export interface Candidate {
 }
 
 /**
- * Owned snapshot of one engine result. See `core/include/jd.h` for the four
- * state shapes (candidates / committed / committed-and-drilled-in / empty).
- * `options` holds the current page only; `optionsCount` is the total across
- * all pages.
+ * The engine's state after an operation. See `core/include/jd.h` for the four
+ * shapes it can encode (candidates / committed / committed-and-drilled-in /
+ * empty).
+ *
+ * `commit` is the last operation's committed text, already joined from the
+ * ABI's segments. `optionsCount` is the total number of candidates in flight —
+ * read them with {@link Engine.readRange}. `anchorIndex` is the candidate the
+ * engine's own automatic commits resolve against.
  */
 export interface QuerySnapshot {
   readonly commit: string | null;
-  readonly options: readonly Candidate[];
   readonly optionsCount: number;
-  readonly totalPages: number;
-  readonly currentPage: number;
+  readonly anchorIndex: number;
 }
 
-/** The empty / no-composition result. */
+/** The empty / no-composition state. */
 export const EMPTY_SNAPSHOT: QuerySnapshot;
-
-/**
- * Number of candidates materialized in the current page's `options` array.
- * `optionsCount` is the total across all pages, not the length of the current
- * array; every non-last page is `pageSize` long and the last holds the
- * remainder. Returns 0 for the empty / committed shapes and for `pageSize` 0.
- */
-export function visibleCount(
-  optionsCount: number,
-  currentPage: number,
-  totalPages: number,
-  pageSize: number,
-): number;
 
 /** Anything {@link JdModule.instantiate} can turn into an instance. */
 export type WasmSource =
@@ -56,30 +45,25 @@ export class JdModule {
   /**
    * Instantiate from wasm bytes, a compiled `WebAssembly.Module`, or a `fetch`
    * `Response` (streaming, with an `arrayBuffer()` fallback). The reactor
-   * imports nothing, so `imports` defaults to `{}`.
+   * imports nothing, so `imports` defaults to `{}`. Throws if the module's ABI
+   * layout doesn't match this binding.
    */
   static instantiate(source: WasmSource, imports?: WebAssembly.Imports): Promise<JdModule>;
 
   /** Wrap an already-instantiated libjd instance. */
   static fromInstance(instance: WebAssembly.Instance): JdModule;
 
-  /**
-   * Create a new input context. `pageSize` is the candidate page length
-   * (1..=255; defaults to 9). Throws on a bad `pageSize` or allocation failure.
-   */
-  createEngine(pageSize?: number): Engine;
+  /** Create a new input context. Throws on allocation failure. */
+  createEngine(): Engine;
 }
 
 /**
  * One input context — the JS analog of the Rust `JdContext` / Swift `Engine`.
- * Every method returns a deep-copied {@link QuerySnapshot} that is safe to keep.
- * Not safe to call concurrently with itself.
+ * Everything it returns is an owned JS value. Not safe to call concurrently
+ * with itself.
  */
 export class Engine {
   private constructor();
-
-  /** The candidate page length this engine was created with. */
-  get pageSize(): number;
 
   /** True once {@link Engine.dispose} has run; every other call then throws. */
   get disposed(): boolean;
@@ -90,20 +74,27 @@ export class Engine {
    */
   pressKey(key: number): QuerySnapshot;
 
-  /** Advance the active candidate paginator by one page (no-op at the last). */
-  nextPage(): QuerySnapshot;
-
-  /** Step the active candidate paginator back one page (no-op at the first). */
-  prevPage(): QuerySnapshot;
-
-  /** Set the paginator's current page directly (1-based; out-of-range ignored). */
-  jumpToPage(page: number): QuerySnapshot;
-
   /** Undo the most recent trie descent (or close a punctuation window). */
   backspace(): QuerySnapshot;
 
-  /** Drop the in-flight composition without committing. Keeps the engine alive. */
-  reset(): void;
+  /** Drop the in-flight composition and any recorded commit. */
+  reset(): QuerySnapshot;
+
+  /**
+   * Point the anchor at candidate `index`, so the engine's automatic commits
+   * follow what the user is looking at. Out-of-range indices are ignored.
+   */
+  setAnchor(index: number): QuerySnapshot;
+
+  /** The current state, without touching the engine. */
+  snapshot(): QuerySnapshot;
+
+  /**
+   * Read the candidates at `[start, start + count)`, returning fewer at the end
+   * of the list and none when nothing is in flight. A pure read: it never moves
+   * the anchor, so a candidate strip can prefetch freely.
+   */
+  readRange(start: number, count: number): Candidate[];
 
   /**
    * Release the engine's context (`jd_deinit`). Idempotent; poisons the engine

@@ -8,86 +8,71 @@
  * ABI so callers work with strings and plain objects instead of pointers.
  *
  * This is plain ES-module JavaScript; the public types live in the sibling
- * `index.d.ts`, so there is no build step. Two ABI details are hidden here so
- * no consumer has to know them:
+ * `index.d.ts`, so there is no build step.
  *
- *  1. Struct returns. `query_result` has five fields, so the wasm32 C ABI
- *     returns it through an implicit struct-return pointer (sret): each
- *     result-returning `jd_*` export is `fn(sret_ptr, ...args) void`. The
- *     module exports `jd_wasm_result_ptr()` — the address of one static result
- *     buffer — which we pass as that pointer on every call and read the five
- *     u32 fields back out of linear memory.
- *  2. Borrowed pointers. Every pointer a result carries (`commit`, each
- *     candidate `value`/`hint`) is valid only until the next `jd_*` call on the
- *     same context. `#readSnapshot` copies them all into JS strings before
- *     returning, so a snapshot may be retained across later calls (load-bearing
- *     for candidate pagination), exactly like the Rust and Swift bindings.
+ * Two things are worth knowing about the shape of the ABI:
+ *
+ *  1. No export returns a struct by value, so there is no wasm sret shim to
+ *     work around. Results live in a per-context state block whose address
+ *     (`jd_state_ptr`) is fixed for the context's lifetime; we read it once
+ *     and then just read fields out of linear memory after each call.
+ *  2. Candidates are addressed by flat index, not by page. `readRange` is a
+ *     pure read: it never changes what the engine's automatic commits resolve
+ *     to, so you can prefetch a candidate strip as far ahead as you like. Tell
+ *     the engine what the user actually sees with `setAnchor`.
+ *
+ * A JS host has no allocator inside linear memory, so `readRange` borrows the
+ * context's own scratch buffer (`jd_scratch_ptr`) and decodes out of it in
+ * chunks. Everything this module hands back is already an owned JS value.
  *
  * One Engine must not be driven from two things at once (the C contract);
- * distinct engines are fully independent even when they share a module. This
- * mirrors `bindings/rust` and `bindings/swift`.
+ * distinct engines are fully independent even when they share a module.
  */
 
-// Shared UTF-8 decoder; `fatal: false` mirrors the lossy decode the Rust/Swift
-// bindings use for the (always-valid) engine strings.
+// Shared UTF-8 decoder; `fatal: false` mirrors the lossy decode the Rust and
+// Swift bindings use for the (always-valid) engine strings.
 const decoder = new TextDecoder("utf-8", { fatal: false });
 
-/** The empty / no-composition result (all `jd_*` calls with nothing in flight). */
+/** The state of a context with nothing in flight. */
 export const EMPTY_SNAPSHOT = Object.freeze({
   commit: null,
-  options: Object.freeze([]),
   optionsCount: 0,
-  totalPages: 0,
-  currentPage: 0,
+  anchorIndex: 0,
 });
-
-/**
- * Number of candidates materialized in the current page's `options` array.
- *
- * The C ABI's `optionsCount` is the total across all pages, not the length of
- * the current array (see "Reading `query_result`" in
- * `core/docs/integration.md`): every non-last page is exactly `pageSize` long,
- * and the last page holds the remainder. Returns 0 for the empty / committed
- * shapes (`optionsCount === 0`) and for a degenerate `pageSize` of 0. This is
- * the single source of that remainder math — do not reimplement it.
- *
- * @param {number} optionsCount
- * @param {number} currentPage
- * @param {number} totalPages
- * @param {number} pageSize
- * @returns {number}
- */
-export function visibleCount(optionsCount, currentPage, totalPages, pageSize) {
-  if (optionsCount === 0 || pageSize === 0) return 0;
-  if (currentPage === totalPages) {
-    const rem = optionsCount % pageSize;
-    return rem === 0 ? pageSize : rem;
-  }
-  return pageSize;
-}
 
 const REQUIRED_EXPORTS = [
   "memory",
-  "jd_wasm_result_ptr",
   "jd_init",
+  "jd_deinit",
   "jd_press_key",
-  "jd_next_page",
-  "jd_prev_page",
-  "jd_jump_to_page",
   "jd_backspace",
   "jd_reset",
-  "jd_deinit",
+  "jd_set_anchor",
+  "jd_state_ptr",
+  "jd_scratch_ptr",
+  "jd_read_range",
+  "jd_abi_layout",
 ];
 
-// query_result is 5 × u32 = 20 bytes; query_option is 2 pointers = 8 bytes.
-// wasm32 pointers are 32-bit, so every field is a little-endian u32.
-const COMMIT_OFF = 0;
-const OPTIONS_OFF = 4;
-const OPTIONS_COUNT_OFF = 8;
-const TOTAL_PAGES_OFF = 12;
-const CURRENT_PAGE_OFF = 16;
-const OPTION_SIZE = 8;
+// jd_abi_layout queries (see jd.h).
+const ABI_SIZEOF_STATE = 0;
+const ABI_SIZEOF_OPTION = 1;
+const ABI_HINT_CAP = 2;
+const ABI_SCRATCH_OPTIONS = 3;
+
+// wasm32 layout of `jd_state`: two 4-byte pointers, a byte, 3 bytes of
+// padding, then two u32s. Checked against jd_abi_layout at instantiation.
+const STATE_SIZE = 20;
+const COMMIT_A_OFF = 0;
+const COMMIT_B_OFF = 4;
+const COMMIT_LIT_OFF = 8;
+const OPTIONS_COUNT_OFF = 12;
+const ANCHOR_INDEX_OFF = 16;
+
+// wasm32 layout of `query_option`: a 4-byte pointer then the inline hint.
+const OPTION_SIZE = 12;
 const OPTION_HINT_OFF = 4;
+const HINT_CAP = 8;
 
 function isResponseLike(source) {
   return (
@@ -104,6 +89,14 @@ function readCString(buffer, ptr) {
   // malformed module so a bad pointer can't spin off the end of memory.
   while (end < bytes.length && bytes[end] !== 0) end++;
   return decoder.decode(bytes.subarray(ptr, end));
+}
+
+/** Reads the inline, NUL-padded hint at `ptr`; `null` when empty. */
+function readHint(buffer, ptr) {
+  const bytes = new Uint8Array(buffer, ptr, HINT_CAP);
+  let end = 0;
+  while (end < HINT_CAP && bytes[end] !== 0) end++;
+  return end === 0 ? null : decoder.decode(bytes.subarray(0, end));
 }
 
 async function instantiateResponse(source, imports) {
@@ -130,13 +123,13 @@ async function instantiateResponse(source, imports) {
  */
 export class JdModule {
   #exports;
-  /** Address of the shared static `query_result` sret buffer (see file docs). */
-  #resultPtr;
+  /** Candidate capacity of each context's scratch buffer. */
+  #scratchOptions;
 
   /** @internal — use {@link JdModule.instantiate} or {@link JdModule.fromInstance}. */
-  constructor(exports, resultPtr) {
+  constructor(exports, scratchOptions) {
     this.#exports = exports;
-    this.#resultPtr = resultPtr;
+    this.#scratchOptions = scratchOptions;
   }
 
   /**
@@ -168,51 +161,59 @@ export class JdModule {
         );
       }
     }
-    return new JdModule(exports, exports.jd_wasm_result_ptr());
+
+    // The struct offsets above are hand-written, so confirm they match the
+    // library before we start reading memory through them.
+    const expect = (what, want, label) => {
+      const got = exports.jd_abi_layout(what);
+      if (got !== want) {
+        throw new Error(
+          `libjd ABI mismatch: ${label} is ${got} but this binding expects ${want}`,
+        );
+      }
+    };
+    expect(ABI_SIZEOF_STATE, STATE_SIZE, "sizeof(jd_state)");
+    expect(ABI_SIZEOF_OPTION, OPTION_SIZE, "sizeof(query_option)");
+    expect(ABI_HINT_CAP, HINT_CAP, "JD_HINT_CAP");
+
+    return new JdModule(exports, exports.jd_abi_layout(ABI_SCRATCH_OPTIONS));
   }
 
   /**
-   * Create a new input context. `pageSize` is the candidate page length (the
-   * engine's paginators divide by it, so it must be 1..=255; defaults to 9).
-   * Throws on a bad `pageSize` or if the engine can't allocate its per-context
-   * buffer. Release it with {@link Engine#dispose} (or a `using` binding).
+   * Create a new input context. Throws if the engine can't allocate its
+   * per-context buffer. Release it with {@link Engine#dispose} (or a `using`
+   * binding).
    *
-   * @param {number} [pageSize]
    * @returns {Engine}
    */
-  createEngine(pageSize = 9) {
-    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 255) {
-      throw new RangeError(`pageSize must be an integer in 1..=255, got ${pageSize}`);
-    }
-    const ctx = this.#exports.jd_init(pageSize);
+  createEngine() {
+    const ctx = this.#exports.jd_init();
     if (ctx === 0) throw new Error("jd_init failed (allocation failure)");
-    return new Engine(this.#exports, this.#resultPtr, ctx, pageSize);
+    return new Engine(this.#exports, ctx, this.#scratchOptions);
   }
 }
 
 /**
  * One input context — the JS analog of the Rust `JdContext` / Swift `Engine`.
- * Every method returns a deep-copied snapshot that is safe to keep. Not safe to
- * call concurrently with itself.
+ * Not safe to call concurrently with itself.
  */
 export class Engine {
   #exports;
-  #resultPtr;
-  #pageSize;
   /** The `jd_context *`; set to 0 by {@link Engine#dispose} to poison later use. */
   #ctx;
+  /** Address of this context's state block — fixed for its lifetime. */
+  #statePtr;
+  /** Address and capacity of this context's read scratch. */
+  #scratchPtr;
+  #scratchOptions;
 
   /** @internal — use {@link JdModule#createEngine}. */
-  constructor(exports, resultPtr, ctx, pageSize) {
+  constructor(exports, ctx, scratchOptions) {
     this.#exports = exports;
-    this.#resultPtr = resultPtr;
     this.#ctx = ctx;
-    this.#pageSize = pageSize;
-  }
-
-  /** The candidate page length this engine was created with. */
-  get pageSize() {
-    return this.#pageSize;
+    this.#statePtr = exports.jd_state_ptr(ctx);
+    this.#scratchPtr = exports.jd_scratch_ptr(ctx);
+    this.#scratchOptions = scratchOptions;
   }
 
   /** True once {@link Engine#dispose} has run; every other call then throws. */
@@ -227,46 +228,101 @@ export class Engine {
    * @param {number} key
    */
   pressKey(key) {
-    const ctx = this.#live();
-    this.#exports.jd_press_key(this.#resultPtr, ctx, key & 0xff);
-    return this.#readSnapshot();
-  }
-
-  /** Advance the active candidate paginator by one page (no-op at the last). */
-  nextPage() {
-    const ctx = this.#live();
-    this.#exports.jd_next_page(this.#resultPtr, ctx);
-    return this.#readSnapshot();
-  }
-
-  /** Step the active candidate paginator back one page (no-op at the first). */
-  prevPage() {
-    const ctx = this.#live();
-    this.#exports.jd_prev_page(this.#resultPtr, ctx);
-    return this.#readSnapshot();
-  }
-
-  /**
-   * Set the paginator's current page directly (1-based; out-of-range ignored).
-   *
-   * @param {number} page
-   */
-  jumpToPage(page) {
-    const ctx = this.#live();
-    this.#exports.jd_jump_to_page(this.#resultPtr, ctx, page >>> 0);
-    return this.#readSnapshot();
+    this.#exports.jd_press_key(this.#live(), key & 0xff);
+    return this.snapshot();
   }
 
   /** Undo the most recent trie descent (or close a punctuation window). */
   backspace() {
-    const ctx = this.#live();
-    this.#exports.jd_backspace(this.#resultPtr, ctx);
-    return this.#readSnapshot();
+    this.#exports.jd_backspace(this.#live());
+    return this.snapshot();
   }
 
-  /** Drop the in-flight composition without committing. Keeps the engine alive. */
+  /** Drop the in-flight composition and any recorded commit. */
   reset() {
     this.#exports.jd_reset(this.#live());
+    return this.snapshot();
+  }
+
+  /**
+   * Point the anchor at candidate `index`, so the engine's automatic commits
+   * follow what the user is looking at. Out-of-range indices are ignored.
+   *
+   * @param {number} index
+   */
+  setAnchor(index) {
+    this.#exports.jd_set_anchor(this.#live(), index >>> 0);
+    return this.snapshot();
+  }
+
+  /**
+   * The engine's current state: the commit from the last operation (already
+   * joined into a string, or null), the total candidate count, and the anchor.
+   */
+  snapshot() {
+    this.#live();
+    const buffer = this.#exports.memory.buffer;
+    const view = new DataView(buffer);
+    const s = this.#statePtr;
+
+    const aPtr = view.getUint32(s + COMMIT_A_OFF, true);
+    const bPtr = view.getUint32(s + COMMIT_B_OFF, true);
+    const lit = view.getUint8(s + COMMIT_LIT_OFF);
+
+    let commit = null;
+    if (aPtr !== 0 || bPtr !== 0 || lit !== 0) {
+      commit =
+        (aPtr === 0 ? "" : readCString(buffer, aPtr)) +
+        (bPtr === 0 ? "" : readCString(buffer, bPtr)) +
+        (lit === 0 ? "" : String.fromCharCode(lit));
+    }
+
+    return {
+      commit,
+      optionsCount: view.getUint32(s + OPTIONS_COUNT_OFF, true),
+      anchorIndex: view.getUint32(s + ANCHOR_INDEX_OFF, true),
+    };
+  }
+
+  /**
+   * Read the candidates at `[start, start + count)`. Returns fewer than
+   * `count` at the end of the list, and an empty array when nothing is in
+   * flight. A pure read — it never moves the anchor, so prefetch freely.
+   *
+   * @param {number} start
+   * @param {number} count
+   * @returns {{value: string, hint: string | null}[]}
+   */
+  readRange(start, count) {
+    const ctx = this.#live();
+    const out = [];
+    let at = start >>> 0;
+    let left = count >>> 0;
+
+    // The scratch buffer is a fixed size, so a large request is decoded in
+    // chunks. Each chunk is fully decoded into JS strings before the next
+    // wasm call, so linear memory can't grow (and detach the buffer) mid-copy.
+    while (left > 0) {
+      const want = Math.min(left, this.#scratchOptions);
+      const n = this.#exports.jd_read_range(ctx, at, want, this.#scratchPtr, this.#scratchOptions);
+      if (n === 0) break;
+
+      const buffer = this.#exports.memory.buffer;
+      const view = new DataView(buffer);
+      for (let i = 0; i < n; i++) {
+        const base = this.#scratchPtr + i * OPTION_SIZE;
+        out.push({
+          value: readCString(buffer, view.getUint32(base, true)),
+          hint: readHint(buffer, base + OPTION_HINT_OFF),
+        });
+      }
+
+      at += n;
+      left -= n;
+      if (n < want) break; // hit the end of the list
+    }
+
+    return out;
   }
 
   /**
@@ -284,43 +340,6 @@ export class Engine {
   #live() {
     if (this.#ctx === 0) throw new Error("Engine has been disposed");
     return this.#ctx;
-  }
-
-  /**
-   * Read the sret buffer and deep-copy every borrowed pointer into JS strings.
-   * A single `buffer` snapshot is taken up front: no wasm call runs during a
-   * read, so linear memory can't grow (and detach the buffer) mid-copy.
-   */
-  #readSnapshot() {
-    const buffer = this.#exports.memory.buffer;
-    const view = new DataView(buffer);
-    const ret = this.#resultPtr;
-
-    const commitPtr = view.getUint32(ret + COMMIT_OFF, true);
-    const optionsPtr = view.getUint32(ret + OPTIONS_OFF, true);
-    const optionsCount = view.getUint32(ret + OPTIONS_COUNT_OFF, true);
-    const totalPages = view.getUint32(ret + TOTAL_PAGES_OFF, true);
-    const currentPage = view.getUint32(ret + CURRENT_PAGE_OFF, true);
-
-    const commit = commitPtr === 0 ? null : readCString(buffer, commitPtr);
-
-    const visible = visibleCount(optionsCount, currentPage, totalPages, this.#pageSize);
-    const options = [];
-    // `visible === 0` guards the committed / empty shapes so a stray non-null
-    // pointer can never make us over-read.
-    if (optionsPtr !== 0 && visible > 0) {
-      for (let i = 0; i < visible; i++) {
-        const base = optionsPtr + i * OPTION_SIZE;
-        const valuePtr = view.getUint32(base, true);
-        const hintPtr = view.getUint32(base + OPTION_HINT_OFF, true);
-        options.push({
-          value: readCString(buffer, valuePtr),
-          hint: hintPtr === 0 ? null : readCString(buffer, hintPtr),
-        });
-      }
-    }
-
-    return { commit, options, optionsCount, totalPages, currentPage };
   }
 }
 
