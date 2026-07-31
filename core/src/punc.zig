@@ -135,8 +135,8 @@ pub fn buildBlob(
         .close_offset = 0,
     });
 
-    // Longest candidate/half in bytes; sizes the per-context commit
-    // scratch buffer via the header (see `query.commitScratchCap`).
+    // Longest candidate/half in bytes; feeds the commit bound reported by
+    // `jd_abi_layout(JD_ABI_MAX_COMMIT_LEN)`.
     var max_value_len: u32 = 0;
 
     // ---- Phase 2: emit normals. ----

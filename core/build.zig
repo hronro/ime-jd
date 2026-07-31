@@ -138,9 +138,11 @@ pub fn build(b: *std.Build) void {
         // WebAssembly ships a standalone reactor module (`jd.wasm`) rather
         // than the static/shared libraries the native targets produce.
         // A reactor has no `_start` (`entry = .disabled`); `rdynamic` exports
-        // every `export fn` — the `jd_*` C ABI plus the wasm-only
-        // `jd_wasm_result_ptr` shim — and wasm-lld exports linear `memory` by
-        // default, which is everything a JS host needs. See bindings/js for
+        // every `export fn` — the `jd_*` C ABI, with no wasm-only additions:
+        // no export returns a struct by value, so there is no sret shim to
+        // work around, and `jd_scratch_ptr` covers a JS host's lack of an
+        // allocator inside linear memory. wasm-lld exports linear `memory` by
+        // default, which is everything else a host needs. See bindings/js for
         // the consumer that wraps this module.
         const wasm_reactor = b.addExecutable(.{
             .name = "jd",

@@ -27,8 +27,8 @@ pub const Header = extern struct {
     strings_total: u32,
 
     /// Longest candidate/half string in bytes (excluding the NUL
-    /// terminator) — consumed by `jd_init` to size the per-context commit
-    /// scratch buffer (see `query.commitScratchCap`).
+    /// terminator). Together with the trie's, it sets the upper bound
+    /// reported by `jd_abi_layout(JD_ABI_MAX_COMMIT_LEN)`.
     max_value_len: u32,
 };
 

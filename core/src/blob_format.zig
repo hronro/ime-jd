@@ -45,8 +45,9 @@ pub const Header = extern struct {
     path_buf_cap: u32,
 
     // Longest value string in bytes (excluding the NUL terminator) —
-    // computed in `buildBlob`, consumed by `jd_init` to size the
-    // per-context commit scratch buffer (see `query.commitScratchCap`).
+    // computed in `buildBlob`. It sets the upper bound a consumer can query
+    // via `jd_abi_layout(JD_ABI_MAX_COMMIT_LEN)` when it wants a fixed buffer
+    // big enough to join any commit the engine can produce.
     max_value_len: u32,
 };
 

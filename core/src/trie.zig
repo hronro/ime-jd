@@ -227,8 +227,8 @@ pub fn buildBlob(
         // Key sequences must fit `Context.pressed_keys: [MAX_KEYS_LEN]usize`
         // (query.zig writes it unchecked during trie descent).
         if (e.keys.len > MAX_KEYS_LEN) return error.EntryKeysTooLong;
-        // The longest value sizes the per-context commit scratch buffer
-        // (query.commitScratchCap); track it in the header.
+        // The longest value sets the commit bound reported by
+        // `jd_abi_layout(JD_ABI_MAX_COMMIT_LEN)`; track it in the header.
         max_value_len = @max(max_value_len, std.math.cast(u32, e.value.len) orelse
             return error.EntryValueTooLong);
         var cur: u32 = 0;

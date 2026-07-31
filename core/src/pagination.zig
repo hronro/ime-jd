@@ -1,4 +1,25 @@
+//! Flat-index candidate enumeration.
+//!
+//! Candidates reachable from a trie node (or from a punctuation entry) form
+//! a stable, deterministic sequence. This module exposes that sequence by
+//! **flat index** — `readRange(start, count, out)` — with no notion of a
+//! page. Paging is a frontend concern: a desktop IME asks for
+//! `[(n-1)*9, n*9)`, a mobile candidate strip asks for `[fetched, fetched+9)`.
+//!
+//! Design: the enumeration cursor is a single forward-only BFS walk
+//! (shorter completions first, ties broken by `keyRank`). It is *purely
+//! internal* — moving it has no observable effect, because every option is
+//! written into caller memory and `QueryOption` holds nothing that can
+//! dangle (`value` points into the embedded blob; `hint` is inline bytes).
+//! Reading forward is amortized O(1) per option; reading backward rewinds
+//! and replays, O(start + count).
+//!
+//! Critically, the cursor is NOT the commit anchor. `query.zig` keeps a
+//! separate `anchor_index` for that, so a frontend can enumerate far ahead
+//! without changing what space / `;` commit.
+
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 
 const trie_mod = @import("trie");
@@ -8,123 +29,81 @@ const buildTestTrie = @import("./trie_test_data.zig").buildTestTrie;
 const punc_fmt = @import("punc_format");
 const punc_mod = @import("./punc.zig");
 
+/// Inline hint capacity, including the NUL terminator. A hint is the key
+/// sequence remaining below the queried start node, so it is bounded by
+/// `MAX_KEYS_LEN - 1` (the start node is never the root — see
+/// `NodePagination.init` callers in query.zig). 8 leaves headroom and keeps
+/// `QueryOption` 8-byte aligned on 64-bit.
+pub const HINT_CAP: usize = 8;
+
+comptime {
+    // `jd.h` hard-codes `char hint[8]`. Keep the domain invariant inside
+    // it as a hard compile error — `std.debug.assert` compiles to nothing
+    // in ReleaseFast, and an overflowing hint would silently truncate.
+    if (trie_mod.MAX_KEYS_LEN > HINT_CAP) {
+        @compileError("MAX_KEYS_LEN outgrew the inline hint capacity declared in jd.h (char hint[8])");
+    }
+}
+
+/// One candidate. Both fields are safe to retain indefinitely: `value`
+/// always points into an embedded blob (rodata, immortal for the process),
+/// and `hint` is inline bytes owned by whoever owns this struct. There is
+/// no invalidation rule.
 pub const QueryOption = extern struct {
     value: [*:0]const u8,
-    hint: ?[*:0]const u8,
+    /// NUL-terminated; `hint[0] == 0` means "no hint".
+    hint: [HINT_CAP]u8,
+
+    pub fn hintSlice(self: *const QueryOption) ?[]const u8 {
+        if (self.hint[0] == 0) return null;
+        return std.mem.sliceTo(&self.hint, 0);
+    }
+
+    pub fn setHint(self: *QueryOption, bytes: []const u8) void {
+        std.debug.assert(bytes.len < HINT_CAP);
+        @memcpy(self.hint[0..bytes.len], bytes);
+        @memset(self.hint[bytes.len..], 0);
+    }
+
+    pub fn clearHint(self: *QueryOption) void {
+        @memset(&self.hint, 0);
+    }
 };
 
-pub fn expectEqualQueryOption(expected: QueryOption, actual: QueryOption) !void {
-    const expected_value_len = std.mem.len(expected.value);
-    const actual_value_len = std.mem.len(actual.value);
-    if (expected_value_len != actual_value_len) {
-        std.debug.print("The length of `value` field is not equal: {d} != {d}\n", .{ expected_value_len, actual_value_len });
-        return error.TestExpectedEqual;
-    }
-
-    const expected_value = expected.value[0..expected_value_len];
-    const actual_value = actual.value[0..actual_value_len];
-    if (!std.mem.eql(u8, expected_value, actual_value)) {
-        std.debug.print("The `value` field is not equal: \"{s}\" != \"{s}\"\n", .{ expected_value, actual_value });
-        return error.TestExpectedEqual;
-    }
-
-    if (expected.hint) |eh| {
-        if (actual.hint) |ah| {
-            const expected_hint_len = std.mem.len(eh);
-            const actual_hint_len = std.mem.len(ah);
-            if (expected_hint_len != actual_hint_len) {
-                std.debug.print("The length of `hint` field is not equal: {d} != {d}\n", .{ expected_hint_len, actual_hint_len });
-                return error.TestExpectedEqual;
-            }
-
-            const expected_hint = eh[0..expected_hint_len];
-            const actual_hint = ah[0..actual_hint_len];
-            if (!std.mem.eql(u8, expected_hint, actual_hint)) {
-                std.debug.print("The `hint` field is not equal: \"{s}\" != \"{s}\"\n", .{ expected_hint, actual_hint });
-                return error.TestExpectedEqual;
-            }
-        } else {
-            std.debug.print("The `hint` field is expected not to be null but actually is.\n", .{});
-            return error.TestExpectedEqual;
-        }
-    } else {
-        if (actual.hint) |_| {
-            std.debug.print("The `hint` field is expected to be null but actually is not.\n", .{});
-            return error.TestExpectedEqual;
-        }
-    }
-}
-
-pub fn expectEqualQueryOptionSlice(expected: []const QueryOption, actual: []const QueryOption) !void {
-    if (expected.len != actual.len) {
-        std.debug.print("The length of slice is not equal: {d} != {d}\n", .{ expected.len, actual.len });
-        return error.TestExpectedEqual;
-    }
-
-    for (expected, actual, 0..) |expected_item, actual_item, index| {
-        expectEqualQueryOption(expected_item, actual_item) catch |e| {
-            std.debug.print("The {d}th item is not equal.\n", .{index + 1});
-            return e;
-        };
-    }
-}
-
-pub fn expectEqualQueryOptionManyItemPtr(expected: [*]const QueryOption, actual: [*]const QueryOption, len: u8) !void {
-    for (0..len) |index| {
-        expectEqualQueryOption(expected[index], actual[index]) catch |e| {
-            std.debug.print("The {d}th item is not equal.\n", .{index + 1});
-            return e;
-        };
-    }
-}
+/// Test-only instrumentation: counts consumed values so a test can prove a
+/// forward scan touches each candidate exactly once (i.e. that the cursor
+/// never replays). Folded away in non-test builds.
+pub var consume_calls: usize = 0;
 
 /// One entry in the BFS frontier. `path_start`/`path_len` index into the
 /// shared `path_buf`, giving the key sequence from the queried start node
-/// down to this entry's node. Hint strings are materialized on demand from
-/// this path when a value is emitted.
+/// down to this entry's node. Hints are materialized from this path when a
+/// value is emitted.
 pub const FrontierEntry = struct {
     node: *const Node,
     path_start: u32,
     path_len: u8,
 };
 
-/// Lazy paginator over the values reachable from a given trie node, in BFS
-/// order (shorter completions first, ties broken by `keyRank`).
-///
-/// Design: pagination state is a single forward-only BFS cursor plus the
-/// most-recently-materialized page. `nextPage`/`prevPage` are pure integer
-/// bumps on `current_page`; all real work happens lazily in `getOptions`.
-/// If the user navigates backwards, the cursor is rewound and replayed from
-/// the start. The replay cost is O(current_page × page_size), which is
-/// invisible at IME interaction speeds.
 /// Pre-allocated buffers a `NodePagination` borrows. The caller owns the
-/// memory and is responsible for keeping it valid for the paginator's
-/// lifetime. Sizes are dictated by `Trie.frontier_cap` / `Trie.path_buf_cap`
-/// and the chosen page_size; in production these come from the per-context
-/// buffer carved by `jd_init`.
+/// memory and keeps it valid for the paginator's lifetime. Sizes come from
+/// `Trie.frontier_cap` / `Trie.path_buf_cap`; in production they are carved
+/// by `jd_init`.
 pub const Buffers = struct {
     frontier: []FrontierEntry,
     path_buf: []u8,
-    page_fba: *std.heap.FixedBufferAllocator,
 };
 
 pub const NodePagination = struct {
     const Self = @This();
 
-    /// Backs the materialized current page (options array + hint strings).
-    /// Reset before each materialization, so old page memory is reclaimed.
-    page_fba: *std.heap.FixedBufferAllocator,
-
     trie: *const Trie,
     start_node: *const Node,
-    page_size: u8,
-    total_pages: u32,
-    current_page: u32,
 
-    /// BFS cursor — together (frontier, frontier_head, skipped) identify
-    /// the next value to emit. `bfs_page` is the page that the cursor will
-    /// emit next.
-    bfs_page: u32,
+    /// BFS cursor. `cursor_index` is the flat index of the next value to be
+    /// emitted; together with (frontier, frontier_head, skipped) it fully
+    /// identifies the cursor position.
+    cursor_index: u32,
     frontier: []FrontierEntry,
     frontier_len: usize,
     frontier_head: usize,
@@ -132,83 +111,84 @@ pub const NodePagination = struct {
     path_buf_len: usize,
     skipped: u8,
 
-    /// Cached page contents for `cached_page`, allocated in `page_fba`.
-    /// `cached_page == 0` means no page is currently materialized.
-    cached_options: []QueryOption,
-    cached_page: u32,
-
-    pub fn init(buffers: Buffers, trie: *const Trie, node: *const Node, page_size: u8) Self {
-        const total_pages: u32 = (node.count() + page_size - 1) / page_size;
-        buffers.frontier[0] = .{
-            .node = node,
-            .path_start = 0,
-            .path_len = 0,
-        };
+    pub fn init(buffers: Buffers, trie: *const Trie, node: *const Node) Self {
+        buffers.frontier[0] = .{ .node = node, .path_start = 0, .path_len = 0 };
         return .{
-            .page_fba = buffers.page_fba,
             .trie = trie,
             .start_node = node,
-            .page_size = page_size,
-            .total_pages = total_pages,
-            .current_page = 1,
-            .bfs_page = 1,
+            .cursor_index = 0,
             .frontier = buffers.frontier,
             .frontier_len = 1,
             .frontier_head = 0,
             .path_buf = buffers.path_buf,
             .path_buf_len = 0,
             .skipped = 0,
-            .cached_options = &.{},
-            .cached_page = 0,
         };
     }
 
-    pub fn nextPage(self: *Self) void {
-        if (self.current_page < self.total_pages) self.current_page += 1;
+    pub fn totalOptions(self: *const Self) u32 {
+        return self.start_node.count();
     }
 
-    pub fn prevPage(self: *Self) void {
-        if (self.current_page > 1) self.current_page -= 1;
-    }
-
-    /// Random-access page jump. Like `nextPage`/`prevPage`, out-of-range
-    /// requests are silently ignored — callers can pass any `u32` without
-    /// guarding the bounds themselves.
-    pub fn jumpToPage(self: *Self, page: u32) void {
-        if (page >= 1 and page <= self.total_pages) self.current_page = page;
-    }
-
-    pub fn getOptions(self: *Self) []const QueryOption {
-        if (self.cached_page == self.current_page) return self.cached_options;
-
-        if (self.current_page < self.bfs_page) self.rewindBFS();
-        while (self.bfs_page < self.current_page) self.skipOnePage();
-
-        self.page_fba.reset();
-        self.cached_options = self.materializeOnePage();
-        self.cached_page = self.current_page;
-        return self.cached_options;
-    }
-
-    fn rewindBFS(self: *Self) void {
-        self.frontier[0] = .{
-            .node = self.start_node,
-            .path_start = 0,
-            .path_len = 0,
-        };
+    fn rewind(self: *Self) void {
+        self.frontier[0] = .{ .node = self.start_node, .path_start = 0, .path_len = 0 };
         self.frontier_len = 1;
         self.path_buf_len = 0;
         self.frontier_head = 0;
         self.skipped = 0;
-        self.bfs_page = 1;
+        self.cursor_index = 0;
     }
 
-    fn pageOptionCount(self: *const Self, page: u32) u8 {
-        if (page == self.total_pages) {
-            const rem = self.start_node.count() % self.page_size;
-            if (rem != 0) return @intCast(rem);
+    /// Write the options at flat indices `[start, start + count)` into
+    /// `out`, clipped by `out.len` and by the total option count. Returns
+    /// how many were written.
+    pub fn readRange(self: *Self, start: u32, count: u32, out: []QueryOption) u32 {
+        const total = self.totalOptions();
+        if (start >= total) return 0;
+        const cap: u32 = @intCast(@min(out.len, @as(usize, std.math.maxInt(u32))));
+        const want = @min(@min(count, total - start), cap);
+        if (want == 0) return 0;
+
+        if (start < self.cursor_index) self.rewind();
+        while (self.cursor_index < start) self.consumeOne(null);
+
+        var i: u32 = 0;
+        while (i < want) : (i += 1) self.consumeOne(&out[i]);
+        return want;
+    }
+
+    /// Consume the value at the cursor, writing it to `out` when non-null.
+    fn consumeOne(self: *Self, out: ?*QueryOption) void {
+        if (builtin.is_test) consume_calls += 1;
+        while (true) {
+            const entry = self.frontier[self.frontier_head];
+            const values = entry.node.values(self.trie);
+
+            if (self.skipped == 0) {
+                self.enqueueChildren(entry);
+                if (values.len() == 0) {
+                    self.frontier_head += 1;
+                    continue;
+                }
+            }
+
+            if (out) |o| {
+                o.value = values.at(self.skipped).ptr;
+                if (entry.path_len == 0) {
+                    o.clearHint();
+                } else {
+                    o.setHint(self.path_buf[entry.path_start..][0..entry.path_len]);
+                }
+            }
+
+            self.skipped += 1;
+            if (self.skipped == values.len()) {
+                self.frontier_head += 1;
+                self.skipped = 0;
+            }
+            self.cursor_index += 1;
+            return;
         }
-        return self.page_size;
     }
 
     fn enqueueChildren(self: *Self, entry: FrontierEntry) void {
@@ -231,604 +211,307 @@ pub const NodePagination = struct {
             self.frontier_len += 1;
         }
     }
-
-    /// Consume one value from the BFS cursor. If `emit_to` is non-null, the
-    /// value is materialized as a `QueryOption` allocated in that allocator
-    /// (with a freshly-allocated hint copy). Otherwise the value is skipped.
-    fn consumeOne(self: *Self, emit_to: ?std.mem.Allocator) ?QueryOption {
-        while (true) {
-            const entry = self.frontier[self.frontier_head];
-            const values = entry.node.values(self.trie);
-
-            if (self.skipped == 0) {
-                self.enqueueChildren(entry);
-                if (values.len() == 0) {
-                    self.frontier_head += 1;
-                    continue;
-                }
-            }
-
-            const value = values.at(self.skipped);
-            const opt: ?QueryOption = if (emit_to) |alloc| blk: {
-                const hint: ?[*:0]const u8 = if (entry.path_len == 0) null else h: {
-                    const path = self.path_buf[entry.path_start..][0..entry.path_len];
-                    const buf = alloc.allocSentinel(u8, entry.path_len, 0) catch unreachable;
-                    @memcpy(buf, path);
-                    break :h buf.ptr;
-                };
-                break :blk .{ .value = value.ptr, .hint = hint };
-            } else null;
-
-            self.skipped += 1;
-            if (self.skipped == values.len()) {
-                self.frontier_head += 1;
-                self.skipped = 0;
-            }
-            return opt;
-        }
-    }
-
-    fn skipOnePage(self: *Self) void {
-        const n = self.pageOptionCount(self.bfs_page);
-        for (0..n) |_| _ = self.consumeOne(null);
-        self.bfs_page += 1;
-    }
-
-    fn materializeOnePage(self: *Self) []QueryOption {
-        const page_alloc = self.page_fba.allocator();
-        const n = self.pageOptionCount(self.current_page);
-        const options = page_alloc.alloc(QueryOption, n) catch unreachable;
-        for (0..n) |i| options[i] = self.consumeOne(page_alloc).?;
-        self.bfs_page += 1;
-        return options;
-    }
 };
 
-/// Paginator over a single normal-table entry's punctuation candidates.
+/// Enumeration over a single normal-table entry's punctuation candidates.
 ///
-/// Compared to `NodePagination`, this is much simpler: candidates sit as
-/// NUL-separated strings in a flat pool, the count is known up-front
-/// (`NormalEntry.candidates_count`), and there is no BFS. Paired-toggle
-/// logic does NOT live here — paired punctuation is handled inline in
-/// `query.zig` Case C. This paginator strictly serves multi-candidate
-/// normal lookups (Case D — the `[` → `「`/`【`/`〔`/`［` case).
+/// Much simpler than `NodePagination`: candidates sit as NUL-separated
+/// strings in a flat pool and the count is known up front, so there is no
+/// cursor to maintain — every read is random-access via
+/// `Punc.candidateAt`. Paired punctuation is NOT handled here (it's a
+/// single-press commit, inline in `query.zig` case C); this serves only
+/// multi-candidate normal lookups (case D — `[` → `「`/`【`/`〔`/`［`).
 pub const PuncPagination = struct {
     const Self = @This();
 
-    /// The normal entry whose candidates we paginate.
     entry: *const punc_fmt.NormalEntry,
-    /// Shared strings pool. `entry.values_offset` indexes into this.
-    strings: []const u8,
-    /// Backs the materialized current page (options array). Reset before
-    /// each materialization, matching `NodePagination`'s contract.
-    page_fba: *std.heap.FixedBufferAllocator,
+    punc: *const punc_mod.Punc,
 
-    page_size: u8,
-    total_pages: u32,
-    current_page: u32,
-
-    /// Cached page contents for `cached_page`. `cached_page == 0` means
-    /// no page is currently materialized.
-    cached_options: []QueryOption,
-    cached_page: u32,
-
-    pub fn init(
-        entry: *const punc_fmt.NormalEntry,
-        strings: []const u8,
-        page_fba: *std.heap.FixedBufferAllocator,
-        page_size: u8,
-    ) Self {
+    pub fn init(entry: *const punc_fmt.NormalEntry, punc: *const punc_mod.Punc) Self {
         std.debug.assert(entry.candidates_count > 0);
-        const total_pages: u32 =
-            (@as(u32, entry.candidates_count) + page_size - 1) / page_size;
-        return .{
-            .entry = entry,
-            .strings = strings,
-            .page_fba = page_fba,
-            .page_size = page_size,
-            .total_pages = total_pages,
-            .current_page = 1,
-            .cached_options = &.{},
-            .cached_page = 0,
-        };
+        return .{ .entry = entry, .punc = punc };
     }
 
-    pub fn nextPage(self: *Self) void {
-        if (self.current_page < self.total_pages) self.current_page += 1;
+    pub fn totalOptions(self: *const Self) u32 {
+        return @as(u32, self.entry.candidates_count);
     }
 
-    pub fn prevPage(self: *Self) void {
-        if (self.current_page > 1) self.current_page -= 1;
-    }
+    pub fn readRange(self: *Self, start: u32, count: u32, out: []QueryOption) u32 {
+        const total = self.totalOptions();
+        if (start >= total) return 0;
+        const cap: u32 = @intCast(@min(out.len, @as(usize, std.math.maxInt(u32))));
+        const want = @min(@min(count, total - start), cap);
 
-    pub fn jumpToPage(self: *Self, page: u32) void {
-        if (page >= 1 and page <= self.total_pages) self.current_page = page;
-    }
-
-    pub fn getOptions(self: *Self) []const QueryOption {
-        if (self.cached_page == self.current_page) return self.cached_options;
-
-        const start: usize = (self.current_page - 1) * @as(usize, self.page_size);
-        const end: usize = @min(start + self.page_size, self.entry.candidates_count);
-        const slice_len = end - start;
-
-        // Walk to the `start`-th candidate.
-        var offset: usize = self.entry.values_offset;
-        var i: usize = 0;
-        while (i < start) : (i += 1) {
-            offset = std.mem.indexOfScalarPos(u8, self.strings, offset, 0).? + 1;
+        var i: u32 = 0;
+        while (i < want) : (i += 1) {
+            out[i].value = self.punc.candidateAt(self.entry, start + i);
+            out[i].clearHint();
         }
-
-        self.page_fba.reset();
-        const alloc = self.page_fba.allocator();
-        const options = alloc.alloc(QueryOption, slice_len) catch unreachable;
-        i = 0;
-        while (i < slice_len) : (i += 1) {
-            const value_ptr: [*:0]const u8 = @ptrCast(&self.strings[offset]);
-            options[i] = .{ .value = value_ptr, .hint = null };
-            offset = std.mem.indexOfScalarPos(u8, self.strings, offset, 0).? + 1;
-        }
-
-        self.cached_options = options;
-        self.cached_page = self.current_page;
-        return options;
-    }
-
-    /// Pick the i-th candidate on the CURRENT page and return its
-    /// commit-bytes pointer (a rodata slice into the strings pool).
-    pub fn commitAtIndex(self: *Self, i: usize) [*:0]const u8 {
-        const flat_index: usize = (self.current_page - 1) * @as(usize, self.page_size) + i;
-        std.debug.assert(flat_index < self.entry.candidates_count);
-        var offset: usize = self.entry.values_offset;
-        var seen: usize = 0;
-        while (seen < flat_index) : (seen += 1) {
-            offset = std.mem.indexOfScalarPos(u8, self.strings, offset, 0).? + 1;
-        }
-        return @ptrCast(&self.strings[offset]);
+        return want;
     }
 };
 
-/// Tagged-union pager — used so a `Context` can be in either a trie
+/// Tagged-union enumerator — lets a `Context` be in either a trie
 /// composition or a punctuation candidate window without duplicating the
-/// branching across every paging API. Paired punctuation is NOT paginated
-/// (it's a single-press commit) — only the normal multi-candidate case
-/// reaches the `punc` variant here.
+/// branching across every read.
 pub const Pager = union(enum) {
     trie: NodePagination,
     punc: PuncPagination,
 
-    pub fn getOptions(self: *Pager) []const QueryOption {
-        return switch (self.*) {
-            .trie => |*p| p.getOptions(),
-            .punc => |*p| p.getOptions(),
-        };
-    }
-
-    pub fn nextPage(self: *Pager) void {
-        switch (self.*) {
-            .trie => |*p| p.nextPage(),
-            .punc => |*p| p.nextPage(),
-        }
-    }
-
-    pub fn prevPage(self: *Pager) void {
-        switch (self.*) {
-            .trie => |*p| p.prevPage(),
-            .punc => |*p| p.prevPage(),
-        }
-    }
-
-    pub fn jumpToPage(self: *Pager, page: u32) void {
-        switch (self.*) {
-            .trie => |*p| p.jumpToPage(page),
-            .punc => |*p| p.jumpToPage(page),
-        }
-    }
-
-    pub fn totalPages(self: *const Pager) u32 {
-        return switch (self.*) {
-            .trie => |p| p.total_pages,
-            .punc => |p| p.total_pages,
-        };
-    }
-
-    pub fn currentPage(self: *const Pager) u32 {
-        return switch (self.*) {
-            .trie => |p| p.current_page,
-            .punc => |p| p.current_page,
-        };
-    }
-
-    /// Total options across all pages.
     pub fn totalOptions(self: *const Pager) u32 {
         return switch (self.*) {
-            .trie => |p| p.start_node.count(),
-            .punc => |p| @as(u32, p.entry.candidates_count),
+            .trie => |*p| p.totalOptions(),
+            .punc => |*p| p.totalOptions(),
         };
     }
 
-    /// Pick option `i` from the CURRENT page and return its commit-bytes
-    /// pointer. No side effects in either variant — paired-toggle flipping
-    /// lives in `query.zig` Case C (paired punctuation), not here.
-    pub fn commitAtIndex(self: *Pager, i: usize) [*:0]const u8 {
+    pub fn readRange(self: *Pager, start: u32, count: u32, out: []QueryOption) u32 {
         return switch (self.*) {
-            .trie => |*p| p.getOptions()[i].value,
-            .punc => |*p| p.commitAtIndex(i),
+            .trie => |*p| p.readRange(start, count, out),
+            .punc => |*p| p.readRange(start, count, out),
         };
+    }
+
+    /// Read exactly one option by flat index. Returns null when the index
+    /// is out of range.
+    pub fn optionAt(self: *Pager, index: u32) ?QueryOption {
+        var buf: [1]QueryOption = undefined;
+        if (self.readRange(index, 1, &buf) == 0) return null;
+        return buf[0];
     }
 };
 
-/// Computes the page_fba buffer size for a given page_size. Used by both
-/// production (`jd_init` in main.zig) and tests.
-pub fn pageBufferSize(page_size: u8) usize {
-    // page_size options + one hint per option of up to MAX_HINT_LEN bytes + sentinel.
-    // A hint is the keys remaining below the current node, so it is bounded
-    // by the max key length minus the one key already pressed to get there.
-    const MAX_HINT_LEN: usize = trie_mod.MAX_KEYS_LEN - 1;
-    return @as(usize, page_size) * (@sizeOf(QueryOption) + MAX_HINT_LEN + 1);
+// =========================================================================
+// Test helpers
+// =========================================================================
+
+/// Test-side expectation, written with plain slices.
+pub const ExpectedOption = struct {
+    value: []const u8,
+    hint: ?[]const u8 = null,
+};
+
+pub fn expectEqualOption(expected: ExpectedOption, actual: QueryOption) !void {
+    try testing.expectEqualStrings(expected.value, std.mem.sliceTo(actual.value, 0));
+    if (expected.hint) |want| {
+        const got = actual.hintSlice() orelse {
+            std.debug.print("expected hint \"{s}\" but the option has none\n", .{want});
+            return error.TestExpectedEqual;
+        };
+        try testing.expectEqualStrings(want, got);
+    } else if (actual.hintSlice()) |got| {
+        std.debug.print("expected no hint but got \"{s}\"\n", .{got});
+        return error.TestExpectedEqual;
+    }
+}
+
+pub fn expectEqualOptions(expected: []const ExpectedOption, actual: []const QueryOption) !void {
+    try testing.expectEqual(expected.len, actual.len);
+    for (expected, actual, 0..) |e, a, i| {
+        expectEqualOption(e, a) catch |err| {
+            std.debug.print("option {d} differs\n", .{i});
+            return err;
+        };
+    }
 }
 
 // =========================================================================
 // Tests
 // =========================================================================
 
-/// Wraps the three heap regions a `NodePagination` borrows so each test can
-/// build/teardown them in two lines instead of five. In production this work
-/// is done by `jd_init`.
+/// Wraps the two heap regions a `NodePagination` borrows. In production
+/// this work is done by `jd_init`.
 const TestHarness = struct {
     frontier: []FrontierEntry,
     path_buf: []u8,
-    page_buf: []u8,
-    page_fba: std.heap.FixedBufferAllocator,
 
-    fn init(allocator: std.mem.Allocator, trie: *const Trie, page_size: u8) !TestHarness {
-        // `+1` so tests that paginate from root (with subtree = root's full
-        // node count, one more than any non-root node) still fit.
+    fn init(allocator: std.mem.Allocator, trie: *const Trie) !TestHarness {
+        // `+1` so tests that enumerate from the root (whose subtree is one
+        // node larger than any non-root node's) still fit.
         const frontier = try allocator.alloc(FrontierEntry, trie.frontier_cap + 1);
+        errdefer allocator.free(frontier);
         const path_buf = try allocator.alloc(u8, trie.path_buf_cap + 1);
-        const page_buf = try allocator.alloc(u8, pageBufferSize(page_size));
-        return .{
-            .frontier = frontier,
-            .path_buf = path_buf,
-            .page_buf = page_buf,
-            .page_fba = std.heap.FixedBufferAllocator.init(page_buf),
-        };
+        return .{ .frontier = frontier, .path_buf = path_buf };
     }
 
     fn deinit(self: *TestHarness, allocator: std.mem.Allocator) void {
         allocator.free(self.frontier);
         allocator.free(self.path_buf);
-        allocator.free(self.page_buf);
     }
 
     fn buffers(self: *TestHarness) Buffers {
-        return .{
-            .frontier = self.frontier,
-            .path_buf = self.path_buf,
-            .page_fba = &self.page_fba,
-        };
+        return .{ .frontier = self.frontier, .path_buf = self.path_buf };
     }
 };
 
-test "page count is correct" {
+/// The full flat enumeration of node "a" in the shared test trie: BFS
+/// order, shorter completions first, ties by `keyRank`.
+const expected_a = [_]ExpectedOption{
+    .{ .value = "甲" },
+    .{ .value = "乙", .hint = "b" },
+    .{ .value = "丙1", .hint = "c" },
+    .{ .value = "丙2", .hint = "c" },
+    .{ .value = "Foo", .hint = "e" },
+    .{ .value = "Bar", .hint = "f" },
+    .{ .value = "丁1", .hint = "cd" },
+    .{ .value = "丁2", .hint = "cd" },
+    .{ .value = "丁3", .hint = "cd" },
+    .{ .value = "丁4", .hint = "ce" },
+    .{ .value = "FooBar", .hint = "c;" },
+};
+
+test "totalOptions counts the whole subtree" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 8);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
     defer harness.deinit(testing.allocator);
 
-    const node_pagination = NodePagination.init(harness.buffers(), &th.trie, th.trie.root(), 8);
-
-    try testing.expectEqual(node_pagination.total_pages, 2);
-}
-
-test "work properly with simple pagination" {
-    var th = try buildTestTrie(testing.allocator);
-    defer th.deinit(testing.allocator);
     const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 8);
-    defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 8);
-
-    const options = node_pagination.getOptions();
-
-    var expected = [_]QueryOption{
-        .{ .value = "甲", .hint = null },
-        .{ .value = "乙", .hint = "b" },
-        .{ .value = "丙1", .hint = "c" },
-        .{ .value = "丙2", .hint = "c" },
-        .{ .value = "Foo", .hint = "e" },
-        .{ .value = "Bar", .hint = "f" },
-        .{ .value = "丁1", .hint = "cd" },
-        .{ .value = "丁2", .hint = "cd" },
-    };
-
-    try expectEqualQueryOptionSlice(expected[0..], options);
+    var p = NodePagination.init(harness.buffers(), &th.trie, node);
+    try testing.expectEqual(@as(u32, 11), p.totalOptions());
 }
 
-test "work properly with small page size" {
+test "readRange from 0 yields the full BFS order" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
-    const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
     defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
-    const options = node_pagination.getOptions();
+    const node = th.trie.root().getChild(&th.trie, 'a').?;
+    var p = NodePagination.init(harness.buffers(), &th.trie, node);
 
-    var expected = [_]QueryOption{
-        .{ .value = "甲", .hint = null },
-        .{ .value = "乙", .hint = "b" },
-        .{ .value = "丙1", .hint = "c" },
-    };
-
-    try expectEqualQueryOptionSlice(expected[0..], options);
+    var out: [16]QueryOption = undefined;
+    const n = p.readRange(0, 16, &out);
+    try testing.expectEqual(@as(u32, 11), n);
+    try expectEqualOptions(&expected_a, out[0..n]);
 }
 
-test "next page" {
+test "readRange reads an arbitrary window" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
-    const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
     defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
-    node_pagination.nextPage();
-    const options = node_pagination.getOptions();
+    const node = th.trie.root().getChild(&th.trie, 'a').?;
+    var p = NodePagination.init(harness.buffers(), &th.trie, node);
 
-    var expected = [_]QueryOption{
-        .{ .value = "丙2", .hint = "c" },
-        .{ .value = "Foo", .hint = "e" },
-        .{ .value = "Bar", .hint = "f" },
-    };
-
-    try expectEqualQueryOptionSlice(expected[0..], options);
+    var out: [3]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 3), p.readRange(3, 3, &out));
+    try expectEqualOptions(expected_a[3..6], out[0..3]);
 }
 
-test "last page" {
+test "sequential forward reads never replay" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
-    const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
     defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    const options = node_pagination.getOptions();
+    const node = th.trie.root().getChild(&th.trie, 'a').?;
+    var p = NodePagination.init(harness.buffers(), &th.trie, node);
 
-    var expected = [_]QueryOption{
-        .{ .value = "丁4", .hint = "ce" },
-        .{ .value = "FooBar", .hint = "c;" },
-    };
-
-    try expectEqualQueryOptionSlice(expected[0..], options);
+    // Walk the whole list in windows of 3, exactly as a candidate strip
+    // would. The cursor must consume each option once and only once.
+    consume_calls = 0;
+    var out: [3]QueryOption = undefined;
+    var start: u32 = 0;
+    var seen: usize = 0;
+    while (true) {
+        const n = p.readRange(start, 3, &out);
+        if (n == 0) break;
+        try expectEqualOptions(expected_a[start..][0..n], out[0..n]);
+        seen += n;
+        start += n;
+    }
+    try testing.expectEqual(@as(usize, 11), seen);
+    try testing.expectEqual(@as(usize, 11), consume_calls);
 }
 
-test "next page on last page" {
+test "backward reads rewind and replay correctly" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
-    const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
     defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    const options = node_pagination.getOptions();
+    const node = th.trie.root().getChild(&th.trie, 'a').?;
+    var p = NodePagination.init(harness.buffers(), &th.trie, node);
 
-    var expected = [_]QueryOption{
-        .{ .value = "丁4", .hint = "ce" },
-        .{ .value = "FooBar", .hint = "c;" },
-    };
+    var out: [4]QueryOption = undefined;
 
-    try expectEqualQueryOptionSlice(expected[0..], options);
+    // Jump deep, then walk back to the front and out again.
+    try testing.expectEqual(@as(u32, 2), p.readRange(9, 4, &out));
+    try expectEqualOptions(expected_a[9..11], out[0..2]);
+
+    try testing.expectEqual(@as(u32, 4), p.readRange(0, 4, &out));
+    try expectEqualOptions(expected_a[0..4], out[0..4]);
+
+    try testing.expectEqual(@as(u32, 4), p.readRange(6, 4, &out));
+    try expectEqualOptions(expected_a[6..10], out[0..4]);
+
+    try testing.expectEqual(@as(u32, 1), p.readRange(1, 1, &out));
+    try expectEqualOptions(expected_a[1..2], out[0..1]);
 }
 
-test "back and forth" {
+test "readRange clips to out_cap and to the total" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
-    const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
     defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.prevPage();
-    node_pagination.prevPage();
-    node_pagination.nextPage();
-    node_pagination.prevPage();
-    const options = node_pagination.getOptions();
+    const node = th.trie.root().getChild(&th.trie, 'a').?;
+    var p = NodePagination.init(harness.buffers(), &th.trie, node);
 
-    var expected = [_]QueryOption{
-        .{ .value = "丙2", .hint = "c" },
-        .{ .value = "Foo", .hint = "e" },
-        .{ .value = "Bar", .hint = "f" },
-    };
+    // out_cap is the binding constraint: asked for 9, buffer holds 2.
+    var small: [2]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 2), p.readRange(0, 9, &small));
+    try expectEqualOptions(expected_a[0..2], small[0..2]);
 
-    try expectEqualQueryOptionSlice(expected[0..], options);
+    // The total is the binding constraint: only 2 options remain from 9.
+    var big: [16]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 2), p.readRange(9, 16, &big));
+
+    // Fully out of range, and a zero-width request.
+    try testing.expectEqual(@as(u32, 0), p.readRange(11, 4, &big));
+    try testing.expectEqual(@as(u32, 0), p.readRange(999, 4, &big));
+    try testing.expectEqual(@as(u32, 0), p.readRange(0, 0, &big));
 }
 
-test "back and forth 2" {
-    var th = try buildTestTrie(testing.allocator);
+test "single-option node has no hint" {
+    var th = try trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = "a", .value = "甲" },
+    });
     defer th.deinit(testing.allocator);
-    const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
     defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
-    node_pagination.nextPage();
-    node_pagination.prevPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    const options = node_pagination.getOptions();
+    const node = th.trie.root().getChild(&th.trie, 'a').?;
+    var p = NodePagination.init(harness.buffers(), &th.trie, node);
 
-    var expected = [_]QueryOption{
-        .{ .value = "丁1", .hint = "cd" },
-        .{ .value = "丁2", .hint = "cd" },
-        .{ .value = "丁3", .hint = "cd" },
-    };
-
-    try expectEqualQueryOptionSlice(expected[0..], options);
+    var out: [1]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 1), p.readRange(0, 1, &out));
+    try testing.expectEqual(@as(u8, 0), out[0].hint[0]);
+    try testing.expect(out[0].hintSlice() == null);
 }
 
-test "back and forth to the first page" {
-    var th = try buildTestTrie(testing.allocator);
+test "hints are inline and NUL-terminated at max depth" {
+    // Longest possible hint: a 6-key entry read from its depth-1 node
+    // leaves 5 hint bytes — the bound `HINT_CAP` is sized against.
+    var th = try trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = "abcdef", .value = "X" },
+    });
     defer th.deinit(testing.allocator);
-    const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
     defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
 
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.prevPage();
-    node_pagination.prevPage();
-    node_pagination.nextPage();
-    node_pagination.prevPage();
-    node_pagination.prevPage();
-    const options = node_pagination.getOptions();
+    const node = th.trie.root().getChild(&th.trie, 'a').?;
+    var p = NodePagination.init(harness.buffers(), &th.trie, node);
 
-    var expected = [_]QueryOption{
-        .{ .value = "甲", .hint = null },
-        .{ .value = "乙", .hint = "b" },
-        .{ .value = "丙1", .hint = "c" },
-    };
-
-    try expectEqualQueryOptionSlice(expected[0..], options);
+    var out: [1]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 1), p.readRange(0, 1, &out));
+    try expectEqualOption(.{ .value = "X", .hint = "bcdef" }, out[0]);
+    try testing.expectEqual(@as(u8, 0), out[0].hint[5]);
 }
 
-test "page size is 1" {
-    var th = try buildTestTrie(testing.allocator);
-    defer th.deinit(testing.allocator);
-    const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 1);
-    defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 1);
-
-    const expected_total_pages: u32 = 11;
-    try testing.expectEqual(expected_total_pages, node_pagination.total_pages);
-
-    const options1 = node_pagination.getOptions();
-    var expected1 = [_]QueryOption{
-        .{ .value = "甲", .hint = null },
-    };
-    try expectEqualQueryOptionSlice(expected1[0..], options1);
-
-    node_pagination.nextPage();
-    const options2 = node_pagination.getOptions();
-    var expected2 = [_]QueryOption{
-        .{ .value = "乙", .hint = "b" },
-    };
-    try expectEqualQueryOptionSlice(expected2[0..], options2);
-
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    node_pagination.nextPage();
-    const options_last = node_pagination.getOptions();
-    var expected_last = [_]QueryOption{
-        .{ .value = "丁4", .hint = "ce" },
-    };
-    try expectEqualQueryOptionSlice(expected_last[0..], options_last);
-}
-
-test "page size is larger than the length of all options" {
-    var th = try buildTestTrie(testing.allocator);
-    defer th.deinit(testing.allocator);
-    const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 16);
-    defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 16);
-
-    try testing.expectEqual(@as(u32, 1), node_pagination.total_pages);
-
-    const options = node_pagination.getOptions();
-    var expected = [_]QueryOption{
-        .{ .value = "甲", .hint = null },
-        .{ .value = "乙", .hint = "b" },
-        .{ .value = "丙1", .hint = "c" },
-        .{ .value = "丙2", .hint = "c" },
-        .{ .value = "Foo", .hint = "e" },
-        .{ .value = "Bar", .hint = "f" },
-        .{ .value = "丁1", .hint = "cd" },
-        .{ .value = "丁2", .hint = "cd" },
-        .{ .value = "丁3", .hint = "cd" },
-        .{ .value = "丁4", .hint = "ce" },
-        .{ .value = "FooBar", .hint = "c;" },
-    };
-    try expectEqualQueryOptionSlice(expected[0..], options);
-}
-
-test "jump to page" {
-    var th = try buildTestTrie(testing.allocator);
-    defer th.deinit(testing.allocator);
-    const node = th.trie.root().getChild(&th.trie, 'a').?;
-
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
-    defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
-
-    // Jump forward past the current page.
-    node_pagination.jumpToPage(3);
-    const options3 = node_pagination.getOptions();
-    var expected3 = [_]QueryOption{
-        .{ .value = "丁1", .hint = "cd" },
-        .{ .value = "丁2", .hint = "cd" },
-        .{ .value = "丁3", .hint = "cd" },
-    };
-    try expectEqualQueryOptionSlice(expected3[0..], options3);
-
-    // Jump backward — exercises the BFS rewind path.
-    node_pagination.jumpToPage(1);
-    const options1 = node_pagination.getOptions();
-    var expected1 = [_]QueryOption{
-        .{ .value = "甲", .hint = null },
-        .{ .value = "乙", .hint = "b" },
-        .{ .value = "丙1", .hint = "c" },
-    };
-    try expectEqualQueryOptionSlice(expected1[0..], options1);
-
-    // Jump to the partial last page.
-    node_pagination.jumpToPage(4);
-    const options4 = node_pagination.getOptions();
-    var expected4 = [_]QueryOption{
-        .{ .value = "丁4", .hint = "ce" },
-        .{ .value = "FooBar", .hint = "c;" },
-    };
-    try expectEqualQueryOptionSlice(expected4[0..], options4);
-
-    // Out-of-range: silently ignored.
-    node_pagination.jumpToPage(0);
-    try testing.expectEqual(@as(u32, 4), node_pagination.current_page);
-    node_pagination.jumpToPage(999);
-    try testing.expectEqual(@as(u32, 4), node_pagination.current_page);
-}
-
-test "deep nodes" {
+test "deep nodes enumerate breadth-first" {
     var th = try trie_mod.buildTrie(testing.allocator, &.{
         .{ .keys = "a", .value = "甲" },
         .{ .keys = "ab", .value = "乙" },
@@ -840,171 +523,102 @@ test "deep nodes" {
         .{ .keys = "asdfgh", .value = "World" },
     });
     defer th.deinit(testing.allocator);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
+    defer harness.deinit(testing.allocator);
 
     const node = th.trie.root().getChild(&th.trie, 'a').?;
+    var p = NodePagination.init(harness.buffers(), &th.trie, node);
 
-    var harness = try TestHarness.init(testing.allocator, &th.trie, 3);
-    defer harness.deinit(testing.allocator);
-    var node_pagination = NodePagination.init(harness.buffers(), &th.trie, node, 3);
-
-    const options1 = node_pagination.getOptions();
-    var expected1 = [_]QueryOption{
-        .{ .value = "甲", .hint = null },
+    var out: [8]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 8), p.readRange(0, 8, &out));
+    try expectEqualOptions(&.{
+        .{ .value = "甲" },
         .{ .value = "乙", .hint = "b" },
         .{ .value = "丙", .hint = "c" },
-    };
-    try expectEqualQueryOptionSlice(expected1[0..], options1);
-
-    node_pagination.nextPage();
-    const options2 = node_pagination.getOptions();
-    var expected2 = [_]QueryOption{
         .{ .value = "丁", .hint = "d" },
         .{ .value = "Foo", .hint = "e" },
         .{ .value = "Bar", .hint = "fj" },
-    };
-    try expectEqualQueryOptionSlice(expected2[0..], options2);
-
-    node_pagination.nextPage();
-    const options3 = node_pagination.getOptions();
-    var expected3 = [_]QueryOption{
         .{ .value = "Hello", .hint = "bcde" },
         .{ .value = "World", .hint = "sdfgh" },
-    };
-    try expectEqualQueryOptionSlice(expected3[0..], options3);
+    }, out[0..8]);
 }
 
 // =========================================================================
 // Tests — PuncPagination
 // =========================================================================
 
-const PuncTestHarness = struct {
-    ph: punc_mod.PuncHandle,
-    page_buf: []u8,
-    page_fba: std.heap.FixedBufferAllocator,
-
-    fn init(
-        allocator: std.mem.Allocator,
-        normals: []const punc_mod.NormalInput,
-        page_size: u8,
-    ) !PuncTestHarness {
-        const ph = try punc_mod.buildPunc(allocator, normals, &.{});
-        errdefer {
-            var ph_mut = ph;
-            ph_mut.deinit(allocator);
-        }
-        const page_buf = try allocator.alloc(u8, pageBufferSize(page_size));
-        return .{
-            .ph = ph,
-            .page_buf = page_buf,
-            .page_fba = std.heap.FixedBufferAllocator.init(page_buf),
-        };
-    }
-
-    fn deinit(self: *PuncTestHarness, allocator: std.mem.Allocator) void {
-        self.ph.deinit(allocator);
-        allocator.free(self.page_buf);
-    }
-};
-
-test "PuncPagination: single-candidate single page" {
-    const candidates = [_][]const u8{"。"};
-    var h = try PuncTestHarness.init(testing.allocator, &.{
-        .{ .key = '.', .candidates = &candidates },
-    }, 5);
-    defer h.deinit(testing.allocator);
-
-    const entry = h.ph.punc.lookupNormal('.') orelse return error.TestUnexpectedNull;
-    var p = PuncPagination.init(entry, h.ph.punc.strings, &h.page_fba, 5);
-
-    try testing.expectEqual(@as(u32, 1), p.total_pages);
-    const opts = p.getOptions();
-    try testing.expectEqual(@as(usize, 1), opts.len);
-    try testing.expectEqualStrings("。", std.mem.sliceTo(opts[0].value, 0));
-    try testing.expect(opts[0].hint == null);
-}
-
-test "PuncPagination: multi-candidate single page" {
+test "PuncPagination reads the whole candidate list in source order" {
     const candidates = [_][]const u8{ "「", "【", "〔", "［" };
-    var h = try PuncTestHarness.init(testing.allocator, &.{
+    var ph = try punc_mod.buildPunc(testing.allocator, &.{
         .{ .key = '[', .candidates = &candidates },
-    }, 5);
-    defer h.deinit(testing.allocator);
+    }, &.{});
+    defer ph.deinit(testing.allocator);
 
-    const entry = h.ph.punc.lookupNormal('[') orelse return error.TestUnexpectedNull;
-    var p = PuncPagination.init(entry, h.ph.punc.strings, &h.page_fba, 5);
+    const entry = ph.punc.lookupNormal('[') orelse return error.TestUnexpectedNull;
+    var p = PuncPagination.init(entry, &ph.punc);
 
-    try testing.expectEqual(@as(u32, 1), p.total_pages);
-    const opts = p.getOptions();
-    try testing.expectEqual(@as(usize, 4), opts.len);
-    try testing.expectEqualStrings("「", std.mem.sliceTo(opts[0].value, 0));
-    try testing.expectEqualStrings("【", std.mem.sliceTo(opts[1].value, 0));
-    try testing.expectEqualStrings("〔", std.mem.sliceTo(opts[2].value, 0));
-    try testing.expectEqualStrings("［", std.mem.sliceTo(opts[3].value, 0));
+    try testing.expectEqual(@as(u32, 4), p.totalOptions());
+    var out: [4]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 4), p.readRange(0, 4, &out));
+    try expectEqualOptions(&.{
+        .{ .value = "「" },
+        .{ .value = "【" },
+        .{ .value = "〔" },
+        .{ .value = "［" },
+    }, out[0..4]);
 }
 
-test "PuncPagination: pagination with small page_size" {
-    const candidates = [_][]const u8{ "「", "【", "〔", "［" };
-    var h = try PuncTestHarness.init(testing.allocator, &.{
-        .{ .key = '[', .candidates = &candidates },
-    }, 2);
-    defer h.deinit(testing.allocator);
-
-    const entry = h.ph.punc.lookupNormal('[') orelse return error.TestUnexpectedNull;
-    var p = PuncPagination.init(entry, h.ph.punc.strings, &h.page_fba, 2);
-
-    try testing.expectEqual(@as(u32, 2), p.total_pages);
-    const page1 = p.getOptions();
-    try testing.expectEqual(@as(usize, 2), page1.len);
-    try testing.expectEqualStrings("「", std.mem.sliceTo(page1[0].value, 0));
-    try testing.expectEqualStrings("【", std.mem.sliceTo(page1[1].value, 0));
-
-    p.nextPage();
-    const page2 = p.getOptions();
-    try testing.expectEqual(@as(usize, 2), page2.len);
-    try testing.expectEqualStrings("〔", std.mem.sliceTo(page2[0].value, 0));
-    try testing.expectEqualStrings("［", std.mem.sliceTo(page2[1].value, 0));
-
-    p.prevPage();
-    try testing.expectEqual(@as(u32, 1), p.current_page);
-    p.jumpToPage(2);
-    try testing.expectEqual(@as(u32, 2), p.current_page);
-    p.jumpToPage(0);
-    try testing.expectEqual(@as(u32, 2), p.current_page);
-    p.jumpToPage(99);
-    try testing.expectEqual(@as(u32, 2), p.current_page);
-}
-
-test "PuncPagination: partial last page" {
+test "PuncPagination reads a window and clips at the end" {
     const candidates = [_][]const u8{ "「", "【", "〔" };
-    var h = try PuncTestHarness.init(testing.allocator, &.{
+    var ph = try punc_mod.buildPunc(testing.allocator, &.{
         .{ .key = '[', .candidates = &candidates },
-    }, 2);
-    defer h.deinit(testing.allocator);
+    }, &.{});
+    defer ph.deinit(testing.allocator);
 
-    const entry = h.ph.punc.lookupNormal('[') orelse return error.TestUnexpectedNull;
-    var p = PuncPagination.init(entry, h.ph.punc.strings, &h.page_fba, 2);
+    const entry = ph.punc.lookupNormal('[') orelse return error.TestUnexpectedNull;
+    var p = PuncPagination.init(entry, &ph.punc);
 
-    try testing.expectEqual(@as(u32, 2), p.total_pages);
-    p.nextPage();
-    const page2 = p.getOptions();
-    try testing.expectEqual(@as(usize, 1), page2.len);
-    try testing.expectEqualStrings("〔", std.mem.sliceTo(page2[0].value, 0));
+    var out: [4]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 2), p.readRange(1, 4, &out));
+    try expectEqualOptions(&.{ .{ .value = "【" }, .{ .value = "〔" } }, out[0..2]);
+    try testing.expectEqual(@as(u32, 0), p.readRange(3, 4, &out));
 }
 
-test "PuncPagination: commitAtIndex returns the right candidate" {
-    const candidates = [_][]const u8{ "「", "【", "〔", "［" };
-    var h = try PuncTestHarness.init(testing.allocator, &.{
+test "PuncPagination candidates never carry hints" {
+    const candidates = [_][]const u8{ "。", "，" };
+    var ph = try punc_mod.buildPunc(testing.allocator, &.{
+        .{ .key = '.', .candidates = &candidates },
+    }, &.{});
+    defer ph.deinit(testing.allocator);
+
+    const entry = ph.punc.lookupNormal('.') orelse return error.TestUnexpectedNull;
+    var p = PuncPagination.init(entry, &ph.punc);
+
+    var out: [2]QueryOption = undefined;
+    _ = p.readRange(0, 2, &out);
+    try testing.expect(out[0].hintSlice() == null);
+    try testing.expect(out[1].hintSlice() == null);
+}
+
+test "Pager.optionAt bounds-checks both variants" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
+    defer harness.deinit(testing.allocator);
+
+    const node = th.trie.root().getChild(&th.trie, 'a').?;
+    var trie_pager: Pager = .{ .trie = NodePagination.init(harness.buffers(), &th.trie, node) };
+    try testing.expectEqualStrings("甲", std.mem.sliceTo(trie_pager.optionAt(0).?.value, 0));
+    try testing.expectEqualStrings("FooBar", std.mem.sliceTo(trie_pager.optionAt(10).?.value, 0));
+    try testing.expect(trie_pager.optionAt(11) == null);
+
+    const candidates = [_][]const u8{ "「", "【" };
+    var ph = try punc_mod.buildPunc(testing.allocator, &.{
         .{ .key = '[', .candidates = &candidates },
-    }, 2);
-    defer h.deinit(testing.allocator);
-
-    const entry = h.ph.punc.lookupNormal('[') orelse return error.TestUnexpectedNull;
-    var p = PuncPagination.init(entry, h.ph.punc.strings, &h.page_fba, 2);
-
-    try testing.expectEqualStrings("「", std.mem.sliceTo(p.commitAtIndex(0), 0));
-    try testing.expectEqualStrings("【", std.mem.sliceTo(p.commitAtIndex(1), 0));
-
-    p.nextPage();
-    try testing.expectEqualStrings("〔", std.mem.sliceTo(p.commitAtIndex(0), 0));
-    try testing.expectEqualStrings("［", std.mem.sliceTo(p.commitAtIndex(1), 0));
+    }, &.{});
+    defer ph.deinit(testing.allocator);
+    const entry = ph.punc.lookupNormal('[') orelse return error.TestUnexpectedNull;
+    var punc_pager: Pager = .{ .punc = PuncPagination.init(entry, &ph.punc) };
+    try testing.expectEqualStrings("【", std.mem.sliceTo(punc_pager.optionAt(1).?.value, 0));
+    try testing.expect(punc_pager.optionAt(2) == null);
 }
