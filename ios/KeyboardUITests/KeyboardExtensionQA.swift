@@ -41,6 +41,53 @@ final class KeyboardExtensionQA: XCTestCase {
         for _ in 0..<120 where FileManager.default.fileExists(atPath: marker) { sleep(1) }
     }
 
+    /// Audio QA (opt-in): real touches over letter / delete / modifier keys
+    /// and a candidate cell, so key-click playback can be verified from the
+    /// extension sandbox (host greps a `log stream` of the audio daemons, or
+    /// listens on a device). Skipped unless JD_QA_AUDIO=1 so the screenshot
+    /// loop's plain scheme run is unaffected:
+    ///
+    ///   TEST_RUNNER_JD_QA_AUDIO=1 xcodebuild test … -scheme JdKeyboardQA \
+    ///     -only-testing:JdKeyboardUITests/KeyboardExtensionQA/testTypeKeysForAudioQA
+    @MainActor
+    func testTypeKeysForAudioQA() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["JD_QA_AUDIO"] == "1")
+        enableInSettingsIfNeeded()
+
+        let app = XCUIApplication()
+        app.launchArguments = ["-preview", "-system"]
+        app.launch()
+        XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 10))
+        sleep(2)
+        switchToJdViaGlobe(app)
+        sleep(1)
+
+        // Ordered so key labels stay unambiguous: the candidate bar's
+        // composing label also reads "a", but it's only on screen between
+        // typing a letter and the commit/delete that follows.
+        tapKey(app, "a")    // input click; composes "a"
+        tapKey(app, "⌫")    // delete click; bar empties
+        tapKey(app, "a")    // input click; candidates reappear
+        let cand = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@", "那")).firstMatch
+        if cand.waitForExistence(timeout: 2) {   // input click via select()
+            cand.tap()
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        tapKey(app, "123")   // modifier click; plane switch
+        tapKey(app, "ABC")   // modifier click; back to letters
+        tapKey(app, "空格")  // modifier click
+        sleep(1)
+    }
+
+    @MainActor
+    private func tapKey(_ app: XCUIApplication, _ label: String) {
+        let key = app.staticTexts[label].firstMatch
+        XCTAssertTrue(key.waitForExistence(timeout: 5), "key '\(label)' not found")
+        key.tap()
+        Thread.sleep(forTimeInterval: 0.4)
+    }
+
     /// Settings ▸ General ▸ Keyboard ▸ Keyboards ▸ Add New Keyboard ▸ 键道.
     /// Idempotent: skips adding when 键道 is already in the keyboards list.
     @MainActor

@@ -35,8 +35,9 @@
             <false/>
             <key>PrimaryLanguage</key>
             <string>zh-Hans</string>
-            <!-- Never requested: fully offline. Cost: no key-click sound / haptics
-                 (both require Full Access on iOS). -->
+            <!-- Never requested: fully offline. Cost: no haptics (they need Full
+                 Access; key-click sounds don't — System Sound Services works in
+                 the sandbox, see KeyClick.swift). -->
             <key>RequestsOpenAccess</key>
             <false/>
         </dict>

@@ -236,17 +236,19 @@ final class KeyboardView: UIView {
 
     private func select(_ index: Int) {
         guard index >= 0, index < items.count else { return }
+        KeyClick.playInput()
         collapseGrid()
         session.commitCandidate(items[index].value)
     }
 
     private func expandGrid() {
         guard gridOverlay == nil, !items.isEmpty else { return }
+        KeyClick.playModifier()
         let grid = CandidateGridView(theme: theme)
         grid.setItems(items)
         grid.onSelect = { [weak self] i in self?.select(i) }
         grid.onNeedMore = { [weak self] in self?.loadMore() }
-        grid.onClose = { [weak self] in self?.collapseGrid() }
+        grid.onClose = { [weak self] in KeyClick.playModifier(); self?.collapseGrid() }
         grid.translatesAutoresizingMaskIntoConstraints = false
         addSubview(grid)
         NSLayoutConstraint.activate([

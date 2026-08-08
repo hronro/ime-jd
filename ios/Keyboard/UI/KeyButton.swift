@@ -114,6 +114,7 @@ final class KeyButton: UIControl {
     // MARK: - Touch tracking
 
     override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
+        KeyClick.play(spec.cap)
         applyColors(pressed: true)
         showPopupIfPreviewable()
         if !spec.alternates.isEmpty { startAlternatesDelay() }
@@ -184,7 +185,9 @@ final class KeyButton: UIControl {
     private func startRepeat() {
         delayTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
             self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                self?.fire()
+                guard let self else { return }
+                KeyClick.play(self.spec.cap)   // the system keyboard clicks every repeat tick
+                self.fire()
             }
         }
     }
