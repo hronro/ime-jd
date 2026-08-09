@@ -44,12 +44,12 @@
 
 ## 📦 安装指南
 
-前往 [GitHub Releases](https://github.com/hronro/ime-jd/releases/latest) 下载对应平台的安装包：
+iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法/id6791807743) 下载，其它平台用户请前往 [GitHub Releases](https://github.com/hronro/ime-jd/releases/latest) 下载对应平台的安装包：
 
 - **Windows**: 下载 `jd-ime-{版本号}-windows-{架构}.zip`
 - **macOS**: 下载 `jd-ime-{版本号}-macos-{架构}.pkg`
 - **Android**: 下载 `jd-ime-{版本号}-android-{架构}.apk` 
-- **iOS**: 下载 `jd-ime-{版本号}-ios.ipa` *(注：iOS 用户需要使用 Sideload 工具进行自签安装)*
+- **iOS**: 我们在 GitHub Release 页面亦分发未签名的 `jd-ime-{版本号}-ios.ipa` 文件，有需求的用户可以使用 Sideload 工具进行自签安装
 
 ## 🤝 致谢
 
