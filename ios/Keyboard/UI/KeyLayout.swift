@@ -141,7 +141,7 @@ enum KeyLayout {
 
     // Digits + Chinese punctuation, shown directly (not the ASCII forms). The two
     // pages plus their long-press groups cover every mark in
-    // core/src/punctuation-marks/, arranged by frequency like the built-in Pinyin
+    // core/punctuation-marks/, arranged by frequency like the built-in Pinyin
     // keyboard: the most common marks sit on this page's bottom row within thumb
     // reach, the rare ones live on #+=. Keys insert their mark via the engine-
     // bypass path (see InputSession.insertLiteral); visually similar variants —

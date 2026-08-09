@@ -10,5 +10,9 @@
         "src",
         "scripts",
         "include",
+        // Build-time generator inputs. Without these the packaged tarball
+        // has no dict and `zig build` fails for downstream consumers.
+        "tables",
+        "punctuation-marks",
     },
 }

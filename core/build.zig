@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
 
     // EOL of the table .txt files. Normally "\n" on Unix; pass "\r\n" if your
     // checkout has CRLF endings on Windows.
-    const tables_eol_option = b.option([]const u8, "tables_eol", "EOL for src/tables/*.txt files (default: lf)") orelse "lf";
+    const tables_eol_option = b.option([]const u8, "tables_eol", "EOL for tables/*.txt files (default: lf)") orelse "lf";
 
     // Pass the target's endianness so the generators can byte-swap fields
     // when the host and target differ. They run on the host, so they can't
@@ -57,13 +57,13 @@ pub fn build(b: *std.Build) void {
     gen_trie_run.addArg(target_endian_arg);
     // Add every table file as an explicit input so cache invalidation works.
     const tables = [_][]const u8{
-        "src/tables/1.single.txt",
-        "src/tables/2.phrase.txt",
-        "src/tables/3.symbol.txt",
-        "src/tables/4.supplement.txt",
-        "src/tables/5.link.txt",
-        "src/tables/6.english.txt",
-        "src/tables/7.css.txt",
+        "tables/1.single.txt",
+        "tables/2.phrase.txt",
+        "tables/3.symbol.txt",
+        "tables/4.supplement.txt",
+        "tables/5.link.txt",
+        "tables/6.english.txt",
+        "tables/7.css.txt",
     };
     for (tables) |t| gen_trie_run.addFileArg(b.path(t));
 
@@ -112,8 +112,8 @@ pub fn build(b: *std.Build) void {
     const punc_out_dir = gen_punc_run.addOutputDirectoryArg("punc_data");
     gen_punc_run.addArg(tables_eol_option);
     gen_punc_run.addArg(target_endian_arg);
-    gen_punc_run.addFileArg(b.path("src/punctuation-marks/normal.txt"));
-    gen_punc_run.addFileArg(b.path("src/punctuation-marks/paired.txt"));
+    gen_punc_run.addFileArg(b.path("punctuation-marks/normal.txt"));
+    gen_punc_run.addFileArg(b.path("punctuation-marks/paired.txt"));
 
     // Blob module wrapping punc.bin via @embedFile, exposed as `punc_blob`.
     const punc_blob_module = b.createModule(.{

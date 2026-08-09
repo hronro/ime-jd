@@ -1,7 +1,7 @@
 //! Exposes the punctuation-marks table data as a raw blob of bytes.
 //!
 //! The blob is built at build time by `scripts/gen_punc.zig` (driven by
-//! `build.zig`) from `src/punctuation-marks/*.txt`. At runtime, `jd_init`
+//! `build.zig`) from `punctuation-marks/*.txt`. At runtime, `jd_init`
 //! calls `punc.Punc.fromBytes(blob_bytes)` to reinterpret the embedded
 //! bytes as a `Punc` view in O(1) — no parsing, no copying.
 

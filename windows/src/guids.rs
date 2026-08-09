@@ -10,6 +10,6 @@ pub const GUID_JD_DISPLAY_ATTRIBUTE: GUID = GUID::from_u128(0x59775ca8_b5ab_4b07
 /// same UIElement reappearing across compositions / sessions.
 pub const GUID_JD_UI_ELEMENT: GUID = GUID::from_u128(0x5a8d7b92_4e3f_4c18_9f2a_b5c6d7e8f901);
 
-// Simplified Chinese (PRC) — matches the simplified-character tables under core/src/tables/.
+// Simplified Chinese (PRC) — matches the simplified-character tables under core/tables/.
 pub const LANGID_ZH_CN: u16 = 0x0804;
 pub const IME_DESCRIPTION: &str = "键道";

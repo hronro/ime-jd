@@ -60,7 +60,7 @@ final class KeyLayoutTests: XCTestCase {
     }
 
     /// Every mark in the engine's punctuation inventory
-    /// (core/src/punctuation-marks/) stays reachable as a key or an alternate,
+    /// (core/punctuation-marks/) stays reachable as a key or an alternate,
     /// however the planes get reshuffled.
     func testEngineInventoryStaysReachable() {
         let inventory = [

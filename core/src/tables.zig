@@ -1,7 +1,7 @@
 //! Exposes the table data as a raw blob of bytes.
 //!
 //! The blob is built at build time by `scripts/gen_trie.zig` (driven by
-//! `build.zig`) from `src/tables/*.txt`. At runtime, `jd_init` calls
+//! `build.zig`) from `tables/*.txt`. At runtime, `jd_init` calls
 //! `trie.Trie.fromBytes(blob_bytes)` to reinterpret the embedded bytes as
 //! a `Trie` view in O(1) — no parsing, no copying.
 

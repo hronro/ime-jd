@@ -68,7 +68,7 @@ class KeyLayoutTest {
     }
 
     /** Every mark in the engine's punctuation inventory
-     *  (core/src/punctuation-marks/) stays reachable as a key or an alternate. */
+     *  (core/punctuation-marks/) stays reachable as a key or an alternate. */
     @Test
     fun engineInventoryStaysReachable() {
         val inventory = listOf(

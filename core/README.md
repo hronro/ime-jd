@@ -13,14 +13,14 @@ The build runs two parallel host-side generators that emit blobs the target embe
 ```
 Host (build time)                          Target (runtime)
 ─────────────────                          ────────────────
-src/tables/*.txt
+tables/*.txt
        │
        ▼
 gen_trie  ──►  trie.bin
                   │
                   └──► @embedFile ──► Trie.fromBytes  (O(1) ptr-cast)
                                             │
-src/punctuation-marks/*.txt                 │
+punctuation-marks/*.txt                     │
        │                                    │
        ▼                                    │
 gen_punc  ──►  punc.bin                     │
@@ -36,9 +36,9 @@ gen_punc  ──►  punc.bin                     │
                                             └── pair_toggle_bits  (1 bit / ASCII key)
 ```
 
-**Trie pipeline.** At build time, `scripts/gen_trie.zig` parses every `src/tables/*.txt` file, builds a trie via `trie.buildBlob`, and writes `trie.bin` plus a tiny wrapper module that does `@embedFile("trie.bin")`. The library imports that wrapper through the `trie_blob` module name and exposes it as a 4-byte-aligned `[]const u8` (see `src/tables.zig`).
+**Trie pipeline.** At build time, `scripts/gen_trie.zig` parses every `tables/*.txt` file, builds a trie via `trie.buildBlob`, and writes `trie.bin` plus a tiny wrapper module that does `@embedFile("trie.bin")`. The library imports that wrapper through the `trie_blob` module name and exposes it as a 4-byte-aligned `[]const u8` (see `src/tables.zig`).
 
-**Punctuation pipeline.** `scripts/gen_punc.zig` does the same for `src/punctuation-marks/normal.txt` (key + N candidate values) and `paired.txt` (key + open + close), producing `punc.bin` and a `punc_blob` wrapper. The runtime view (`punc.Punc`) is two inline 256-slot tables directly indexed by ASCII byte plus a shared NUL-separated strings pool — no prefix-sum, just one indexed load per lookup. Conflicts (same key in both files, reserved keys like space / `;` / digits, duplicate keys within a file) are caught at build time.
+**Punctuation pipeline.** `scripts/gen_punc.zig` does the same for `punctuation-marks/normal.txt` (key + N candidate values) and `paired.txt` (key + open + close), producing `punc.bin` and a `punc_blob` wrapper. The runtime view (`punc.Punc`) is two inline 256-slot tables directly indexed by ASCII byte plus a shared NUL-separated strings pool — no prefix-sum, just one indexed load per lookup. Conflicts (same key in both files, reserved keys like space / `;` / digits, duplicate keys within a file) are caught at build time.
 
 **At runtime**, `jd_init` reinterprets each blob as a `Trie` / `Punc` view in O(1) — no parsing, no copying. On each `jd_press_key`, the engine first checks the punctuation tables (paired then normal) before falling back to the trie. Paired entries flip a per-context toggle bit so consecutive presses alternate halves; multi-candidate normals open a candidate window via `PuncPagination` (lives alongside `NodePagination` in `src/pagination.zig`).
 
@@ -68,3 +68,18 @@ zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast   # zig-out/bin/jd
 See [docs/integration.md](./docs/integration.md#webassembly) for the WebAssembly specifics, and `bindings/javascript` for the ergonomic JavaScript wrapper.
 
 The `-Dtables_eol=lf|crlf` option controls how the build-time generator splits table files. Defaults to `lf`; pass `crlf` on Windows checkouts that may have CRLF endings.
+
+## Layout
+
+```
+build.zig            build graph: runs the generators, then builds the lib
+build.zig.zon        package manifest (single source of truth for the version)
+tables/              trie source data — *.txt, generator input
+punctuation-marks/   punctuation source data — *.txt, generator input
+scripts/             host-side generators (gen_trie.zig, gen_punc.zig)
+src/                 library sources — .zig only
+include/             public C headers
+docs/                integration guide
+```
+
+The `.txt` files under `tables/` and `punctuation-marks/` are data, not compilation units: the Zig compiler never sees them. `build.zig` feeds them to the host-side generators, and only the resulting `.bin` blobs get embedded into the library. Both directories are listed in `build.zig.zon`'s `.paths`, so they travel with the package.

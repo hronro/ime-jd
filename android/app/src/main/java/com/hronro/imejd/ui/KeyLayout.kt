@@ -136,7 +136,7 @@ object KeyLayout {
 
     // Digits + Chinese punctuation, shown directly (not the ASCII forms). The two
     // pages plus their long-press groups cover every mark in
-    // core/src/punctuation-marks/, arranged by frequency the way Gboard's symbol
+    // core/punctuation-marks/, arranged by frequency the way Gboard's symbol
     // pages are: this ?123 page mirrors Gboard's (its `@ # ￥ _ & - + ( ) /` and
     // `* " ' : ; ! ?` rows, with ＄ in the ￥ slot and 、 beside the ：；pair),
     // while ，/。 stay on the bottom row of every plane. Keys insert their mark

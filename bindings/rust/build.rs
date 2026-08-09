@@ -60,6 +60,9 @@ fn main() {
         println!("cargo:rerun-if-changed=../../core/src");
         println!("cargo:rerun-if-changed=../../core/build.zig");
         println!("cargo:rerun-if-changed=../../core/scripts");
+        // Generator inputs live outside src/, so they need their own triggers.
+        println!("cargo:rerun-if-changed=../../core/tables");
+        println!("cargo:rerun-if-changed=../../core/punctuation-marks");
 
         core_dir.join("zig-out").join("lib")
     };
