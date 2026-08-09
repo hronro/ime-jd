@@ -13,3 +13,4 @@ http://daniushuangpin.ys168.com/	owp
 http://xxjd.ys168.com/	owp
 http://xxjd.ys168.com/	oxx
 https://keytao.vercel.app	oyb
+https://github.com/hronro/ime-jd	ojd
