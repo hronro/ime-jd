@@ -506,7 +506,7 @@ jobs:
   #   ASC_ISSUER_ID          — App Store Connect API issuer ID
   #   ASC_KEY_P8             — the API key (.p8), base64
   upload-ios-appstore:
-    name: ios App Store upload
+    name: iOS App Store upload
     runs-on: macos-26
     needs: build-libs
     steps:
