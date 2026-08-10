@@ -49,7 +49,7 @@ iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法
 - **Windows**: 下载 `jd-ime-{版本号}-windows-{架构}.zip`
 - **macOS**: 下载 `jd-ime-{版本号}-macos-{架构}.pkg`
 - **Android**: 下载 `jd-ime-{版本号}-android-{架构}.apk` 
-- **iOS**: 我们在 GitHub Release 页面亦分发未签名的 `jd-ime-{版本号}-ios.ipa` 文件，有需求的用户可以使用 Sideload 工具进行自签安装
+- **iOS**: 我们在 GitHub Releases 页面亦分发未签名的 `jd-ime-{版本号}-ios.ipa` 文件，有需求的用户可以使用 Sideload 工具进行自签安装
 
 ## 🤝 致谢
 
