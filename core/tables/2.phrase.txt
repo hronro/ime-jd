@@ -85,6 +85,7 @@
 比比皆是	bbjev
 本报记者	bbjf
 标本兼治	bbjfv
+钵钵鸡	bbji
 摈除	bbjj
 并不仅仅	bbjjo
 变本加厉	bbjl
@@ -1478,6 +1479,7 @@
 病上	bgepo
 不甘示弱	bger
 兵贵神速	bges
+冰沙	bgeso
 不过是	bgev
 不光是	bgevi
 不管是	bgevu
@@ -1591,6 +1593,7 @@
 病菌	bgjw
 丙醇	bgjwv
 并将	bgjx
+冰浆	bgjxo
 宝贵经验	bgjy
 冰超	bgjz
 不挂科	bgk
@@ -4977,6 +4980,7 @@
 标准间	bqjvoo
 不正常	bqjvv
 补助款	bqk
+标准库	bqkv
 冰淇淋	bql
 鼻青脸肿	bqlf
 比起来	bqlv
@@ -13483,6 +13487,7 @@
 多人	dlrn
 躲让	dlrp
 大陆人	dlrv
+大六壬	dlrvo
 杜蕾斯	dls
 多岁	dlsb
 多色	dlse
@@ -16146,6 +16151,7 @@
 董事	dyeki
 东市	dyekv
 东施	dyekvo
+动视	dyekvo
 第一生产力	dyel
 动身	dyen
 冻伤	dyep
@@ -20574,6 +20580,7 @@
 誓死	ekski
 失算	ekst
 试算	eksto
+石蒜	ekstv
 石笋	eksw
 试送	eksy
 收款台	ekt
@@ -20671,6 +20678,7 @@
 是些	ekxdo
 使俄	ekxe
 是按	ekxf
+尸胺	ekxfa
 适可而止	ekxfu
 实行	ekxg
 试行	ekxgo
@@ -25399,6 +25407,7 @@
 反腐	fffju
 繁复	fffjuu
 凡夫	fffjuv
+翻覆	fffjuv
 反之	fffk
 泛指	fffka
 繁殖	fffku
@@ -26905,6 +26914,7 @@
 扶额	fjxeio
 伏案	fjxf
 福安	fjxfo
+腐胺	fjxfou
 专家学者	fjxfv
 复兴	fjxg
 福星	fjxgo
@@ -50648,6 +50658,7 @@
 剧照	jlfz
 脊梁骨	jlg
 经历过	jlga
+巨构	jlgd
 举个	jlge
 橘柑	jlgf
 巨贾	jlgj
@@ -51950,6 +51961,7 @@
 偿债	jpfh
 偿付	jpfj
 常服	jpfji
+极品飞车	jpfjv
 厂址	jpfk
 长治	jpfku
 长桌	jpfl
@@ -51964,6 +51976,7 @@
 唱法	jpfso
 常转	jpft
 长篇幅	jpfu
+极品飞车	jpfw
 长庄	jpfx
 场中	jpfy
 常找	jpfz
@@ -68169,6 +68182,7 @@
 闷在	mnzh
 门卒	mnzj
 门子	mnzk
+美乃滋	mnzo
 忙不	mpbj
 忙吧	mpbs
 盲猜	mpch
@@ -70001,6 +70015,7 @@
 女扮男装	nbnf
 男扮女装	nbnfi
 闹别扭	nbno
+您能	nbnr
 弄不弄	nbnv
 拿不准	nbq
 您瞧	nbqc
@@ -88825,6 +88840,7 @@
 斯坦福	stf
 酸腐	stfj
 酸值	stfk
+酸粉	stfn
 算法	stfs
 斯坦福大学	stfx
 所提供	stg
@@ -93268,6 +93284,7 @@
 躺椅	tpyk
 糖衣	tpyko
 唐裕	tpyl
+唐扬	tpyp
 汤圆	tpyt
 糖原	tpyto
 特派员	tpyu
@@ -95965,6 +95982,7 @@
 丸吞	wftw
 顽童	wfty
 万套	wftz
+王中王	wfw
 稳扎稳打	wfwd
 晚车	wfwe
 玩玩	wfwf
@@ -95986,6 +96004,7 @@
 晚茶	wfws
 玩穿	wfwt
 无法无天	wfwtv
+微服务	wfwu
 玩味	wfww
 万重	wfwy
 万中无一	wfwyv
@@ -99650,6 +99669,7 @@
 穿插	wtws
 串串	wtwt
 船尾	wtww
+串位	wtwwi
 彻头彻尾	wtwwu
 传抄	wtwz
 文天祥	wtx
@@ -100322,6 +100342,7 @@
 胃癌	wwxh
 为学	wwxho
 为爱	wwxhou
+串串香	wwxi
 味儿	wwxj
 威尔	wwxjv
 维系	wwxk
@@ -102297,6 +102318,7 @@
 肖琳	xclbiv
 笑林	xclbu
 笑料	xclc
+小料	xclci
 小楼	xcld
 小了	xcle
 消了	xclea
@@ -106384,6 +106406,7 @@
 虚损	xlsw
 许嵩	xlsy
 线粒体	xlt
+阿勒泰	xlta
 叙谈	xltf
 序厅	xltg
 小灵通	xlti
@@ -107908,6 +107931,7 @@
 虾米	xsmk
 阿迷	xsmka
 瞎摸	xsml
+阿嬷	xsmla
 下面	xsmm
 厦门	xsmn
 阿门	xsmna
@@ -111573,6 +111597,7 @@
 与世隔绝	yegj
 掖咕	yegji
 野果	yegl
+椰果	yeglv
 夜光	yegm
 业根	yegn
 也更	yegr
@@ -115147,6 +115172,7 @@
 育龄	yllg
 愈来	yllh
 语录	yllj
+鱼露	yllju
 雨露	ylljv
 余力	yllk
 雨里	yllkv
@@ -115194,6 +115220,7 @@
 愚氓	ylmr
 愚昧	ylmw
 羽毛	ylmz
+浴帽	ylmza
 阴历年	yln
 鱼鸟	ylnc
 余孽	ylnd
