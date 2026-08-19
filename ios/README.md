@@ -119,3 +119,5 @@ Configure these repo **Secrets** (base64-encode the binary blobs, e.g. `base64 -
 One-time prerequisites on Apple's side: a paid **Apple Developer Program** membership; the **App record** created in App Store Connect for `com.hronro.ime-jd` (metadata, screenshots, privacy-policy URL, App Privacy = *Data Not Collected*); and the Distribution certificate + both App Store profiles generated. The lane uploads the binary only (`skip_metadata`, `skip_screenshots`, `submit_for_review: false`) — once it lands, attach the build to your App Store version and submit for review from the ASC website (the "direct to store" flow, no TestFlight distribution). Re-uploading the **same** marketing version needs a higher build number (bump the tag's patch).
 
 > This lane can only be validated by running it on macOS — it can't be exercised from the Linux dev box, so expect to shake out signing specifics (profile names, keychain) on the first real tag.
+
+For a hand-driven upload that needs no CI secrets (e.g. a first release, or when the App Store Connect API key can't be shared), see [docs/manual-release.md](docs/manual-release.md).
