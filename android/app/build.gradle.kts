@@ -38,7 +38,7 @@ android {
         release {
             // R8 strips the ~90% of appcompat/kotlin-stdlib this app never
             // calls (dex 5.5 MB -> 0.6 MB). Safe ONLY together with
-            // proguard-rules.pro: QuerySnapshot/Candidate are constructed from
+            // proguard-rules.pro: EngineState/Candidate are constructed from
             // C code (FindClass in jd_jni.c), a reference R8 cannot see.
             isMinifyEnabled = true
             isShrinkResources = true

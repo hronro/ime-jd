@@ -97,10 +97,15 @@ for abi in $ABIS; do
     fi
 
     # 2. JNI shim -> libjdjni.so, linked against the dynamic libjd.so
+    # -z max-page-size=16384: 16 KB-page devices refuse (Android 15) or
+    # compat-shim with a warning dialog (16+) any .so whose LOAD segments are
+    # 4 KB-aligned. NDK r28+ defaults to 16 KB but CI/local NDKs vary, so pin
+    # it. (zig's libjd.so is already 64 KB-aligned on arm64, lld's default.)
     out="$JNILIBS_DIR/$abi"
     mkdir -p "$out"
     cp "$libjd_so" "$out/libjd.so"
     "$CLANG" --target="$clang_target" -shared -fPIC -O2 \
+        -Wl,-z,max-page-size=16384 \
         -I"$CORE_DIR/include" \
         "$SHIM" -L"$(dirname "$libjd_so")" -ljd \
         -o "$out/libjdjni.so"

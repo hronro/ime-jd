@@ -36,6 +36,11 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
         return JNI_ERR;
     }
 
+    // Every class instantiated from C here must keep its name AND constructor
+    // in ../../../proguard-rules.pro — R8 cannot see these references, and it
+    // silently ignores keep rules whose class no longer exists. Renaming a
+    // class on the Kotlin side without updating the keep rule ships a release
+    // IME that crashes right here on its first popup.
     jclass c;
     c = (*env)->FindClass(env, "com/hronro/imejd/engine/EngineState");
     g_state_cls = (jclass)(*env)->NewGlobalRef(env, c);
