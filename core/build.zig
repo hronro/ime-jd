@@ -169,6 +169,14 @@ pub fn build(b: *std.Build) void {
             .root_module = lib_mod,
             .linkage = .dynamic,
         });
+        // Android's 16 KB-page devices reject .so files whose LOAD segments
+        // are 4 KB-aligned (hard dlopen failure on Android 15, compat-mode
+        // warning on 16+). lld's default is 64 KB on aarch64 — already fine —
+        // but 4 KB on x86_64, so pin the emulator slice to match. The JNI
+        // shim gets the same treatment in android/scripts/build-libjd.sh.
+        if (target.result.abi.isAndroid()) {
+            dynamic_lib.link_z_max_page_size = 16 * 1024;
+        }
 
         // `bundle_compiler_rt` was set in Debug builds in the original build.zig
         // to inline compiler-rt into the archive, but on macOS that produces an
