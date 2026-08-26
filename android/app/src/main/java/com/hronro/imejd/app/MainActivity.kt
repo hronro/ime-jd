@@ -10,6 +10,7 @@ import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -18,7 +19,9 @@ import com.google.android.material.R as MaterialR
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.color.DynamicColors
 import com.google.android.material.color.MaterialColors
+import com.google.android.material.materialswitch.MaterialSwitch
 import com.hronro.imejd.R
+import com.hronro.imejd.ui.KeyFeedback
 
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,6 +64,23 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(this@MainActivity, KeyboardPreviewActivity::class.java))
             }
         }
+        // Key-press feedback toggles, the ones the built-in keyboards also
+        // offer (Gboard/AOSP; the iOS keyboard always clicks — extensions
+        // have no settings surface there). They write the prefs KeyFeedback
+        // re-reads on every press, so a flip applies immediately to the
+        // try-field below, the preview screen, and the real IME.
+        val soundSwitch = MaterialSwitch(this).apply {
+            text = getString(R.string.key_sound)
+            textSize = 16f
+            isChecked = KeyFeedback.isSoundEnabled(context)
+            setOnCheckedChangeListener { _, on -> KeyFeedback.setSoundEnabled(context, on) }
+        }
+        val vibrationSwitch = MaterialSwitch(this).apply {
+            text = getString(R.string.key_vibration)
+            textSize = 16f
+            isChecked = KeyFeedback.isVibrationEnabled(context)
+            setOnCheckedChangeListener { _, on -> KeyFeedback.setVibrationEnabled(context, on) }
+        }
         val tryField = EditText(this).apply {
             hint = getString(R.string.try_hint)
         }
@@ -75,9 +95,16 @@ class MainActivity : AppCompatActivity() {
         root.addView(enableBtn, lp)
         root.addView(switchBtn, lp)
         root.addView(previewBtn, lp)
+        root.addView(soundSwitch, lp)
+        root.addView(vibrationSwitch, lp)
         root.addView(tryField, lp)
 
-        setContentView(root)
+        // The switch rows tipped the column past short screens (landscape,
+        // small phones) — let it scroll instead of clipping the try-field.
+        setContentView(ScrollView(this).apply {
+            isFillViewport = true
+            addView(root)
+        })
 
         // Edge-to-edge (enforced at targetSdk 35): keep the fixed padding and
         // add the system-bar/cutout insets on top of it.

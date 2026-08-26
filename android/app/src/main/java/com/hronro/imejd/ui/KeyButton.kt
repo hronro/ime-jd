@@ -1,8 +1,9 @@
 // A single key, Material-styled: rounded surface with a touch ripple, centered
-// glyph, slide-off cancel, press-and-hold repeat for backspace, and
-// press-and-hold alternates on grouped punctuation (hold expands the balloon
-// into a row; sliding moves the selection; release commits it). (Logic follows
-// ios/Keyboard/UI/KeyButton.swift; the look is native Android.)
+// glyph, slide-off cancel, sound/vibration feedback on touch-down (KeyFeedback),
+// press-and-hold repeat for backspace, and press-and-hold alternates on grouped
+// punctuation (hold expands the balloon into a row; sliding moves the selection;
+// release commits it). (Logic follows ios/Keyboard/UI/KeyButton.swift; the look
+// is native Android.)
 package com.hronro.imejd.ui
 
 import android.annotation.SuppressLint
@@ -166,6 +167,7 @@ class KeyButton(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                KeyFeedback.play(this, spec.cap)
                 isPressed = true
                 drawableHotspotChanged(event.x, event.y)
                 preview(KeyPreviewEvent.SHOW)
@@ -234,7 +236,12 @@ class KeyButton(
     // Fire immediately on down, then after 350ms repeat every 100ms (matches iOS).
     private fun startRepeat() {
         val r = object : Runnable {
-            override fun run() { fire(); handler.postDelayed(this, 100) }
+            override fun run() {
+                // The system keyboard sounds/vibrates on every repeat tick.
+                KeyFeedback.play(this@KeyButton, spec.cap)
+                fire()
+                handler.postDelayed(this, 100)
+            }
         }
         repeatRunnable = r
         handler.postDelayed(r, 350)

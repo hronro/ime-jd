@@ -197,17 +197,19 @@ class KeyboardView(
 
     private fun select(index: Int) {
         if (index < 0 || index >= items.size) return
+        KeyFeedback.playInput(this)
         collapseGrid()
         session.commitCandidate(items[index].value)
     }
 
     private fun expandGrid() {
         if (gridOverlay != null || items.isEmpty()) return
+        KeyFeedback.playModifier(this)
         val grid = CandidateGridView(context, theme)
         grid.setItems(items)
         grid.onSelect = { i -> select(i) }
         grid.onNeedMore = { loadMore() }
-        grid.onClose = { collapseGrid() }
+        grid.onClose = { KeyFeedback.playModifier(this); collapseGrid() }
         addView(grid, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         gridOverlay = grid
     }

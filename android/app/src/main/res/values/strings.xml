@@ -9,5 +9,7 @@
     <string name="switch_ime">切换输入法</string>
     <string name="preview_keyboard">试用键盘（无需启用）</string>
     <string name="preview_title">试用键盘</string>
+    <string name="key_sound">按键音效</string>
+    <string name="key_vibration">按键振动</string>
     <string name="try_hint">在此试打：输入 jd 试试</string>
 </resources>
