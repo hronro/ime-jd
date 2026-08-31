@@ -95,25 +95,53 @@ enum KeyLayout {
     /// what frees plane slots: a grouped mark deliberately has NO key of its
     /// own (enforced by KeyLayoutTests) — retiring the dedicated ‘ ’ 『 』
     /// 〖 〗 〔 〕 ［ ］ ¦ keys made room for ； · × ÷ ※ ℃ √ → ★ ♡ ©.
+    ///
+    /// Width pairs (@/＠ …) live in one group and the KEY carries whichever
+    /// width people actually reach for: ASCII on the techy marks (emails,
+    /// hashtags, code, decimals), full-width on the Chinese-prose marks, whose
+    /// ASCII twins ride along as alternates (12:30, 3.14, (1), <a>). The two
+    /// faces are near identical, so the popup badges co-present twins 半/全
+    /// (`widthBadge`). Within a group, existing marks keep their slide
+    /// distance and a newcomer joins at the back, unless frequency clearly
+    /// says otherwise (. outranks °, ｜ outranks ¦, ￥ keeps the slot next
+    /// to $).
     private static let alternates: [String: [String]] = [
         "0": ["〇"],
         "“": ["‘"],
         "”": ["’"],
         "「": ["『"],
         "」": ["』"],
-        "【": ["〖", "［", "〔"],
-        "】": ["〗", "］", "〕"],
-        "｜": ["¦"],
-        "《": ["〈", "＜", "«"],
-        "》": ["〉", "＞", "»"],
-        "。": ["°"],
+        "【": ["〖", "［", "〔", "["],
+        "】": ["〗", "］", "〕", "]"],
+        "《": ["〈", "＜", "«", "<"],
+        "》": ["〉", "＞", "»", ">"],
+        "。": [".", "°"],
+        "，": [","],
+        "；": [";"],
+        "：": [":"],
+        "？": ["?"],
+        "！": ["!"],
+        "～": ["~"],
+        "（": ["("],
+        "）": [")"],
         "·": ["•"],
         "…": ["⋯", "……"],
-        "－": ["——", "—"],
-        "＄": ["￥", "€", "£"],
-        "％": ["‰"],
-        "＋": ["±"],
-        "＝": ["≠", "≈"],
+        "-": ["——", "—", "－"],
+        "/": ["／"],
+        "@": ["＠"],
+        "#": ["＃"],
+        "$": ["￥", "€", "£", "＄"],
+        "%": ["‰", "％"],
+        "&": ["＆"],
+        "*": ["＊"],
+        "_": ["＿"],
+        "=": ["≠", "≈", "＝"],
+        "+": ["±", "＋"],
+        "\\": ["＼"],
+        "|": ["｜", "¦"],
+        "{": ["｛"],
+        "}": ["｝"],
+        "`": ["｀"],
         "℃": ["℉"],
         "√": ["✓"],
         "→": ["←", "↑", "↓"],
@@ -124,6 +152,31 @@ enum KeyLayout {
         "♡": ["♥"],
         "©": ["®", "™"],
     ]
+
+    // MARK: - Half/full width pairs
+
+    /// The full-width twin of every ASCII mark the planes deal in (。/. pair
+    /// by role rather than shape). Which width a KEY defaults to is the plane
+    /// layout's call, not this table's.
+    static let fullWidthTwin: [String: String] = [
+        "@": "＠", "#": "＃", "$": "＄", "%": "％", "&": "＆", "*": "＊",
+        "_": "＿", "=": "＝", "+": "＋", "-": "－", "/": "／", "\\": "＼",
+        "|": "｜", "{": "｛", "}": "｝", "`": "｀", "~": "～", ":": "：",
+        ";": "；", "?": "？", "!": "！", "(": "（", ")": "）", ",": "，",
+        ".": "。", "<": "＜", ">": "＞", "[": "［", "]": "］",
+    ]
+
+    private static let halfWidthTwin: [String: String] =
+        Dictionary(uniqueKeysWithValues: fullWidthTwin.map { ($1, $0) })
+
+    /// The 半/全 corner badge for one press-and-hold cell: present only when
+    /// the group also holds the value's other-width twin — the near-identical
+    /// faces are then told apart by the badge alone.
+    static func widthBadge(for value: String, inGroup group: [String]) -> String? {
+        if let full = fullWidthTwin[value], group.contains(full) { return "半" }
+        if let half = halfWidthTwin[value], group.contains(half) { return "全" }
+        return nil
+    }
 
     private static func letters(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
         var rows: [[KeySpec]] = []
@@ -139,8 +192,9 @@ enum KeyLayout {
         return rows
     }
 
-    // Digits + Chinese punctuation, shown directly (not the ASCII forms). The two
-    // pages plus their long-press groups cover every mark in
+    // Digits + punctuation, each key showing the mark it inserts — the more
+    // commonly used width where a mark has two (half - / $ @, full ：～（）).
+    // The two pages plus their long-press groups cover every mark in
     // core/punctuation-marks/, arranged by frequency like the built-in Pinyin
     // keyboard: the most common marks sit on this page's bottom row within thumb
     // reach, the rare ones live on #+=. Keys insert their mark via the engine-
@@ -149,7 +203,7 @@ enum KeyLayout {
     private static func numbers(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
         var rows: [[KeySpec]] = [
             litRow(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]),
-            litRow(["－", "／", "：", "～", "（", "）", "＄", "＠", "“", "”"]),
+            litRow(["-", "/", "：", "～", "（", "）", "$", "@", "“", "”"]),
             [KeySpec(.toLayer(.symbols), 1.5)]
                 + litRow(["。", "，", "、", "；", "？", "！", "…", "·"])
                 + [KeySpec(.backspace, 1.5)],
@@ -160,8 +214,8 @@ enum KeyLayout {
 
     private static func symbols(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
         var rows: [[KeySpec]] = [
-            litRow(["「", "」", "【", "】", "｛", "｝", "＃", "％", "＆", "＊"]),
-            litRow(["＿", "＝", "＋", "×", "÷", "＼", "｜", "《", "》", "｀"]),
+            litRow(["「", "」", "【", "】", "{", "}", "#", "%", "&", "*"]),
+            litRow(["_", "=", "+", "×", "÷", "\\", "|", "《", "》", "`"]),
             // Seven keys, no spacers: weights sum to 10, so the grid aligns
             // with the 10-key rows above and the row reads as full.
             [KeySpec(.toLayer(.numbers), 1.5)]

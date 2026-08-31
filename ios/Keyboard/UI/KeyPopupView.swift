@@ -12,6 +12,8 @@ final class KeyPopupView: UIView {
     private let theme: KeyboardTheme
     private var displayValues: [String] = []
     private var labels: [UILabel] = []
+    /// 半/全 corner tags on width twins (@ vs ＠ …); nil for unambiguous cells.
+    private var badges: [UILabel?] = []
     private var highlight: CALayer?
     /// True when the display order is right-to-left (a right-half key's group
     /// extends left, keeping the primary above the finger).
@@ -185,6 +187,21 @@ final class KeyPopupView: UIView {
                                  width: cellWidth, height: balloonHeight)
             content.addSubview(label)
             labels.append(label)
+            // A width pair in one group (@ and ＠) is two near-identical
+            // faces — a small 半/全 tag in each cell's top-left corner is
+            // what tells them apart.
+            if alternatesRow,
+               let badge = KeyLayout.widthBadge(for: value, inGroup: displayValues) {
+                let tag = UILabel()
+                tag.text = badge
+                tag.font = .systemFont(ofSize: 9, weight: .medium)
+                tag.textColor = theme.popupText.withAlphaComponent(0.55)
+                tag.frame = CGRect(x: label.frame.minX + 4, y: 3, width: 14, height: 11)
+                content.addSubview(tag)
+                badges.append(tag)
+            } else {
+                badges.append(nil)
+            }
         }
         if alternatesRow {
             // Start on the primary — the cell above the finger.
@@ -224,7 +241,11 @@ final class KeyPopupView: UIView {
             hl.isHidden = true
         }
         for (j, label) in labels.enumerated() {
-            label.textColor = j == selectedDisplay ? .white : theme.popupText
+            let selected = j == selectedDisplay
+            label.textColor = selected ? .white : theme.popupText
+            badges[j]?.textColor = selected
+                ? UIColor.white.withAlphaComponent(0.85)
+                : theme.popupText.withAlphaComponent(0.55)
         }
     }
 

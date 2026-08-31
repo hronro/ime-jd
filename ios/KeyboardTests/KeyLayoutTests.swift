@@ -82,9 +82,63 @@ final class KeyLayoutTests: XCTestCase {
             guard case .insertLiteral(let s) = spec.cap, !spec.alternates.isEmpty else { return nil }
             return s
         })
-        for primary in ["0", "“", "”", "「", "」", "【", "】", "｜", "《", "》",
-                        "。", "·", "…", "－", "＄", "℃", "√", "→", "★", "♡", "©"] {
+        for primary in ["0", "“", "”", "「", "」", "【", "】", "《", "》",
+                        "。", "，", "；", "：", "？", "！", "～", "（", "）",
+                        "·", "…", "-", "/", "@", "#", "$", "%", "&", "*",
+                        "_", "=", "+", "\\", "|", "{", "}", "`",
+                        "℃", "√", "→", "★", "♡", "©"] {
             XCTAssertTrue(mounted.contains(primary), "group on \(primary) is not on any plane")
         }
+    }
+
+    // MARK: - Half/full width pairs
+
+    private func group(of primary: String) -> [String] {
+        allSpecs.first { $0.cap == .insertLiteral(primary) }?.alternates ?? []
+    }
+
+    /// Techy marks are reached for in their ASCII form far more often than in
+    /// full-width (emails, hashtags, code, paths), so the HALF-width form is
+    /// the key — a short press inserts it — and the full-width twin moved
+    /// into the press-and-hold group.
+    func testTechMarksDefaultToHalfWidth() {
+        for half in ["@", "#", "$", "%", "&", "*", "_", "=", "+",
+                     "-", "/", "\\", "|", "{", "}", "`"] {
+            guard let full = KeyLayout.fullWidthTwin[half] else {
+                XCTFail("\(half) missing from fullWidthTwin"); continue
+            }
+            XCTAssertTrue(literalKeys.contains(half), "\(half) must be a key")
+            XCTAssertFalse(literalKeys.contains(full), "\(full) must no longer be a key")
+            XCTAssertTrue(group(of: half).contains(full), "\(full) must be in \(half)'s group")
+        }
+    }
+
+    /// Chinese-prose marks keep the full-width form on the key, but the ASCII
+    /// twin is one hold away (12:30, 3.14, (1), <a>) instead of a keyboard
+    /// switch away.
+    func testProseMarksCarryHalfWidthAlternates() {
+        for (full, half) in [("：", ":"), ("；", ";"), ("？", "?"), ("！", "!"),
+                             ("～", "~"), ("（", "("), ("）", ")"), ("，", ","),
+                             ("。", "."), ("《", "<"), ("》", ">"),
+                             ("【", "["), ("】", "]")] {
+            XCTAssertTrue(literalKeys.contains(full), "\(full) must stay a key")
+            XCTAssertFalse(literalKeys.contains(half), "\(half) must not be a key")
+            XCTAssertTrue(group(of: full).contains(half), "\(half) must be in \(full)'s group")
+        }
+    }
+
+    /// The popup badges BOTH cells of a co-present width pair (the faces are
+    /// near identical) and nothing else.
+    func testWidthBadges() {
+        XCTAssertEqual(KeyLayout.widthBadge(for: "@", inGroup: ["@", "＠"]), "半")
+        XCTAssertEqual(KeyLayout.widthBadge(for: "＠", inGroup: ["@", "＠"]), "全")
+        XCTAssertEqual(KeyLayout.widthBadge(for: ".", inGroup: ["。", ".", "°"]), "半")
+        XCTAssertEqual(KeyLayout.widthBadge(for: "。", inGroup: ["。", ".", "°"]), "全")
+        XCTAssertNil(KeyLayout.widthBadge(for: "°", inGroup: ["。", ".", "°"]))
+        XCTAssertNil(KeyLayout.widthBadge(for: "￥", inGroup: ["$", "￥", "€", "£", "＄"]))
+        XCTAssertNil(KeyLayout.widthBadge(for: "«", inGroup: ["《", "〈", "＜", "«", "<"]))
+        XCTAssertEqual(KeyLayout.widthBadge(for: "＜", inGroup: ["《", "〈", "＜", "«", "<"]), "全")
+        XCTAssertNil(KeyLayout.widthBadge(for: "@", inGroup: ["@"]),
+                     "no twin in the group → nothing to tell apart → no badge")
     }
 }
