@@ -93,6 +93,15 @@ object KeyLayout {
      * Grouping is what frees plane slots: a grouped mark deliberately has NO
      * key of its own (enforced by KeyLayoutTest) — retiring the dedicated
      * ‘ ’ 『 』 〖 〗 〔 〕 ［ ］ ¦ keys made room for ； · × ÷ ※ ℃ √ → ★ ♡ ©.
+     *
+     * Width pairs (@/＠ …) live in one group and the KEY carries whichever
+     * width people actually reach for: ASCII on the techy marks (emails,
+     * hashtags, code, decimals), full-width on the Chinese-prose marks, whose
+     * ASCII twins ride along as alternates (12:30, 3.14, (1), <a>). The two
+     * faces are near identical, so the balloon badges co-present twins 半/全
+     * ([widthBadge]). Within a group, existing marks keep their slide distance
+     * and a newcomer joins at the back, unless frequency clearly says
+     * otherwise (. outranks °, ｜ outranks ¦, ￥ keeps the slot next to $).
      */
     private val alternates: Map<String, List<String>> = mapOf(
         "0" to listOf("〇"),
@@ -100,19 +109,37 @@ object KeyLayout {
         "”" to listOf("’"),
         "「" to listOf("『"),
         "」" to listOf("』"),
-        "【" to listOf("〖", "［", "〔"),
-        "】" to listOf("〗", "］", "〕"),
-        "｜" to listOf("¦"),
-        "《" to listOf("〈", "＜", "«"),
-        "》" to listOf("〉", "＞", "»"),
-        "。" to listOf("°"),
+        "【" to listOf("〖", "［", "〔", "["),
+        "】" to listOf("〗", "］", "〕", "]"),
+        "《" to listOf("〈", "＜", "«", "<"),
+        "》" to listOf("〉", "＞", "»", ">"),
+        "。" to listOf(".", "°"),
+        "，" to listOf(","),
+        "；" to listOf(";"),
+        "：" to listOf(":"),
+        "？" to listOf("?"),
+        "！" to listOf("!"),
+        "～" to listOf("~"),
+        "（" to listOf("("),
+        "）" to listOf(")"),
         "·" to listOf("•"),
         "…" to listOf("⋯", "……"),
-        "－" to listOf("——", "—"),
-        "＄" to listOf("￥", "€", "£"),
-        "％" to listOf("‰"),
-        "＋" to listOf("±"),
-        "＝" to listOf("≠", "≈"),
+        "-" to listOf("——", "—", "－"),
+        "/" to listOf("／"),
+        "@" to listOf("＠"),
+        "#" to listOf("＃"),
+        "$" to listOf("￥", "€", "£", "＄"),
+        "%" to listOf("‰", "％"),
+        "&" to listOf("＆"),
+        "*" to listOf("＊"),
+        "_" to listOf("＿"),
+        "=" to listOf("≠", "≈", "＝"),
+        "+" to listOf("±", "＋"),
+        "\\" to listOf("＼"),
+        "|" to listOf("｜", "¦"),
+        "{" to listOf("｛"),
+        "}" to listOf("｝"),
+        "`" to listOf("｀"),
         "℃" to listOf("℉"),
         "√" to listOf("✓"),
         "→" to listOf("←", "↑", "↓"),
@@ -122,6 +149,36 @@ object KeyLayout {
         "♡" to listOf("♥"),
         "©" to listOf("®", "™"),
     )
+
+    // MARK: - Half/full width pairs (mirrors the iOS tables)
+
+    /**
+     * The full-width twin of every ASCII mark the planes deal in (。/. pair by
+     * role rather than shape). Which width a KEY defaults to is the plane
+     * layout's call, not this table's.
+     */
+    val fullWidthTwin: Map<String, String> = mapOf(
+        "@" to "＠", "#" to "＃", "$" to "＄", "%" to "％", "&" to "＆",
+        "*" to "＊", "_" to "＿", "=" to "＝", "+" to "＋", "-" to "－",
+        "/" to "／", "\\" to "＼", "|" to "｜", "{" to "｛", "}" to "｝",
+        "`" to "｀", "~" to "～", ":" to "：", ";" to "；", "?" to "？",
+        "!" to "！", "(" to "（", ")" to "）", "," to "，", "." to "。",
+        "<" to "＜", ">" to "＞", "[" to "［", "]" to "］",
+    )
+
+    private val halfWidthTwin: Map<String, String> =
+        fullWidthTwin.entries.associate { (half, full) -> full to half }
+
+    /**
+     * The 半/全 corner badge for one press-and-hold cell: present only when
+     * the group also holds the value's other-width twin — the near-identical
+     * faces are then told apart by the badge alone.
+     */
+    fun widthBadge(value: String, group: List<String>): String? {
+        fullWidthTwin[value]?.let { if (group.contains(it)) return "半" }
+        halfWidthTwin[value]?.let { if (group.contains(it)) return "全" }
+        return null
+    }
 
     private fun letters(idiom: KeyboardIdiom): List<List<KeySpec>> = listOf(
         charRow("qwertyuiop"),
@@ -134,18 +191,19 @@ object KeyLayout {
         bottomRow(idiom),
     )
 
-    // Digits + Chinese punctuation, shown directly (not the ASCII forms). The two
-    // pages plus their long-press groups cover every mark in
+    // Digits + punctuation, each key showing the mark it inserts — the more
+    // commonly used width where a mark has two (half @ # $ - /, full （）).
+    // The two pages plus their long-press groups cover every mark in
     // core/punctuation-marks/, arranged by frequency the way Gboard's symbol
     // pages are: this ?123 page mirrors Gboard's (its `@ # ￥ _ & - + ( ) /` and
-    // `* " ' : ; ! ?` rows, with ＄ in the ￥ slot and 、 beside the ：；pair),
+    // `* " ' : ; ! ?` rows, with $ in the ￥ slot and 、 beside the ：；pair),
     // while ，/。 stay on the bottom row of every plane. Keys insert their mark
     // via the engine-bypass path (InputSession.insertLiteral); visually similar
     // variants — including marks beyond the engine inventory — hang off
     // `alternates`.
     private fun numbers(idiom: KeyboardIdiom): List<List<KeySpec>> = listOf(
         litRow(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")),
-        litRow(listOf("＠", "＃", "＄", "＿", "＆", "－", "＋", "（", "）", "／")),
+        litRow(listOf("@", "#", "$", "_", "&", "-", "+", "（", "）", "/")),
         listOf(KeySpec(KeyCap.ToLayer(KeyboardLayer.SYMBOLS), 1.5f)) +
             litRow(listOf("“", "”", "：", "；", "、", "！", "？", "·")) +
             listOf(KeySpec(KeyCap.Backspace, 1.5f)),
@@ -158,8 +216,8 @@ object KeyLayout {
     // beyond the engine inventory. The bracket/quote variants (『〖〔［ and the
     // closers) live under their long-press primaries, not on keys.
     private fun symbols(idiom: KeyboardIdiom): List<List<KeySpec>> = listOf(
-        litRow(listOf("～", "｀", "｜", "×", "÷", "＼", "％", "＊", "…", "＝")),
-        litRow(listOf("《", "》", "「", "」", "｛", "｝", "【", "】", "※", "℃")),
+        litRow(listOf("～", "`", "|", "×", "÷", "\\", "%", "*", "…", "=")),
+        litRow(listOf("《", "》", "「", "」", "{", "}", "【", "】", "※", "℃")),
         listOf(KeySpec(KeyCap.ToLayer(KeyboardLayer.NUMBERS), 1.5f)) +
             litRow(listOf("√", "→", "★", "♡", "©")) +
             listOf(KeySpec(KeyCap.Backspace, 1.5f)),

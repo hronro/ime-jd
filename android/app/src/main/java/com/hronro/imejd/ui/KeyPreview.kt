@@ -210,6 +210,10 @@ private class KeyPreviewBalloon(context: Context) : View(context) {
     // slightly smaller so a group reads as a menu, not a wall.
     private val singleTextPx = sp(32f)
     private val cellTextPx = sp(24f)
+    // 半/全 corner tags on width twins (@ vs ＠ …), which are otherwise
+    // near-identical at cell size (mirrors the iOS callout's badges).
+    private val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = sp(9f) }
+    private var badges: List<String?> = emptyList()
     private var text = ""
     private var inkCenter = false
     private var cells: List<String>? = null   // non-null → alternates-row mode
@@ -231,6 +235,7 @@ private class KeyPreviewBalloon(context: Context) : View(context) {
         this.inkCenter = inkCenter
         this.cells = null
         this.selected = null
+        this.badges = emptyList()
         ensureTheme(theme)
         invalidate()
     }
@@ -240,6 +245,7 @@ private class KeyPreviewBalloon(context: Context) : View(context) {
         this.selected = selected
         this.cellWidth = cellWidth
         this.pad = pad
+        this.badges = cells.map { KeyLayout.widthBadge(it, cells) }
         ensureTheme(theme)
         invalidate()
     }
@@ -292,6 +298,16 @@ private class KeyPreviewBalloon(context: Context) : View(context) {
             if (w > maxW) textPaint.textSize = cellTextPx * maxW / w
             textPaint.color = if (i == selected) theme.onAccent else theme.keyText
             drawGlyph(canvas, cell, left + cellWidth / 2f, inkCenter = true)
+            badges.getOrNull(i)?.let { badge ->
+                badgePaint.color = if (i == selected) theme.onAccent else theme.keyText
+                badgePaint.alpha = if (i == selected) 217 else 140   // ≈ .85 / .55
+                canvas.drawText(
+                    badge,
+                    left + 4f * density,
+                    3f * density - badgePaint.fontMetrics.ascent,
+                    badgePaint,
+                )
+            }
         }
     }
 
