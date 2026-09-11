@@ -33,7 +33,13 @@ On a **first-time install**, macOS only re-scans for new input methods at the st
 4. Press **+**, find **键道** under *Chinese, Simplified*, and add it
 5. Pick **键道** from the input-source menu (or use ⌃Space / ⌃⌥Space)
 
-**Upgrading** an already-installed version is just a double-click of the new `.pkg` — no log out/in needed. The installer overwrites the bundle in place and the postinstall restarts the running `JdIME` process, so the new build is live immediately and the existing input source keeps working.
+**Upgrading** an already-installed version is just a double-click of the new `.pkg` — no log out/in needed. The installer overwrites the bundle in place and the postinstall restarts the running `JdIME` process, so the new build is live immediately and the existing input source keeps working. The IME also finds new releases by itself — see [Updates](#updates).
+
+## Updates
+
+While 键道 is the selected input source, the Input menu (the menu-bar input-source dropdown) carries the IME's own items: the version, **检查更新…**, and the **自动检查更新** toggle. With the toggle on (the default), the IME asks GitHub for the latest release at most once a day — at launch and whenever it is activated — and, when that release is newer than the running build, posts one notification per version and adds a **发现新版本 …，下载并安装…** item. Clicking either downloads the `.pkg` for this machine's arch (`arm64` on Apple silicon even when the running build is the Intel slice), verifies it against the SHA-256 GitHub publishes for the asset, and opens it in Installer.app — the same flow as installing by hand, admin prompt included; the postinstall restarts the running IME.
+
+The check sends nothing but the request (a `User-Agent` naming the IME and its version). State lives in the app's defaults — `defaults read com.hronro.ime-jd` shows `JdUpdateAutoCheck`, `JdUpdateLastCheck`, `JdUpdateLatestTag`, and friends; delete `JdUpdateLastCheck` to force a check on the next activation. Plain IDE builds carry version `0.0.0` and never auto-check (the menu's **检查更新…** still works). Implementation: `JdIME/Update/` (`UpdateFeed.swift` is the pure feed model, covered by `JdIMETests/UpdateFeedTests.swift`; `UpdateManager.swift` fetches, notifies, downloads) and `InputController.menu()`.
 
 ## Uninstall
 

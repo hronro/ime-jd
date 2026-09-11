@@ -39,7 +39,11 @@ final class InputController: IMKInputController {
     }
 
     override func activateServer(_ sender: Any!) {
-        // Engine is per-controller; nothing to do on activation.
+        // Engine is per-controller; nothing to do for it on activation. The
+        // daily update check piggybacks here because activation is the one
+        // moment we know the IME is actually in use — and it is a single
+        // defaults read when nothing is due.
+        UpdateManager.shared.checkIfDue()
     }
 
     override func deactivateServer(_ sender: Any!) {
@@ -66,6 +70,62 @@ final class InputController: IMKInputController {
             composition.cancel(client: client)
         }
         endComposition()
+    }
+
+    // MARK: - Input menu
+
+    /// The IME's section of the Input menu (the menu-bar input-source
+    /// dropdown). IMK asks for this every time the menu opens, so the items
+    /// can reflect live state: the version, an update the daily check found,
+    /// a check or download in flight, and the auto-check toggle. Items with a
+    /// nil action are the disabled status lines.
+    override func menu() -> NSMenu! {
+        let updates = UpdateManager.shared
+        let menu = NSMenu(title: "键道")
+
+        let version = updates.currentVersion.map(String.init(describing:)) ?? "0.0.0"
+        menu.addItem(menuItem("键道输入法 \(version)", #selector(openReleasePage(_:))))
+
+        switch updates.phase {
+        case .checking:
+            menu.addItem(menuItem("正在检查更新…", nil))
+        case .downloading:
+            menu.addItem(menuItem("正在下载安装包…", nil))
+        case .idle:
+            menu.addItem(menuItem("检查更新…", #selector(checkForUpdates(_:))))
+            if let update = updates.availableUpdate {
+                menu.addItem(menuItem("发现新版本 \(update.tag)，下载并安装…", #selector(installUpdate(_:))))
+            }
+        }
+
+        menu.addItem(.separator())
+        let autoCheck = menuItem("自动检查更新", #selector(toggleAutoCheck(_:)))
+        autoCheck.state = updates.isAutoCheckEnabled ? .on : .off
+        menu.addItem(autoCheck)
+        return menu
+    }
+
+    /// Items keep a nil target: IMK renders the menu in the text-input menu
+    /// agent and, on selection, sends the action to this controller — the
+    /// pattern the IMK header documents and every open-source IMK IME uses.
+    private func menuItem(_ title: String, _ action: Selector?) -> NSMenuItem {
+        NSMenuItem(title: title, action: action, keyEquivalent: "")
+    }
+
+    @objc private func openReleasePage(_ sender: Any?) {
+        UpdateManager.shared.open(UpdateFeed.releasesPageURL)
+    }
+
+    @objc private func checkForUpdates(_ sender: Any?) {
+        UpdateManager.shared.checkNow()
+    }
+
+    @objc private func installUpdate(_ sender: Any?) {
+        UpdateManager.shared.downloadAndInstall()
+    }
+
+    @objc private func toggleAutoCheck(_ sender: Any?) {
+        UpdateManager.shared.isAutoCheckEnabled.toggle()
     }
 
     // MARK: - IMKCandidates callbacks

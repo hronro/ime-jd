@@ -11,5 +11,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Bundle.main.object(forInfoDictionaryKey: "InputMethodConnectionName") as? String
             ?? "com.hronro.ime-jd_Connection"
         server = IMKServer(name: connectionName, bundleIdentifier: Bundle.main.bundleIdentifier)
+
+        // Update notifications must find their delegate before one can be
+        // clicked; the daily check itself also runs on every activation
+        // (InputController.activateServer), this just covers a long-lived
+        // process that is never re-activated.
+        UpdateManager.shared.installNotificationDelegate()
+        UpdateManager.shared.checkIfDue()
     }
 }
