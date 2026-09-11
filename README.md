@@ -51,6 +51,17 @@ iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法
 - **Android**: 下载 `jd-ime-{版本号}-android-{架构}.apk` 
 - **iOS**: 我们在 GitHub Releases 页面亦分发未签名的 `jd-ime-{版本号}-ios.ipa` 文件，有需求的用户可以使用 Sideload 工具进行自签安装
 
+## 🔄 版本更新
+
+词库是编译进核心引擎的，所以词库更新和程序更新是同一件事：发布一个新版本。iOS 版由 App Store 负责更新；macOS 版、Windows 版和从 GitHub Releases 安装的 Android 版会自己发现新版本：
+
+- 每天最多向 GitHub 查询一次最新发布版本（`api.github.com/repos/hronro/ime-jd/releases/latest`）。请求不携带任何身份信息，只有一个标明平台和版本的 `User-Agent`；除此之外输入法不会联网——输入本身完全离线。
+- **macOS**：菜单栏的输入法菜单里有「检查更新…」和「自动检查更新」这两个选项。发现新版本时会弹出系统通知，点击通知（或菜单里的「发现新版本 …，下载并安装…」）会下载对应架构的 `.pkg`、校验 SHA-256 后交给系统安装器，按安装器的提示完成安装即可。
+- **Windows**：发现新版本时，候选窗口下方会显示一行「键道有新版本 vX.Y.Z，点击前往下载」；点击打开发布页面，下载后运行 `register.bat` 即可完成升级。要关闭检查，在注册表 `HKCU\Software\hronro\ime-jd` 下新建 DWORD 值 `CheckForUpdates` = `0`。
+- **Android**：通过应用商店安装的版本由商店负责更新，应用本身不含更新器，也不申请任何权限。从 GitHub Releases 下载的 APK 内置更新器：键盘空闲时，候选栏会提示新版本，点击进入应用即可「下载并安装」——APK 校验后交给系统安装器确认（首次需要在系统设置里允许「键道输入法」安装应用）；应用内也有「检查更新」按钮和「自动检查更新」开关。
+
+只有当发布版本的版本号高于当前版本时才会提示。
+
 ## 🤝 致谢
 
 - 键道输入方案原作者**吅吅大山**。
