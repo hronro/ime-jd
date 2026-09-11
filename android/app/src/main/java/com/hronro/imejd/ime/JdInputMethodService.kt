@@ -3,16 +3,21 @@
 // text to the host via the InputConnection, and keeps theme / return key in sync.
 package com.hronro.imejd.ime
 
+import android.content.Intent
 import android.content.res.Configuration
 import android.inputmethodservice.InputMethodService
 import android.os.SystemClock
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import com.hronro.imejd.BuildConfig
+import com.hronro.imejd.R
+import com.hronro.imejd.app.MainActivity
 import com.hronro.imejd.engine.InputSession
 import com.hronro.imejd.engine.KeyAction
 import com.hronro.imejd.engine.KeyboardHost
 import com.hronro.imejd.ui.KeyboardTheme
 import com.hronro.imejd.ui.KeyboardView
+import com.hronro.imejd.update.UpdateChecker
 
 class JdInputMethodService : InputMethodService(), KeyboardHost {
 
@@ -43,6 +48,34 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
         val opts = info?.imeOptions ?: 0
         keyboard?.applyTheme(KeyboardTheme.resolve(this, opts))
         keyboard?.returnLabel = KeyboardTheme.returnLabel(KeyboardTheme.effectiveAction(opts))
+        // The daily update check rides on the keyboard appearing — the one
+        // moment the IME is certainly in use. It is a prefs read when nothing
+        // is due; a hit refreshes the idle-bar notice as soon as it lands.
+        // Store builds have no updater at all (BuildConfig.AUTO_UPDATE).
+        if (BuildConfig.AUTO_UPDATE) {
+            UpdateChecker.checkIfDue(this) { refreshUpdateNotice() }
+            refreshUpdateNotice()
+        }
+    }
+
+    /**
+     * Announce an update the user has not seen yet in the idle candidate bar.
+     * Tapping it opens the container app (which holds the install flow) and
+     * retires the notice for that version.
+     */
+    private fun refreshUpdateNotice() {
+        val kb = keyboard ?: return
+        val update = UpdateChecker.pendingNotice(this)
+        if (update == null) {
+            kb.setUpdateNotice(null, null)
+            return
+        }
+        kb.setUpdateNotice(getString(R.string.update_notice, update.tag)) {
+            UpdateChecker.markNoticeSeen(this)
+            kb.setUpdateNotice(null, null)
+            startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            requestHideSelf(0)
+        }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {

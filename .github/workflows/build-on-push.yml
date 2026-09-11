@@ -407,7 +407,10 @@ jobs:
         working-directory: android
         env:
           LIBJD_SO_DIR: ${{ github.workspace }}/prebuilt
-        run: ./gradlew assembleRelease
+        # Same shape as the release APKs: the in-app updater is compiled in
+        # (-PjdAutoUpdate=true, see android/app/build.gradle.kts). It stays
+        # dormant here — these builds carry the 0.0.0 placeholder version.
+        run: ./gradlew assembleRelease -PjdAutoUpdate=true
 
       - name: Sign APKs (ephemeral CI key)
         shell: bash

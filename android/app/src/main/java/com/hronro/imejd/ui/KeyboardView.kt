@@ -177,6 +177,13 @@ class KeyboardView(
     /** Present a specific plane directly (QA/preview hook; mirrors iOS `showLayer`). */
     fun showLayer(layer: KeyboardLayer) = setLayer(layer)
 
+    /**
+     * Announce something in the idle candidate bar — the IME service's
+     * "new version available" notice. Shown only while nothing is being
+     * composed; null clears it.
+     */
+    fun setUpdateNotice(text: CharSequence?, onTap: (() -> Unit)?) = candidateBar.setNotice(text, onTap)
+
     // MARK: - Candidates
 
     private fun renderCandidates(snap: SessionSnapshot) {

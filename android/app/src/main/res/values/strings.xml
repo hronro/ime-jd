@@ -4,7 +4,11 @@
     <string name="ime_name">键道</string>
     <string name="ime_subtype_zh">键道（简体中文）</string>
 
-    <string name="enable_steps">键道是一个开箱即用、完全离线的键道方案输入法。\n\n启用方法：\n1. 点击下方「在设置中启用键道」并打开开关\n2. 在任意输入框中点击「切换输入法」选择键道\n\n无需任何特殊权限，所有词库已内置，离线运行。</string>
+    <string name="enable_steps">键道是一个开箱即用、完全离线的键道方案输入法。\n\n启用方法：\n1. 点击下方「在设置中启用键道」并打开开关\n2. 在任意输入框中点击「切换输入法」选择键道</string>
+    <!-- Closing note of the enable guide; MainActivity appends the one that
+         matches the build (BuildConfig.AUTO_UPDATE). -->
+    <string name="enable_steps_note_offline">无需任何特殊权限，所有词库已内置，离线运行。</string>
+    <string name="enable_steps_note_updates">所有词库已内置，输入完全离线；联网仅用于每天检查一次新版本（可在下方关闭）。</string>
     <string name="enable_in_settings">在设置中启用键道</string>
     <string name="switch_ime">切换输入法</string>
     <string name="preview_keyboard">试用键盘（无需启用）</string>
@@ -12,4 +16,23 @@
     <string name="key_sound">按键音效</string>
     <string name="key_vibration">按键振动</string>
     <string name="try_hint">在此试打：输入 jd 试试</string>
+
+    <!-- Updates: the app's version/update section and the keyboard's idle-bar notice. -->
+    <string name="update_current_version">当前版本 %1$s</string>
+    <string name="update_check">检查更新</string>
+    <string name="update_auto_check">自动检查更新</string>
+    <string name="update_checking">正在检查更新…</string>
+    <string name="update_up_to_date">已是最新版本</string>
+    <string name="update_check_failed">检查更新失败：%1$s</string>
+    <string name="update_available_title">发现新版本 %1$s</string>
+    <string name="update_available_body">点击「下载并安装」后，系统会请求确认安装更新。</string>
+    <string name="update_available_no_apk">此版本没有适用于本机的安装包，请前往发布页面下载。</string>
+    <string name="update_install">下载并安装</string>
+    <string name="update_release_notes">查看更新说明</string>
+    <string name="update_downloading">正在下载安装包…</string>
+    <string name="update_verifying">正在校验安装包…</string>
+    <string name="update_committed">请在系统弹出的对话框中确认安装。</string>
+    <string name="update_failed">更新失败：%1$s</string>
+    <string name="update_need_permission">请先允许「键道输入法」安装应用，然后再点一次「下载并安装」。</string>
+    <string name="update_notice">键道 %1$s 已发布，点击更新</string>
 </resources>

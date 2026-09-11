@@ -9,14 +9,18 @@ android/
   app/
     build.gradle.kts            # AGP 8.7.3 / Kotlin 2.0.21; ABI splits; the buildLibjd task
     src/main/
-      AndroidManifest.xml       # the IME <service> (BIND_INPUT_METHOD + android.view.InputMethod)
+      AndroidManifest.xml       # the IME <service> (BIND_INPUT_METHOD + android.view.InputMethod); no permissions
+    src/autoUpdate/
+      AndroidManifest.xml       # updater permissions + receiver, merged only with -PjdAutoUpdate=true
       cpp/jd_jni.c              # C JNI shim over libjd's C ABI (marshals jd_state / query_option → Kotlin)
       java/com/hronro/imejd/
         engine/                 # Engine (JNI), EngineState/Candidate, KeyAction, InputSession (dispatch core)
         ime/JdInputMethodService.kt   # the IME service; InputConnection host; lifecycle
         ui/                     # KeyLayout, KeyboardView, key plane, key previews, candidate bar/grid, theme
-        app/                    # MainActivity (enable flow) + KeyboardPreviewActivity (embedded try-out)
+        app/                    # MainActivity (enable flow, settings, updates) + KeyboardPreviewActivity (embedded try-out)
+        update/                 # release-feed model + daily check (UpdateChecker) + APK download/install (UpdateInstaller)
     src/androidTest/            # InputSession logic tests (instrumented; drive the real engine)
+    src/test/                   # JVM unit tests for the update feed model
   scripts/build-libjd.sh        # zig core per-ABI + NDK-clang JNI shim → src/main/jniLibs/<abi>/
 ```
 
@@ -47,9 +51,18 @@ Install the app, then **Settings ▸ System ▸ Languages & input ▸ On-screen 
 
 On an emulator with a hardware keyboard (`hw.keyboard=yes`), Android hides soft keyboards by default — enable showing them with: `adb shell settings put secure show_ime_with_hard_keyboard 1`.
 
+## Updates
+
+The in-app updater is a **build flag**, off by default: `./gradlew assembleRelease -PjdAutoUpdate=true` (the default lives in `gradle.properties`). Only GitHub-distributed APKs need it — `release.yml` and `build-on-push.yml` pass the flag — while an app-store build leaves it off and ships a plain APK: no permissions at all, no receiver (`src/autoUpdate/AndroidManifest.xml` is merged only when the flag is on), no update UI, and R8 strips `update/` behind the false `BuildConfig.AUTO_UPDATE` constant. Check a built APK with `aapt2 dump badging app.apk | grep uses-permission`.
+
+With the flag on, the app and the IME share one daily check of the GitHub release feed (`update/UpdateChecker.kt`), run by whichever happens first: the keyboard being shown, or the container app opening. When the newest release is ahead of the installed `versionName`, the keyboard's idle candidate bar announces it — **键道 vX.Y.Z 已发布，点击更新**; tapping opens the app and retires the notice — and the app shows an update card with **下载并安装** and **查看更新说明**. Installing (`update/UpdateInstaller.kt`) downloads the APK for the device's ABI into the app cache, verifies its SHA-256 against the feed, and commits it as a `PackageInstaller` session; the system asks for confirmation and swaps the package. This is what the `INTERNET` and `REQUEST_INSTALL_PACKAGES` permissions (the flagged build's only two) exist for, plus a one-time grant of "install unknown apps" for 键道 (the first tap sends the user to that Settings screen). The OS only accepts an update signed like the installed build, so release APKs must keep coming from the same keystore (`ANDROID_SIGNING_KEYSTORE` in release.yml).
+
+The check can be turned off with the **自动检查更新** switch; **检查更新** runs one on demand. Debug builds carry versionName `0.0.0` and never auto-check — build with `-PjdAutoUpdate=true -PjdVersionName=0.5.0 -PjdVersionCode=500` to exercise the whole flow against the real feed (the final install then fails on the signature mismatch, by design).
+
 ## Tests
 
 ```sh
+./gradlew :app:testDebugUnitTest            # JVM: the update feed model (no device)
 ./gradlew :app:connectedDebugAndroidTest    # needs a running device/emulator
 ```
 

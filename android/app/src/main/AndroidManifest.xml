@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- No permissions: the IME is fully offline. The in-app updater's two
+     permissions and its receiver live in ../autoUpdate/AndroidManifest.xml,
+     merged only into -PjdAutoUpdate=true builds (the GitHub Releases APKs). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application

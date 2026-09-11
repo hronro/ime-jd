@@ -63,6 +63,16 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
     private var shownCount = 0
 
     /**
+     * An announcement for the idle bar — "a new version is out", set by the
+     * IME service from UpdateChecker. It takes the candidate strip's place
+     * only while nothing is being composed, so it never competes with
+     * candidates, and disappears for good once tapped (the service clears it).
+     */
+    private val noticeLabel = TextView(context)
+    private var notice: CharSequence? = null
+    private var idle = true
+
+    /**
      * True while reset() rebuilds the strip. The programmatic scrollTo fires the
      * scroll-change listener synchronously against the STALE stack width (layout
      * hasn't run yet), and re-entering onNeedMore mid-rebuild would append a
@@ -96,6 +106,16 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
         }
         addView(scroll, LayoutParams(0, LayoutParams.MATCH_PARENT, 1f))
 
+        // Same slot as the strip (weight 1); exactly one of the two is visible.
+        noticeLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        noticeLabel.setPadding(dp(12), 0, dp(12), 0)
+        noticeLabel.gravity = Gravity.CENTER_VERTICAL
+        noticeLabel.isSingleLine = true
+        noticeLabel.ellipsize = android.text.TextUtils.TruncateAt.END
+        noticeLabel.isClickable = true
+        noticeLabel.visibility = View.GONE
+        addView(noticeLabel, LayoutParams(0, LayoutParams.MATCH_PARENT, 1f))
+
         // The system keyboards' affordance: a thin secondary-gray chevron in a 44dp
         // box (equal to the grid's close button, so the expand/collapse flip lands in
         // place). Starts GONE so the idle bar shows nothing — reset() decides
@@ -110,6 +130,9 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
         composingLabel.setTextColor(theme.composingText)
         expandButton.tint = theme.candidateHint
         expandButton.background = rippleBackground(theme)
+        // Accent: it is a tappable link, not a candidate.
+        noticeLabel.setTextColor(theme.accent)
+        noticeLabel.background = rippleBackground(theme)
         separatorPaint.color = theme.separator
         separatorPaint.strokeWidth = 0.5f * density
         invalidate()
@@ -125,6 +148,22 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
         append(items)
         isResetting = false
         expandButton.visibility = if (canExpand) View.VISIBLE else View.GONE
+        idle = composing.isEmpty() && items.isEmpty()
+        applyNoticeVisibility()
+    }
+
+    /** Show [text] in the idle bar (null clears it); [onTap] runs when it is tapped. */
+    fun setNotice(text: CharSequence?, onTap: (() -> Unit)?) {
+        notice = text
+        noticeLabel.text = text
+        noticeLabel.setOnClickListener(if (onTap != null) View.OnClickListener { onTap() } else null)
+        applyNoticeVisibility()
+    }
+
+    private fun applyNoticeVisibility() {
+        val show = idle && notice != null
+        noticeLabel.visibility = if (show) View.VISIBLE else View.GONE
+        scroll.visibility = if (show) View.GONE else View.VISIBLE
     }
 
     /** Append a freshly-loaded page of candidates (lazy pagination). */

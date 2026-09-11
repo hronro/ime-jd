@@ -579,6 +579,11 @@ jobs:
   # fast-path (like build-ios's LIBJD_A); only the JNI shim is linked here,
   # by the NDK, so the job needs no zig. The APKs' versionName/Code come
   # from the tag (which create-release verified against core/build.zig.zon).
+  # -PjdAutoUpdate=true bakes in the in-app updater (daily release-feed
+  # check + download/install, with the INTERNET and REQUEST_INSTALL_PACKAGES
+  # permissions it needs): these APKs are distributed here, on GitHub, so
+  # they have to find their own updates. App-store builds omit the flag —
+  # see android/app/build.gradle.kts.
   #
   # Android refuses to install unsigned APKs, so the assets are signed with
   # the keystore from repo secrets:
@@ -638,7 +643,7 @@ jobs:
           core="${ver%%[-+]*}"   # strip -prerelease/+build for the numeric code
           IFS=. read -r major minor patch <<<"$core"
           code=$((major * 10000 + minor * 100 + patch))
-          ./gradlew assembleRelease -PjdVersionName="$ver" -PjdVersionCode="$code"
+          ./gradlew assembleRelease -PjdVersionName="$ver" -PjdVersionCode="$code" -PjdAutoUpdate=true
 
       - name: Sign APKs
         shell: bash

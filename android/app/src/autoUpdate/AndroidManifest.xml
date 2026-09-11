@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Merged into the app manifest ONLY when the build carries the in-app
+     updater (-PjdAutoUpdate=true, see app/build.gradle.kts) — i.e. the APKs
+     shipped on GitHub Releases. App-store builds never see any of this: the
+     stores update apps themselves, and the store APK must not ask for these
+     permissions. Everything here exists for update/ alone; typing never
+     touches the network — the dictionary is compiled into libjd. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The daily release-feed check and the APK download. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Handing the downloaded APK to the system installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <!-- PackageInstaller session status: hands the system's
+             install-confirmation sheet to the user. -->
+        <receiver
+            android:name="com.hronro.imejd.update.InstallResultReceiver"
+            android:exported="false" />
+    </application>
+</manifest>
