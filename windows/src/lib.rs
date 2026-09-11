@@ -11,6 +11,7 @@ mod guids;
 mod registration;
 mod tip;
 mod ui_element;
+mod update;
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};

@@ -42,6 +42,12 @@ The script unregisters the COM/TSF entries and tries to delete `C:\Program Files
 
 If you've selected 键道 in a running app (Notepad, browser, etc.) you'll need to **close that app and reopen it** before the new code takes effect: Windows doesn't reload a DLL inside a process that already mapped it.
 
+## Updates
+
+Whenever 键道 is activated in an application, the IME asks GitHub for the latest release at most once a day — shared across all applications through `HKCU\Software\hronro\ime-jd`, and skipped inside AppContainer (Store) apps. When that release is newer than the running DLL, the candidate window shows one extra line, **键道有新版本 vX.Y.Z，点击前往下载**, until you click it: that opens the release page in your browser and retires the line for that version. Upgrading is a download plus a `register.bat` run, as described under Install (the script handles the old DLL still being loaded).
+
+To turn the check off, create a DWORD value `CheckForUpdates` = `0` under `HKCU\Software\hronro\ime-jd`. The other values there are state: `LastUpdateCheck` (QWORD, Unix seconds), `LatestVersion`, `SeenVersion` — delete `LastUpdateCheck` to force a check on the next activation. The request carries no identifying data beyond a `User-Agent` with the IME version. Implementation: `src/update/` (`feed.rs` is the host-independent model with unit tests, `mod.rs` the WinHTTP + registry side); the notice row lives in `candidate_window.rs`.
+
 ## Keys (when 键道 is the active IME)
 
 | Key | Action |
@@ -81,4 +87,6 @@ windows/
     jd.rs             TSF glue over the shared `jd` crate: UI-thread-local
                       engine context + page arithmetic (engine tests live in
                       bindings/rust/tests)
+    update/           daily release-feed check (WinHTTP), HKCU state, and the
+                      "new version" notice the candidate window shows
 ```

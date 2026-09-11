@@ -12,6 +12,10 @@
 //!   style. Hovered candidates get a lighter pill.
 //! - No buttons. Paging stays keyboard-only (PgUp/PgDn/`-`/`=`), keeping the
 //!   popup minimal.
+//! - When a newer release is known (update.rs), one small line sits under
+//!   the candidates — "键道有新版本 vX.Y.Z，点击前往下载" — and clicking it
+//!   opens the release page and retires the line. It is the TIP's only UI,
+//!   so it is also the only place an update can be announced.
 //! - Colors follow the system app theme (light/dark) and the user's accent
 //!   color, re-read from the registry on every show so theme switches apply
 //!   without restarting the host.
@@ -73,7 +77,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const WM_MOUSELEAVE: u32 = 0x02A3;
 use windows::core::{PCWSTR, Result, w};
 
-use crate::{composition, dll_hmodule, jd, ui_element};
+use crate::{composition, dll_hmodule, jd, ui_element, update};
 
 const WINDOW_CLASS_NAME: PCWSTR = w!("JdImeCandidateWindow");
 const FONT_FAMILY: PCWSTR = w!("Microsoft YaHei UI");
@@ -100,6 +104,9 @@ const SEL_BAR_HEIGHT: f32 = 16.0;
 /// Radius the border stroke follows on Windows 11; DWMWCP_ROUND clips the
 /// window to the same 8-DIP curve, so the hairline hugs the visible edge.
 const CORNER_RADIUS: f32 = 8.0;
+/// The update-notice row under the candidates (update.rs), when one is shown.
+const NOTICE_HEIGHT: f32 = 22.0;
+const NOTICE_FONT_SIZE: f32 = 12.0;
 
 #[derive(Debug, Default, Clone)]
 pub struct CandidateItem {
@@ -152,6 +159,18 @@ struct CandidateWindow {
     /// Once we call TrackMouseEvent for TME_LEAVE we get exactly one
     /// WM_MOUSELEAVE; flip this to know whether we need to re-arm.
     tracking_leave: bool,
+    /// Smaller text format for the update-notice row.
+    notice_format: IDWriteTextFormat,
+    /// Newer-release notice to draw under the candidates, if any (update.rs);
+    /// re-read from the cache on every show.
+    notice: Option<update::Notice>,
+    /// The notice row's rect (DIPs) — its hit target — parallel to `notice`.
+    notice_rect: Option<D2D_RECT_F>,
+    /// Whether the mouse is over the notice; drawn in the accent color then.
+    hover_notice: bool,
+    /// Screen position of the last show, so retiring the notice can resize
+    /// the popup in place.
+    origin: POINT,
 }
 
 impl CandidateWindow {
@@ -161,7 +180,8 @@ impl CandidateWindow {
         let d2d: ID2D1Factory =
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) }?;
         let dwrite: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
-        let text_format = make_text_format(&dwrite)?;
+        let text_format = make_text_format(&dwrite, FONT_SIZE)?;
+        let notice_format = make_text_format(&dwrite, NOTICE_FONT_SIZE)?;
 
         let hinstance = dll_hmodule();
         let hwnd = unsafe {
@@ -210,6 +230,11 @@ impl CandidateWindow {
             tid: 0,
             hover: None,
             tracking_leave: false,
+            notice_format,
+            notice: None,
+            notice_rect: None,
+            hover_notice: false,
+            origin: POINT::default(),
         })
     }
 
@@ -245,9 +270,31 @@ impl CandidateWindow {
     }
 
     /// Re-layout: measure each item's runs (index digit, value, optional
-    /// hint), place its pill left-to-right, cache the layout for painting
-    /// and hit-testing. Returns the resulting total popup width in DIPs.
-    fn relayout(&mut self) -> Result<f32> {
+    /// hint), place its pill left-to-right, then the notice row (if any)
+    /// under them; cache both for painting and hit-testing. Returns the
+    /// resulting popup size in DIPs.
+    fn relayout(&mut self) -> Result<(f32, f32)> {
+        let mut width = self.layout_items()?;
+        let mut height = WINDOW_HEIGHT;
+        self.notice_rect = None;
+        if let Some(notice) = &self.notice {
+            let text_w = measure_text(&self.dwrite, &self.notice_format, &notice.text())?;
+            width = width.max(EDGE_PAD_X + ITEM_PAD_X + text_w + ITEM_PAD_X + EDGE_PAD_X);
+            // The row shares the candidates' bottom pad as its top pad.
+            let top = WINDOW_HEIGHT - EDGE_PAD_Y;
+            self.notice_rect = Some(D2D_RECT_F {
+                left: EDGE_PAD_X,
+                top,
+                right: width - EDGE_PAD_X,
+                bottom: top + NOTICE_HEIGHT,
+            });
+            height = top + NOTICE_HEIGHT + EDGE_PAD_Y;
+        }
+        Ok((width, height))
+    }
+
+    /// Place the candidate pills; returns the width they need.
+    fn layout_items(&mut self) -> Result<f32> {
         self.item_layouts.clear();
         if self.items.is_empty() {
             return Ok(80.0);
@@ -292,14 +339,23 @@ impl CandidateWindow {
         // Items changed — drop any stale hover; the cursor may now be
         // over a different candidate or off the popup entirely.
         self.hover = None;
+        self.hover_notice = false;
         // Cheap registry reads — keeps the popup in sync with live theme
         // and accent-color changes.
         self.palette = detect_palette();
+        // A mutex read; the registry work happened on activation.
+        self.notice = update::pending_notice();
+        self.origin = screen_pos;
+        self.place()
+    }
 
-        let width_dip = self.relayout()?;
+    /// Lay out, size the window at `origin`, and show or hide it as the
+    /// UIElement state dictates. Also what a retired notice re-runs.
+    fn place(&mut self) -> Result<()> {
+        let (width_dip, height_dip) = self.relayout()?;
         let scale = self.dpi() / 96.0;
         let width_px = (width_dip * scale).ceil() as i32;
-        let height_px = (WINDOW_HEIGHT * scale).ceil() as i32;
+        let height_px = (height_dip * scale).ceil() as i32;
 
         self.render_target = None;
 
@@ -307,8 +363,8 @@ impl CandidateWindow {
             SetWindowPos(
                 self.hwnd,
                 None,
-                screen_pos.x,
-                screen_pos.y,
+                self.origin.x,
+                self.origin.y,
                 width_px,
                 height_px,
                 SWP_NOACTIVATE | SWP_NOZORDER,
@@ -351,6 +407,8 @@ impl CandidateWindow {
         let width = width_px as f32 / scale;
         let height = height_px as f32 / scale;
         let p = self.palette;
+        // One physical pixel, for the hairlines.
+        let px = 1.0 / scale;
 
         unsafe {
             rt.BeginDraw();
@@ -431,11 +489,35 @@ impl CandidateWindow {
                 }
             }
 
+            // Update notice under the candidates: a hairline above it, then
+            // the line in the secondary color — accent while hovered, so it
+            // reads as the link it is.
+            let border_brush = rt.CreateSolidColorBrush(&p.border, None)?;
+            if let (Some(notice), Some(rect)) = (&self.notice, self.notice_rect) {
+                let rule = D2D_RECT_F {
+                    left: rect.left,
+                    top: rect.top,
+                    right: rect.right,
+                    bottom: rect.top + px,
+                };
+                rt.FillRectangle(&rule, &border_brush);
+                let text_rect = D2D_RECT_F {
+                    left: rect.left + ITEM_PAD_X,
+                    top: rect.top,
+                    right: rect.right - ITEM_PAD_X,
+                    bottom: rect.bottom,
+                };
+                let brush = if self.hover_notice {
+                    &accent_brush
+                } else {
+                    &secondary_brush
+                };
+                draw_text(&rt, &notice.text(), &text_rect, &self.notice_format, brush);
+            }
+
             // Hairline border, one physical pixel, stroked just inside the
             // window edge. Rounded to match the DWM clip on Windows 11,
             // square on Windows 10.
-            let border_brush = rt.CreateSolidColorBrush(&p.border, None)?;
-            let px = 1.0 / scale;
             let inset = px / 2.0;
             let border_rect = D2D_RECT_F {
                 left: inset,
@@ -470,6 +552,11 @@ impl CandidateWindow {
         self.item_layouts
             .iter()
             .position(|l| hits(&l.rect, dip_x, dip_y))
+    }
+
+    /// Hit-test a point (client coords in DIPs) against the notice row.
+    fn hits_notice(&self, dip_x: f32, dip_y: f32) -> bool {
+        self.notice_rect.is_some_and(|r| hits(&r, dip_x, dip_y))
     }
 }
 
@@ -563,6 +650,12 @@ pub fn caret_screen_pos() -> POINT {
 
 // ---- internal helpers ----------------------------------------------------
 
+/// What a left click landed on.
+enum Click {
+    Candidate(usize),
+    Notice,
+}
+
 fn hits(rect: &D2D_RECT_F, x: f32, y: f32) -> bool {
     x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
 }
@@ -592,6 +685,24 @@ fn perform_commit(idx: usize) {
     let _ = composition::commit_text(&ctx, tid, &item.value);
     jd::reset();
     hide();
+}
+
+/// The user clicked the update notice: hand it to update.rs (opens the
+/// release page, retires this version's notice everywhere) and shrink the
+/// popup back to its candidates. The borrow is released before
+/// ShellExecute, which may pump messages.
+fn dismiss_notice() {
+    let notice = WINDOW.with(|w| w.borrow_mut().as_mut().and_then(|win| win.notice.take()));
+    let Some(notice) = notice else {
+        return;
+    };
+    update::open_notice(&notice);
+    WINDOW.with(|w| {
+        if let Some(win) = w.borrow_mut().as_mut() {
+            win.hover_notice = false;
+            let _ = win.place();
+        }
+    });
 }
 
 fn ensure_class_registered() {
@@ -652,10 +763,16 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 let w = w.borrow();
                 let win = w.as_ref()?;
                 let scale = win.dpi() / 96.0;
-                win.hit_test(x_px / scale, y_px / scale)
+                let (x, y) = (x_px / scale, y_px / scale);
+                if win.hits_notice(x, y) {
+                    return Some(Click::Notice);
+                }
+                win.hit_test(x, y).map(Click::Candidate)
             });
-            if let Some(idx) = target {
-                perform_commit(idx);
+            match target {
+                Some(Click::Candidate(idx)) => perform_commit(idx),
+                Some(Click::Notice) => dismiss_notice(),
+                None => {}
             }
             LRESULT(0)
         }
@@ -669,9 +786,12 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                         return;
                     }
                     let scale = win.dpi() / 96.0;
-                    let new_hover = win.hit_test(x_px / scale, y_px / scale);
-                    if new_hover != win.hover {
+                    let (x, y) = (x_px / scale, y_px / scale);
+                    let new_hover = win.hit_test(x, y);
+                    let new_hover_notice = win.hits_notice(x, y);
+                    if new_hover != win.hover || new_hover_notice != win.hover_notice {
                         win.hover = new_hover;
+                        win.hover_notice = new_hover_notice;
                         unsafe {
                             let _ = InvalidateRect(Some(hwnd), None, false);
                         }
@@ -700,8 +820,9 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                         return;
                     }
                     win.tracking_leave = false;
-                    if win.hover.is_some() {
+                    if win.hover.is_some() || win.hover_notice {
                         win.hover = None;
+                        win.hover_notice = false;
                         unsafe {
                             let _ = InvalidateRect(Some(hwnd), None, false);
                         }
@@ -785,7 +906,7 @@ fn read_hkcu_dword(subkey: PCWSTR, value: PCWSTR) -> Option<u32> {
 
 // ---- text helpers ---------------------------------------------------------
 
-fn make_text_format(dwrite: &IDWriteFactory) -> Result<IDWriteTextFormat> {
+fn make_text_format(dwrite: &IDWriteFactory, size: f32) -> Result<IDWriteTextFormat> {
     let fmt = unsafe {
         dwrite.CreateTextFormat(
             FONT_FAMILY,
@@ -793,7 +914,7 @@ fn make_text_format(dwrite: &IDWriteFactory) -> Result<IDWriteTextFormat> {
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            FONT_SIZE,
+            size,
             FONT_LOCALE,
         )
     }?;

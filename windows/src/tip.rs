@@ -59,6 +59,9 @@ impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
 impl ITfTextInputProcessorEx_Impl for TextInputProcessor_Impl {
     fn ActivateEx(&self, ptim: Ref<'_, ITfThreadMgr>, tid: u32, _dwflags: u32) -> Result<()> {
         jd::activate();
+        // Daily release-feed check (a registry read when nothing is due) and
+        // the cached "new version" notice the candidate window shows.
+        crate::update::on_activate();
 
         let thread_mgr: ITfThreadMgr = ptim
             .cloned()
