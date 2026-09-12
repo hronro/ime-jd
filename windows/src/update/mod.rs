@@ -10,11 +10,21 @@
 //!   2. While that tag is ahead of this build and the user has not acted on
 //!      it, the candidate window carries a one-line notice under the
 //!      candidates (candidate_window.rs).
-//!   3. Clicking the notice opens the release page in the browser — the
-//!      user downloads the zip and runs `register.bat` as before (in-place
-//!      replacement of a DLL that every host process has mapped is exactly
-//!      what that script already handles) — and retires the notice for that
-//!      version.
+//!   3. Clicking the notice retires it for that version and, on a background
+//!      thread, downloads the release zip — verified against the feed's
+//!      SHA-256 — extracts it, and runs the bundled `register.bat` elevated
+//!      (one UAC prompt). `register.bat` does the in-place swap of a DLL that
+//!      every host process has mapped (rename-while-loaded), exactly as a
+//!      manual upgrade does. Anything that fails falls back to opening the
+//!      release page so the user can upgrade by hand. Applications already
+//!      running keep the old DLL until they are next launched — Windows does
+//!      not reload a DLL a process has already mapped — so the install fully
+//!      applies to apps started afterwards (or after sign-out).
+//!
+//! This mirrors the other frontends' installing half (macOS hands the `.pkg`
+//! to Installer.app, Android hands the `.apk` to the PackageInstaller): each
+//! downloads the platform's own release asset, verifies it against the feed
+//! digest, and lets the OS do the privileged install behind a user prompt.
 //!
 //! The check sends nothing but the request itself (no identifiers beyond a
 //! `User-Agent` naming this IME and its version). It is skipped inside
@@ -26,6 +36,9 @@
 mod feed;
 
 use std::ffi::c_void;
+use std::os::windows::process::CommandExt;
+use std::path::Path;
+use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -37,6 +50,11 @@ use windows::Win32::Networking::WinHttp::{
     WinHttpAddRequestHeaders, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
     WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
     WinHttpSendRequest, WinHttpSetTimeouts,
+};
+use windows::Win32::Security::Cryptography::{
+    BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS,
+    BCRYPT_SHA256_ALGORITHM, BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash,
+    BCryptFinishHash, BCryptHashData, BCryptOpenAlgorithmProvider,
 };
 use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TokenIsAppContainer};
 use windows::Win32::System::Registry::{
@@ -65,7 +83,7 @@ pub struct Notice {
 impl Notice {
     /// The one-line text the candidate window draws.
     pub fn text(&self) -> String {
-        format!("键道有新版本 {}，点击前往下载", self.tag)
+        format!("键道有新版本 {}，点击下载并安装", self.tag)
     }
 }
 
@@ -132,12 +150,25 @@ pub fn pending_notice() -> Option<Notice> {
     NOTICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// The user clicked the notice: open the release page and stop showing this
-/// version's notice, here and in every other host (via the registry).
+/// The user clicked the notice: retire it (here and, via the registry, in
+/// every other host) and download + verify + install the new version off the
+/// UI thread. Falls back to opening the release page on any failure, or from
+/// an AppContainer host, which can neither reach the network on our behalf
+/// nor elevate.
 pub fn open_notice(notice: &Notice) {
     write_sz(REG_SEEN, &notice.tag);
     *NOTICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    open_url(&notice.url);
+    if is_app_container() {
+        open_url(&notice.url);
+        return;
+    }
+    let page = notice.url.clone();
+    let spawned = std::thread::Builder::new()
+        .name("jd-update-install".into())
+        .spawn(move || install_update(&page));
+    if spawned.is_err() {
+        open_url(&notice.url);
+    }
 }
 
 /// Recompute the notice from the registry: newest tag ahead of this build,
@@ -323,6 +354,233 @@ unsafe fn read_response(request: *mut c_void) -> Option<String> {
         }
         String::from_utf8(body).ok()
     }
+}
+
+// ---- Download + verify + install ------------------------------------------
+
+/// Background-thread worker: install the latest release, or open `page` if any
+/// step fails so the user can still upgrade by hand.
+fn install_update(page: &str) {
+    if try_install().is_none() {
+        open_url(page);
+    }
+}
+
+/// Re-fetch the feed, download the release zip for this arch, verify it, and
+/// run the bundled `register.bat` elevated. `None` at the first failure.
+fn try_install() -> Option<()> {
+    let json = fetch_feed()?;
+    let tag = feed::extract_tag(&json)?;
+    let current = Version::parse(CURRENT_VERSION)?;
+    if Version::parse(&tag)? <= current {
+        return None;
+    }
+    let asset = feed::extract_asset(&json, &feed::installer_name(&tag, feed::HOST_ARCH))?;
+
+    let bytes = download(&asset.url)?;
+    if asset.size != 0 && bytes.len() as u64 != asset.size {
+        return None;
+    }
+    if let Some(expected) = &asset.sha256
+        && sha256_hex(&bytes)?.as_str() != expected.as_str()
+    {
+        return None;
+    }
+
+    // Stage the zip in its own temp dir and extract it there; register.bat
+    // installs the DLL sitting next to it (its "distribution" layout).
+    let dir = std::env::temp_dir().join("ime-jd-update").join(&tag);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok()?;
+    let zip = dir.join(&asset.name);
+    std::fs::write(&zip, &bytes).ok()?;
+    if !extract_zip(&zip, &dir) {
+        return None;
+    }
+    if !dir.join("register.bat").exists() || !dir.join("ime_jd.dll").exists() {
+        return None;
+    }
+    run_elevated(&dir.join("register.bat"), &dir).then_some(())
+}
+
+/// GET a URL into memory, following GitHub's github.com → objects.github…
+/// redirect (WinHTTP does this itself). `None` on failure or oversized body.
+fn download(url: &str) -> Option<Vec<u8>> {
+    let (host, path) = feed::split_https_url(url)?;
+    let agent = wide_z(&format!("ime-jd-windows/{CURRENT_VERSION}"));
+    unsafe {
+        let session = WinHttpOpen(
+            PCWSTR(agent.as_ptr()),
+            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+            PCWSTR::null(),
+            PCWSTR::null(),
+            0,
+        );
+        if session.is_null() {
+            return None;
+        }
+        let result = download_with_session(session, host, path);
+        let _ = WinHttpCloseHandle(session);
+        result
+    }
+}
+
+unsafe fn download_with_session(session: *mut c_void, host: &str, path: &str) -> Option<Vec<u8>> {
+    unsafe {
+        // resolve / connect / send / receive, ms. The download can be big, so
+        // the receive/read budget is longer than the feed's.
+        let _ = WinHttpSetTimeouts(session, 10_000, 10_000, 30_000, 60_000);
+        let host_w = wide_z(host);
+        let connect = WinHttpConnect(
+            session,
+            PCWSTR(host_w.as_ptr()),
+            INTERNET_DEFAULT_HTTPS_PORT,
+            0,
+        );
+        if connect.is_null() {
+            return None;
+        }
+        let result = download_with_connection(connect, path);
+        let _ = WinHttpCloseHandle(connect);
+        result
+    }
+}
+
+unsafe fn download_with_connection(connect: *mut c_void, path: &str) -> Option<Vec<u8>> {
+    unsafe {
+        let path_w = wide_z(path);
+        let request = WinHttpOpenRequest(
+            connect,
+            w!("GET"),
+            PCWSTR(path_w.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            std::ptr::null(),
+            WINHTTP_FLAG_SECURE,
+        );
+        if request.is_null() {
+            return None;
+        }
+        let result = read_body(request);
+        let _ = WinHttpCloseHandle(request);
+        result
+    }
+}
+
+/// Send the request and read the whole body (WinHTTP follows the redirect on
+/// its own). `None` unless the final status is 200 and the body fits.
+unsafe fn read_body(request: *mut c_void) -> Option<Vec<u8>> {
+    unsafe {
+        WinHttpSendRequest(request, None, None, 0, 0, 0).ok()?;
+        WinHttpReceiveResponse(request, std::ptr::null_mut()).ok()?;
+
+        let mut status: u32 = 0;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        WinHttpQueryHeaders(
+            request,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            PCWSTR::null(),
+            Some(&mut status as *mut u32 as *mut c_void),
+            &mut size,
+            std::ptr::null_mut(),
+        )
+        .ok()?;
+        if status != 200 {
+            return None;
+        }
+
+        // The IME zip is ~2 MB; the cap only guards against a runaway body.
+        const MAX_DOWNLOAD: usize = 64 << 20;
+        let mut body: Vec<u8> = Vec::new();
+        loop {
+            let mut available: u32 = 0;
+            WinHttpQueryDataAvailable(request, &mut available).ok()?;
+            if available == 0 {
+                break;
+            }
+            let start = body.len();
+            if start + available as usize > MAX_DOWNLOAD {
+                return None;
+            }
+            body.resize(start + available as usize, 0);
+            let mut read: u32 = 0;
+            WinHttpReadData(
+                request,
+                body[start..].as_mut_ptr() as *mut c_void,
+                available,
+                &mut read,
+            )
+            .ok()?;
+            body.truncate(start + read as usize);
+            if read == 0 {
+                break;
+            }
+        }
+        Some(body)
+    }
+}
+
+/// Lowercase-hex SHA-256 of `data` via CNG (BCrypt); `None` on any CNG error.
+fn sha256_hex(data: &[u8]) -> Option<String> {
+    unsafe {
+        let mut alg = BCRYPT_ALG_HANDLE::default();
+        if BCryptOpenAlgorithmProvider(
+            &mut alg,
+            BCRYPT_SHA256_ALGORITHM,
+            PCWSTR::null(),
+            BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS(0),
+        )
+        .is_err()
+        {
+            return None;
+        }
+        let mut hash = BCRYPT_HASH_HANDLE::default();
+        let mut digest = [0u8; 32];
+        let ok = BCryptCreateHash(alg, &mut hash, None, None, 0).is_ok()
+            && BCryptHashData(hash, data, 0).is_ok()
+            && BCryptFinishHash(hash, &mut digest, 0).is_ok();
+        let _ = BCryptDestroyHash(hash);
+        let _ = BCryptCloseAlgorithmProvider(alg, 0);
+        ok.then(|| digest.iter().map(|b| format!("{b:02x}")).collect())
+    }
+}
+
+/// Extract `zip` into `dir` with the OS's bundled tar (bsdtar reads zip; it
+/// ships in System32 from Windows 10 1803, and our floor is 1809). No console.
+fn extract_zip(zip: &Path, dir: &Path) -> bool {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let tar = Path::new(&std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into()))
+        .join("System32")
+        .join("tar.exe");
+    Command::new(tar)
+        .arg("-xf")
+        .arg(zip)
+        .arg("-C")
+        .arg(dir)
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Launch `bat` elevated (the `runas` verb → one UAC prompt), with `dir` as
+/// its working directory. True if the shell accepted the launch (the elevated
+/// script then reports its own success or failure in its console).
+fn run_elevated(bat: &Path, dir: &Path) -> bool {
+    let file = wide_z(&bat.to_string_lossy());
+    let cwd = wide_z(&dir.to_string_lossy());
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("runas"),
+            PCWSTR(file.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR(cwd.as_ptr()),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW returns an HINSTANCE-shaped status; > 32 means success.
+    result.0 as isize > 32
 }
 
 // ---- Registry (HKCU) -------------------------------------------------------
