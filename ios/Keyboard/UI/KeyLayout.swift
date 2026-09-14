@@ -5,6 +5,29 @@ enum KeyboardLayer: Equatable {
     case letters   // ABC
     case numbers   // 123
     case symbols   // #+=
+
+    /// The plane a field opens on, from its keyboard-type trait. Numeric fields
+    /// open on 123 so the digits sit under the thumb instead of one plane
+    /// switch away; everything else, email / URL / ASCII fields included, opens
+    /// on letters — this keyboard is Chinese-only, and non-Chinese text belongs
+    /// to another keyboard (see the README).
+    ///
+    /// Which fields actually reach the extension (verified on the iOS 26
+    /// simulator): iOS presents its own pads for `numberPad`, `decimalPad`,
+    /// `asciiCapableNumberPad` and `phonePad`, and — `IsASCIICapable` being
+    /// false in Info.plist — the system keyboard for `asciiCapable`,
+    /// `namePhonePad` and secure fields; a custom keyboard never appears there.
+    /// Of the numeric traits only `numbersAndPunctuation` is ours, so that is
+    /// the case this mapping serves; the pad types are mapped for completeness,
+    /// should iOS ever hand them over.
+    static func initial(for type: UIKeyboardType) -> KeyboardLayer {
+        switch type {
+        case .numberPad, .decimalPad, .asciiCapableNumberPad, .phonePad, .numbersAndPunctuation:
+            return .numbers
+        default:
+            return .letters
+        }
+    }
 }
 
 /// What a key does. Character keys carry the literal ASCII byte sent to the engine

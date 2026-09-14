@@ -107,8 +107,14 @@ final class KeyboardView: UIView {
         if changed { onHeightChanged?() }
     }
 
-    /// Switch the visible plane (QA / preview convenience).
-    func showLayer(_ layer: KeyboardLayer) { setLayer(layer) }
+    /// Switch the visible plane: the owner opens each field on the plane its
+    /// keyboard type asks for (`KeyboardLayer.initial(for:)`); QA args pick one
+    /// for screenshots. No-op when already there, so re-asserting on every
+    /// presentation is free; a pending shift is dropped, as on a plane switch.
+    func showLayer(_ layer: KeyboardLayer) {
+        guard layer != layer_ || shift != .off else { return }
+        setLayer(layer)
+    }
 
     /// Expand the candidate grid (QA / preview convenience, mirrors the chevron).
     func expandCandidates() { expandGrid() }

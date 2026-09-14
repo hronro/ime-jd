@@ -141,4 +141,20 @@ final class KeyLayoutTests: XCTestCase {
         XCTAssertNil(KeyLayout.widthBadge(for: "@", inGroup: ["@"]),
                      "no twin in the group → nothing to tell apart → no badge")
     }
+
+    // MARK: - Opening plane per field
+
+    /// Numeric fields open on 123 (digits under the thumb for 验证码 / 手机号 /
+    /// 金额); every text-like field — email / URL / ASCII included, which
+    /// belong to another keyboard — opens on letters.
+    func testNumericFieldsOpenOnNumbers() {
+        for type: UIKeyboardType in [.numberPad, .decimalPad, .asciiCapableNumberPad,
+                                     .phonePad, .numbersAndPunctuation] {
+            XCTAssertEqual(KeyboardLayer.initial(for: type), .numbers, "type \(type.rawValue)")
+        }
+        for type: UIKeyboardType in [.default, .asciiCapable, .URL, .emailAddress,
+                                     .namePhonePad, .twitter, .webSearch] {
+            XCTAssertEqual(KeyboardLayer.initial(for: type), .letters, "type \(type.rawValue)")
+        }
+    }
 }

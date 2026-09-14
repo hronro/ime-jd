@@ -33,6 +33,14 @@ final class KeyboardPreviewViewController: UIViewController {
             textView.trailingAnchor.constraint(equalTo: g.trailingAnchor, constant: -12),
         ])
 
+        // `-field numberPad` QA launch arg: give the field that keyboard type
+        // (a UIKeyboardType case name), so the real extension (`-system`) and
+        // the inline preview alike open on the plane the type asks for.
+        if let i = CommandLine.arguments.firstIndex(of: "-field"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            textView.keyboardType = Self.keyboardType(named: CommandLine.arguments[i + 1])
+        }
+
         // `-system` QA launch arg: let the SYSTEM keyboard drive the field
         // instead of the inline preview — with the extension enabled in the
         // simulator (simctl defaults write), that's our real keyboard in its
@@ -103,6 +111,8 @@ final class KeyboardPreviewViewController: UIViewController {
         textView.becomeFirstResponder()
         // The remaining QA flags drive the inline preview keyboard.
         guard keyboard != nil else { return }
+        // Mirror the extension: the field's keyboard type picks the opening plane.
+        keyboard.showLayer(KeyboardLayer.initial(for: textView.keyboardType))
         // QA launch flags to preview a specific plane directly.
         if CommandLine.arguments.contains("-numbers") { keyboard.showLayer(.numbers) }
         else if CommandLine.arguments.contains("-symbols") { keyboard.showLayer(.symbols) }
@@ -157,6 +167,24 @@ final class KeyboardPreviewViewController: UIViewController {
             returnKeyType: .default,
             forceClassic: CommandLine.arguments.contains("-classic")
         )
+    }
+
+    /// `UIKeyboardType` by case name, for the `-field` QA arg.
+    private static func keyboardType(named name: String) -> UIKeyboardType {
+        switch name {
+        case "asciiCapable":          return .asciiCapable
+        case "numbersAndPunctuation": return .numbersAndPunctuation
+        case "URL":                   return .URL
+        case "numberPad":             return .numberPad
+        case "phonePad":              return .phonePad
+        case "namePhonePad":          return .namePhonePad
+        case "emailAddress":          return .emailAddress
+        case "decimalPad":            return .decimalPad
+        case "twitter":               return .twitter
+        case "webSearch":             return .webSearch
+        case "asciiCapableNumberPad": return .asciiCapableNumberPad
+        default:                      return .default
+        }
     }
 
     private func updateHeight() {

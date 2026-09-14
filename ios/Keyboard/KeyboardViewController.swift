@@ -27,6 +27,9 @@ final class KeyboardViewController: UIInputViewController {
     /// external changes — see there.
     private var lastOwnHostEdit: CFTimeInterval = 0
 
+    /// The keyboard type the visible plane was chosen for — see `openFieldPlane`.
+    private var planeKeyboardType: UIKeyboardType?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         session.host = self
@@ -53,6 +56,16 @@ final class KeyboardViewController: UIInputViewController {
         // NB: do NOT apply the presentation offset here. Applying it this early (or in
         // viewWillAppear) reintroduces the switch jitter; it must be applied in
         // viewIsAppearing. The constraint stays at `target` until then.
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // Every presentation opens on the plane the field asks for (a numeric
+        // field on 123, anything else on letters), whatever plane was showing
+        // when the keyboard went away — the system keyboards reset the same way.
+        // Plane changes never touch the height, so this is safe before
+        // viewIsAppearing's offset trick.
+        openFieldPlane(force: true)
     }
 
     override func viewIsAppearing(_ animated: Bool) {
@@ -119,6 +132,11 @@ final class KeyboardViewController: UIInputViewController {
         if session.isComposing, CACurrentMediaTime() - lastOwnHostEdit > 0.15 {
             session.cancelAndReset()
         }
+        // A switch to another field lands here too, with the proxy already
+        // reporting the new field's traits: re-pick the plane when the
+        // keyboard type moved. Caret moves and our own echoes keep the type,
+        // so the plane the user chose survives them.
+        openFieldPlane(force: false)
         refreshAppearance()
     }
 
@@ -213,6 +231,17 @@ final class KeyboardViewController: UIInputViewController {
         let measured = view.bounds.height - heightConstraint.constant
         guard measured > 0, measured < keyboard.preferredHeight * 0.5 else { return }
         pendingOffset = max(pendingOffset, measured)
+    }
+
+    /// Show the plane the current field's keyboard type asks for. `force`
+    /// applies it even when the type is unchanged (a fresh presentation);
+    /// otherwise only a type change — a differently typed field — moves the
+    /// plane out from under the user.
+    private func openFieldPlane(force: Bool) {
+        let type = textDocumentProxy.keyboardType ?? .default
+        guard force || type != planeKeyboardType else { return }
+        planeKeyboardType = type
+        keyboard?.showLayer(KeyboardLayer.initial(for: type))
     }
 
     private func refreshAppearance() {

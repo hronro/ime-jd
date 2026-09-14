@@ -14,6 +14,10 @@ import XCTest
 ///   TEST_RUNNER_JD_QA_MARKER=/path/to/marker \
 ///   xcodebuild test -project JdIME-iOS.xcodeproj -scheme JdKeyboardQA \
 ///     -destination "id=$UDID" -derivedDataPath build/DD
+///
+/// `TEST_RUNNER_JD_QA_ARGS="-field numberPad"` forwards extra launch args
+/// (space-separated) to the preview app, e.g. to present the extension over a
+/// numeric field.
 final class KeyboardExtensionQA: XCTestCase {
 
     override func setUpWithError() throws {
@@ -25,7 +29,7 @@ final class KeyboardExtensionQA: XCTestCase {
         enableInSettingsIfNeeded()
 
         let app = XCUIApplication()
-        app.launchArguments = ["-preview", "-system"]
+        app.launchArguments = ["-preview", "-system"] + extraLaunchArguments()
         app.launch()
         XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 10))
         sleep(2)   // the field auto-focuses; give the keyboard the slide-in
@@ -78,6 +82,12 @@ final class KeyboardExtensionQA: XCTestCase {
         tapKey(app, "ABC")   // modifier click; back to letters
         tapKey(app, "空格")  // modifier click
         sleep(1)
+    }
+
+    /// Extra preview launch args from JD_QA_ARGS (space-separated).
+    private func extraLaunchArguments() -> [String] {
+        (ProcessInfo.processInfo.environment["JD_QA_ARGS"] ?? "")
+            .split(separator: " ").map(String.init)
     }
 
     @MainActor
