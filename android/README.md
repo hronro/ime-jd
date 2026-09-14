@@ -66,7 +66,7 @@ The check can be turned off with the **自动检查更新** switch; **检查更�
 ./gradlew :app:connectedDebugAndroidTest    # needs a running device/emulator
 ```
 
-`InputSessionTest` (instrumented, because it drives the real engine through JNI) covers the `InputSession` dispatch core: composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, raw commit, cancel.
+`InputSessionTest` (instrumented, because it drives the real engine through JNI) covers the `InputSession` dispatch core: composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, raw commit, cancel. `FieldPolicyTest` pins the field policy — numeric classes open on ?123, text classes on letters, every password variation (and only those) gets direct input.
 
 For UI screenshots without enabling the IME, the embedded preview takes QA intent extras (the counterpart of the iOS app's `-preview`/`-numbers`/`-symbols`/`-type` launch args), forwarded through the launcher activity:
 
@@ -75,11 +75,14 @@ adb shell am start -n com.hronro.imejd/.app.MainActivity \
   --ez jd.preview true --es jd.type a   # optionally --es jd.plane numbers|symbols
 ```
 
+`--es jd.field number|decimal|phone|datetime|password|visiblePassword|numberPassword|email|uri|text` gives the field that input type: with `jd.preview` the embedded keyboard opens the way the IME would over it; without, it types the launcher's try-field instead, so the real IME can be driven over such a field.
+
 ## Architecture notes
 
 - **JVM layer is mandatory.** Android has no native IME entry point, so the `InputMethodService`, `InputConnection`, and keyboard UI are Kotlin; only the engine is shared (Zig).
 - **No host composing region.** Like iOS, the in-flight code + candidates render in the keyboard's own candidate bar; only the final string is sent via `InputConnection.commitText`.
 - **Selection = tap, pagination = scroll.** No number-key selectors. The 123/#+= layers show Chinese punctuation directly and insert the tapped mark themselves, bypassing libjd's punctuation table but matching its behavior (see `core/docs/integration.md`).
+- **Field-aware opening plane, password passthrough.** `FieldPolicy` reads `EditorInfo.inputType` in `onStartInputView`: number / phone / datetime fields open on ?123 — Android never swaps IMEs for a field on its own (unlike iOS, which gives numeric fields its own pads), and a number field's key listener silently drops every Chinese character committed into it, so on letters the user would type into the void. Text fields open on letters, email / URI / ASCII included: non-Chinese text belongs to another keyboard. A restart on the same field (`restarting`, e.g. after an app's programmatic edit) keeps the user's plane. Password fields — the text, web, visible and number variations — put the keyboard in direct input (`KeyboardView.directInput`): letters and space bypass the engine and land in the host exactly as typed, with no composition and no candidates, because a masked field gives no hint that a stray space just committed a Chinese candidate.
 - **Native packaging.** The shim links the **dynamic** `libjd.so` (not the static `.a`, whose local-exec TLS relocations `ld` rejects in a shared object) and ships both `.so`s; `Engine` loads only `libjdjni`, whose `DT_NEEDED` pulls in `libjd.so` + `libc.so` as one group so libjd's libc references (e.g. `getauxval`) resolve.
 - **Key previews.** Character keys pop a Gboard-style balloon (`KeyPreview.kt`): instant on press, 70ms linger on release (AOSP's timing), slide-off cancels, one balloon per finger. In dark themes the balloon gets a Material elevation tint so it stands out over the keys. Balloons are children of the keyboard view — top-row previews float over the candidate bar — so there are no popup windows. Phone-only: tablets don't pop previews, matching Gboard/AOSP.
 - **Key-press feedback.** Every key down plays the system keypress sound (`AudioManager.playSoundEffect` with the per-key standard/delete/return/spacebar effects) and the system-tuned `KEYBOARD_TAP` haptic — `KeyFeedback.kt`, the counterpart of iOS's `KeyClick.swift` (sound-only there: iOS gates haptics behind Full Access). Candidate taps and the grid chevron/close give feedback too, and backspace repeats it on every auto-repeat tick, matching iOS. Both channels have toggles in the container app (default on, like Gboard's vibration and the always-on iOS click), stored in `SharedPreferences` and re-read per press — app, preview, and IME share one process, so a flip applies on the next key. Sound is muted by the silent/vibrate ringer, like the built-in keyboards.

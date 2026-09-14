@@ -22,6 +22,7 @@ import com.hronro.imejd.R
 import com.hronro.imejd.engine.InputSession
 import com.hronro.imejd.engine.KeyAction
 import com.hronro.imejd.engine.KeyboardHost
+import com.hronro.imejd.ui.FieldPolicy
 import com.hronro.imejd.ui.KeyboardLayer
 import com.hronro.imejd.ui.KeyboardTheme
 import com.hronro.imejd.ui.KeyboardView
@@ -37,6 +38,25 @@ class KeyboardPreviewActivity : AppCompatActivity() {
         const val EXTRA_PREVIEW = "jd.preview"
         const val EXTRA_PLANE = "jd.plane"   // "numbers" | "symbols"
         const val EXTRA_TYPE = "jd.type"     // keys fed into the session at launch
+        // The field's input type, by name (the iOS `-field` arg's counterpart).
+        // Also honored by MainActivity's try-field without jd.preview, so the
+        // REAL IME can be driven over such a field from adb.
+        const val EXTRA_FIELD = "jd.field"
+
+        /** `EditorInfo.inputType` for a jd.field name; null when absent/unknown. */
+        fun fieldInputType(name: String?): Int? = when (name) {
+            "text" -> InputType.TYPE_CLASS_TEXT
+            "number" -> InputType.TYPE_CLASS_NUMBER
+            "decimal" -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            "phone" -> InputType.TYPE_CLASS_PHONE
+            "datetime" -> InputType.TYPE_CLASS_DATETIME
+            "password" -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            "visiblePassword" -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            "numberPassword" -> InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            "email" -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+            "uri" -> InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            else -> null
+        }
     }
 
     private val session = InputSession() // mirrors JdInputMethodService
@@ -48,12 +68,16 @@ class KeyboardPreviewActivity : AppCompatActivity() {
         val density = resources.displayMetrics.density
         val pad = (12 * density).toInt()
 
+        // `--es jd.field number` gives the field that input type; the keyboard
+        // below then opens the way the IME would over it (FieldPolicy).
+        val fieldType = fieldInputType(intent.getStringExtra(EXTRA_FIELD))
+            ?: (InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE)
         val field = PreviewEditText(this).apply {
             id = R.id.preview_field
             hint = getString(R.string.try_hint)
             textSize = 22f
             gravity = Gravity.TOP
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            inputType = fieldType
             // Only the embedded keyboard edits this field — never the system IME.
             showSoftInputOnFocus = false
             setPadding(pad, pad, pad, pad)
@@ -100,6 +124,9 @@ class KeyboardPreviewActivity : AppCompatActivity() {
 
         field.requestFocus()
 
+        // Mirror JdInputMethodService.onStartInputView for the field's type.
+        keyboard.directInput = FieldPolicy.isPassword(fieldType)
+        keyboard.showLayer(FieldPolicy.openingLayer(fieldType))
         when (intent.getStringExtra(EXTRA_PLANE)) {
             "numbers" -> keyboard.showLayer(KeyboardLayer.NUMBERS)
             "symbols" -> keyboard.showLayer(KeyboardLayer.SYMBOLS)

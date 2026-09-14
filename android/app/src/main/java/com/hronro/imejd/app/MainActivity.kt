@@ -102,6 +102,11 @@ class MainActivity : AppCompatActivity() {
         }
         val tryField = EditText(this).apply {
             hint = getString(R.string.try_hint)
+            // QA: `--es jd.field number` (no jd.preview) gives this field that
+            // input type, so the REAL IME can be driven over a numeric /
+            // password field from adb — see KeyboardPreviewActivity.
+            KeyboardPreviewActivity.fieldInputType(intent.getStringExtra(KeyboardPreviewActivity.EXTRA_FIELD))
+                ?.let { inputType = it }
         }
 
         val lp = LinearLayout.LayoutParams(

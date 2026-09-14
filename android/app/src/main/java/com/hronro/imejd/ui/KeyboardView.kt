@@ -28,6 +28,14 @@ class KeyboardView(
     var returnLabel: String = "换行"
         set(value) { field = value; keyGrid.returnLabel = value }
 
+    /**
+     * Password fields (FieldPolicy.isPassword): letters and space bypass the
+     * engine and land in the host exactly as typed (case per shift) — nothing
+     * composes, so the candidate bar stays empty and nothing but what the user
+     * tapped reaches a masked field. Set by the owner per field.
+     */
+    var directInput = false
+
     private val density = context.resources.displayMetrics.density
     private val idiom: KeyboardIdiom =
         if (context.resources.configuration.smallestScreenWidthDp >= 600) KeyboardIdiom.PAD else KeyboardIdiom.PHONE
@@ -139,7 +147,10 @@ class KeyboardView(
             is KeyCap.Char -> sendChar(cap.byte)
             is KeyCap.InsertLiteral -> { collapseGrid(); session.insertLiteral(cap.text) }
             KeyCap.Backspace -> { collapseGrid(); session.handle(KeyAction.Backspace) }
-            KeyCap.Space -> { collapseGrid(); session.handle(KeyAction.EngineKey(0x20)) }
+            KeyCap.Space -> {
+                collapseGrid()
+                if (directInput) session.insertLiteral(" ") else session.handle(KeyAction.EngineKey(0x20))
+            }
             KeyCap.Return -> { collapseGrid(); onReturn?.invoke() }
             KeyCap.Globe -> {}
             KeyCap.Shift -> toggleShift()
@@ -152,7 +163,8 @@ class KeyboardView(
         var byte = b.toInt() and 0xFF
         if (shift != ShiftState.OFF && byte in 0x61..0x7A) byte -= 0x20
         collapseGrid()
-        session.handle(KeyAction.EngineKey(byte.toByte()))
+        if (directInput) session.insertLiteral(byte.toChar().toString())
+        else session.handle(KeyAction.EngineKey(byte.toByte()))
         if (shift == ShiftState.ONE_SHOT) { shift = ShiftState.OFF; keyGrid.updateShift(shift) }
     }
 
@@ -174,8 +186,16 @@ class KeyboardView(
         rebuildKeys()
     }
 
-    /** Present a specific plane directly (QA/preview hook; mirrors iOS `showLayer`). */
-    fun showLayer(layer: KeyboardLayer) = setLayer(layer)
+    /**
+     * Switch the visible plane (mirrors iOS `showLayer`): the owner opens each
+     * field on the plane its input type asks for (FieldPolicy.openingLayer);
+     * QA extras pick one for screenshots. No-op when already there, so
+     * re-asserting per field is free; a pending shift is dropped, as on a
+     * plane switch.
+     */
+    fun showLayer(layer: KeyboardLayer) {
+        if (layer != this.layer || shift != ShiftState.OFF) setLayer(layer)
+    }
 
     /**
      * Announce something in the idle candidate bar — the IME service's
