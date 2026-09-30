@@ -2505,6 +2505,8 @@
 双	emaoao
 孀	emauvo
 泷	emav
+灀	emavo
+灀	emavoa
 漺	emavu
 泷	emavua
 漺	emavuo
@@ -7076,7 +7078,6 @@
 浃	jsav
 叚	jsava
 叚	jsavav
-浃	jsavo
 浃	jsavou
 假	jsi
 甲	jsia
@@ -7690,6 +7691,8 @@
 哐	kmovv
 哐	kmovvv
 狂	kmu
+𫛭	kmua
+𫛭	kmuaua
 狂	kmuavv
 筐	kmuv
 筐	kmuvvv
@@ -12101,6 +12104,7 @@
 人	r
 瑞	rb
 汭	rba
+緌	rbaa
 緌	rbaauv
 汭	rbaiau
 锐	rbi
@@ -15663,6 +15667,7 @@
 浚	xwaao
 巡	xwaaoa
 浚	xwaaou
+𬘓	xwaau
 驯	xwaaui
 𬘓	xwaaui
 𫄸	xwaauv
@@ -16103,6 +16108,7 @@
 吔	yeoaia
 谒	yeoaoi
 咽	yeoi
+嘢	yeoia
 咽	yeoiav
 嘢	yeoiav
 晔	yeoii
@@ -16169,6 +16175,7 @@
 觃	yfiaa
 觃	yfiaai
 眼	yfiaav
+𪩘	yfiau
 蜒	yfiaui
 𪩘	yfiauo
 罨	yfiav
