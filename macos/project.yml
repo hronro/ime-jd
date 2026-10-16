@@ -75,7 +75,9 @@ targets:
   JdIMETests:
     type: bundle.unit-test
     platform: macOS
-    deploymentTarget: "12.0"
+    # Xcode 27's XCTest is built for macOS 14+; a lower target here only makes
+    # ld warn. Test-bundle only — the shipped app stays at 12.0.
+    deploymentTarget: "14.0"
     sources: JdIMETests
     settings:
       base:
