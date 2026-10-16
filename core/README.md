@@ -55,14 +55,14 @@ Multi-byte fields in both blobs are written in **target** endianness. Each gener
 ```sh
 zig build                          # produces zig-out/lib/libjd.{a,so,dylib,dll}
 zig build test                     # runs unit tests
-zig build -Doptimize=ReleaseFast   # fastest binary
-zig build -Doptimize=ReleaseSmall  # smallest binary
+zig build -Doptimize=fast          # fastest binary
+zig build -Doptimize=small         # smallest binary
 ```
 
 Targeting `wasm32-freestanding` builds a standalone WebAssembly reactor module (`zig-out/bin/jd.wasm`) exporting the same C ABI, instead of the static/dynamic libraries:
 
 ```sh
-zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast   # zig-out/bin/jd.wasm
+zig build -Dtarget=wasm32-freestanding -Doptimize=fast   # zig-out/bin/jd.wasm
 ```
 
 See [docs/integration.md](./docs/integration.md#webassembly) for the WebAssembly specifics, and `bindings/javascript` for the ergonomic JavaScript wrapper.

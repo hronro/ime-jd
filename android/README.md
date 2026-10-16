@@ -30,7 +30,7 @@ The `engine/` files are ports of `ios/Keyboard/Engine/` — keep them in sync.
 
 - JDK 17+ for Gradle. The **Android Studio JBR (21)** works:
   `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`
-- [`zig`](https://ziglang.org) 0.16.0 — `brew install zig`
+- [`zig`](https://ziglang.org) 0.17.0 — `brew install zig`
 - Android SDK with **NDK** (e.g. 29.x) — `sdkmanager "ndk;29.0.14206865"`. No CMake needed.
 - `local.properties` with `sdk.dir=...` (already present for this machine).
 

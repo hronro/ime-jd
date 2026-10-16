@@ -12,11 +12,11 @@
 # both .so files (Engine loads libjd first, then libjdjni).
 #
 # Usage: scripts/build-libjd.sh [abi ...]   (default: arm64-v8a x86_64)
-# Env:   ANDROID_HOME / ANDROID_NDK_HOME, MIN_SDK (default 24), OPT (default ReleaseSmall)
+# Env:   ANDROID_HOME / ANDROID_NDK_HOME, MIN_SDK (default 24), OPT (default small)
 #        LIBJD_SO_DIR -> optional dir of prebuilt engines, <abi>/libjd.so per
 #                        requested ABI; when set they're used directly instead
 #                        of invoking zig (the CI fast-path, like iOS's LIBJD_A
-#                        — the `build-libs` bundles are ReleaseFast). The NDK
+#                        — the `build-libs` bundles are `fast` builds). The NDK
 #                        is still required: the JNI shim is always linked here.
 
 set -eu
@@ -28,7 +28,7 @@ SHIM="$ANDROID_DIR/app/src/main/cpp/jd_jni.c"
 
 ABIS="${*:-arm64-v8a x86_64}"
 MIN_SDK="${MIN_SDK:-24}"
-OPT="-Doptimize=${OPT:-ReleaseSmall}"
+OPT="-Doptimize=${OPT:-small}"
 
 # --- locate zig (Gradle's daemon may not inherit an interactive PATH) ---
 # Not needed at all when every engine comes prebuilt via LIBJD_SO_DIR.

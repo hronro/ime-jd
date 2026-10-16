@@ -52,9 +52,9 @@ fi
 # Otherwise build libjd from source with zig.
 CORE_DIR="$SRCROOT/../core"
 
-# Always Release: Debug pulls in Zig runtime symbols (___zig_probe_stack, etc.)
+# Always `fast`: `debug` pulls in Zig runtime symbols (___zig_probe_stack, etc.)
 # that aren't satisfied when linked into a Swift binary. (Same as macOS.)
-OPT="-Doptimize=ReleaseFast"
+OPT="-Doptimize=fast"
 
 if ! command -v zig >/dev/null 2>&1; then
     echo "error: zig not found on PATH. Install with: brew install zig" >&2

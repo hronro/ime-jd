@@ -45,14 +45,14 @@ pub fn build(b: *std.Build) void {
     const gen_trie_mod = b.createModule(.{
         .root_source_file = b.path("scripts/gen_trie.zig"),
         .target = b.graph.host,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
     });
     gen_trie_mod.addImport("trie", trie_host_mod);
 
     const gen_trie_exe = b.addExecutable(.{ .name = "gen_trie", .root_module = gen_trie_mod });
 
     const gen_trie_run = b.addRunArtifact(gen_trie_exe);
-    const trie_out_dir = gen_trie_run.addOutputDirectoryArg("trie_data");
+    const trie_out_dir = gen_trie_run.addOutputDirectoryArg2("trie_data", .{});
     gen_trie_run.addArg(tables_eol_option);
     gen_trie_run.addArg(target_endian_arg);
     // Add every table file as an explicit input so cache invalidation works.
@@ -102,14 +102,14 @@ pub fn build(b: *std.Build) void {
     const gen_punc_mod = b.createModule(.{
         .root_source_file = b.path("scripts/gen_punc.zig"),
         .target = b.graph.host,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
     });
     gen_punc_mod.addImport("punc", punc_host_mod);
 
     const gen_punc_exe = b.addExecutable(.{ .name = "gen_punc", .root_module = gen_punc_mod });
 
     const gen_punc_run = b.addRunArtifact(gen_punc_exe);
-    const punc_out_dir = gen_punc_run.addOutputDirectoryArg("punc_data");
+    const punc_out_dir = gen_punc_run.addOutputDirectoryArg2("punc_data", .{});
     gen_punc_run.addArg(tables_eol_option);
     gen_punc_run.addArg(target_endian_arg);
     gen_punc_run.addFileArg(b.path("punctuation-marks/normal.txt"));
@@ -178,7 +178,7 @@ pub fn build(b: *std.Build) void {
             dynamic_lib.link_z_max_page_size = 16 * 1024;
         }
 
-        // `bundle_compiler_rt` was set in Debug builds in the original build.zig
+        // `bundle_compiler_rt` was set in `debug` builds in the original build.zig
         // to inline compiler-rt into the archive, but on macOS that produces an
         // additional archive member that knocks the main object out of 8-byte
         // alignment, which Apple's `ld` rejects. The consumer (cli/, etc.) gets

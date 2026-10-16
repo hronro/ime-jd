@@ -44,11 +44,11 @@ fi
 # Otherwise build libjd from source with zig.
 CORE_DIR="$SRCROOT/../core"
 
-# Always build libjd in Release. Debug mode pulls in Zig runtime symbols
+# Always build libjd in `fast` mode. `debug` mode pulls in Zig runtime symbols
 # (___zig_probe_stack, etc.) that aren't satisfied when linked into a Swift
 # binary. We don't need Zig-level debugging for the IME — libjd is a vendored
 # static dep.
-OPT="-Doptimize=ReleaseFast"
+OPT="-Doptimize=fast"
 
 # Pin the zig target's minimum macOS version to the app's deployment target so
 # the static lib's objects carry the same `minos` and the linker doesn't warn

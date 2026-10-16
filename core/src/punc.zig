@@ -84,7 +84,7 @@ pub const Punc = struct {
         var offset: usize = entry.values_offset;
         var seen: usize = 0;
         while (seen < i) : (seen += 1) {
-            const nul = std.mem.indexOfScalarPos(u8, self.strings, offset, 0).?;
+            const nul = std.mem.findScalarPos(u8, self.strings, offset, 0).?;
             offset = nul + 1;
         }
         return @ptrCast(&self.strings[offset]);
@@ -118,7 +118,7 @@ pub fn buildBlob(
     allocator: std.mem.Allocator,
     normals: []const NormalInput,
     paireds: []const PairedInput,
-    target_endian: std.builtin.Endian,
+    target_endian: std.lang.Endian,
 ) ![]align(4) u8 {
     // ---- Phase 1: build the strings pool. Offset 0 is reserved with a
     // NUL byte so `PairedEntry.open_offset == 0` reliably means "no entry".
@@ -210,7 +210,7 @@ pub fn buildBlob(
 
     @memcpy(buf[offsets.strings..][0..strings.items.len], strings.items);
 
-    if (target_endian != builtin.cpu.arch.endian()) {
+    if (target_endian != builtin.target.cpu.arch.endian()) {
         byteSwapBlob(buf);
     }
 
@@ -270,7 +270,7 @@ pub fn buildPunc(
     normals: []const NormalInput,
     paireds: []const PairedInput,
 ) !PuncHandle {
-    const bytes = try buildBlob(allocator, normals, paireds, builtin.cpu.arch.endian());
+    const bytes = try buildBlob(allocator, normals, paireds, builtin.target.cpu.arch.endian());
     errdefer allocator.free(bytes);
     return .{ .bytes = bytes, .punc = try Punc.fromBytes(bytes) };
 }
@@ -367,8 +367,8 @@ test "max_value_len covers normals and both paired halves" {
 }
 
 test "buildBlob produces byte-swapped output for cross-endian targets" {
-    const host = builtin.cpu.arch.endian();
-    const opposite: std.builtin.Endian = switch (host) {
+    const host = builtin.target.cpu.arch.endian();
+    const opposite: std.lang.Endian = switch (host) {
         .little => .big,
         .big => .little,
     };

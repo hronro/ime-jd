@@ -27,8 +27,8 @@ const trie = @import("trie");
 /// Diagnostic print that stays silent under `zig build test`. The unit tests
 /// below intentionally exercise the parse-error branches; without this gate,
 /// each `expectError` would push an `error: ...` line onto the test runner's
-/// captured stderr, which Zig 0.16's build runner then renders as a (bogus)
-/// "failed command" block — even when every test passes.
+/// captured stderr, which `zig build` (as of Zig 0.17) then renders as a
+/// (bogus) "failed command" block — even when every test passes.
 fn diag(comptime fmt: []const u8, args: anytype) void {
     if (!builtin.is_test) std.debug.print(fmt, args);
 }
@@ -47,7 +47,7 @@ fn parseTable(
         const trimmed = std.mem.trim(u8, raw_line, " \r");
         if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
-        const tab = std.mem.indexOfScalar(u8, trimmed, '\t') orelse {
+        const tab = std.mem.findScalar(u8, trimmed, '\t') orelse {
             diag("error: line without TAB in {s}: {s}\n", .{ path, trimmed });
             return error.MalformedTableLine;
         };
@@ -86,7 +86,7 @@ fn parseTables(
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    var gpa: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     defer _ = gpa.deinit();
     var arena_state = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena_state.deinit();
@@ -116,7 +116,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     else
         eol_arg;
 
-    const target_endian: std.builtin.Endian = blk: {
+    const target_endian: std.lang.Endian = blk: {
         if (std.mem.eql(u8, endian_arg, "le")) break :blk .little;
         if (std.mem.eql(u8, endian_arg, "be")) break :blk .big;
         std.debug.print("error: unknown target endianness {s} (expected \"le\" or \"be\")\n", .{endian_arg});
@@ -145,11 +145,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // visibility into the per-context resident size.
     //
     // Write to stdout (not stderr): zig build's Run step captures stderr when
-    // a step has output args and the build runner then renders it as a "failed
-    // command" even on exit 0. Informational lines belong on stdout.
+    // a step has output args, then renders it as a "failed command" even on
+    // exit 0. Informational lines belong on stdout.
     const t = try trie.Trie.fromBytes(blob);
-    const msg = try std.fmt.allocPrint(
-        arena,
+    const msg = try arena.print(
         "gen_trie: {d} entries → {d} bytes blob (frontier_cap={d}, path_buf_cap={d}, max_value_len={d})\n",
         .{ entries.len, blob.len, t.frontier_cap, t.path_buf_cap, t.max_value_len },
     );

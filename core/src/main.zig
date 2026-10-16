@@ -40,25 +40,25 @@ fn OnceCell(comptime T: type, comptime parse: fn () T) type {
         const State = enum(u8) { uninit, initializing, done };
 
         var value: T = undefined;
-        var state: std.atomic.Value(u8) = .init(@intFromEnum(State.uninit));
+        var state: std.atomic.Value(u8) = .init(@backingInt(State.uninit));
 
         fn get() *const T {
-            if (state.load(.acquire) == @intFromEnum(State.done)) return &value;
+            if (state.load(.acquire) == @backingInt(State.done)) return &value;
 
             if (state.cmpxchgStrong(
-                @intFromEnum(State.uninit),
-                @intFromEnum(State.initializing),
+                @backingInt(State.uninit),
+                @backingInt(State.initializing),
                 .acquire,
                 .acquire,
             ) == null) {
                 // We won the race — do the parse.
                 value = parse();
-                state.store(@intFromEnum(State.done), .release);
+                state.store(@backingInt(State.done), .release);
                 return &value;
             }
 
             // Another thread is initializing; spin until it publishes.
-            while (state.load(.acquire) != @intFromEnum(State.done)) {
+            while (state.load(.acquire) != @backingInt(State.done)) {
                 std.atomic.spinLoopHint();
             }
             return &value;
@@ -194,11 +194,11 @@ const AbiQuery = enum(u32) {
 
 export fn jd_abi_layout(what: u32) u32 {
     return switch (what) {
-        @intFromEnum(AbiQuery.sizeof_state) => @sizeOf(JdState),
-        @intFromEnum(AbiQuery.sizeof_option) => @sizeOf(QueryOption),
-        @intFromEnum(AbiQuery.hint_cap) => @intCast(pagination.HINT_CAP),
-        @intFromEnum(AbiQuery.scratch_options) => @intCast(query.SCRATCH_OPTIONS),
-        @intFromEnum(AbiQuery.max_commit_len) => 2 *
+        @backingInt(AbiQuery.sizeof_state) => @sizeOf(JdState),
+        @backingInt(AbiQuery.sizeof_option) => @sizeOf(QueryOption),
+        @backingInt(AbiQuery.hint_cap) => @intCast(pagination.HINT_CAP),
+        @backingInt(AbiQuery.scratch_options) => @intCast(query.SCRATCH_OPTIONS),
+        @backingInt(AbiQuery.max_commit_len) => 2 *
             @max(TrieCell.get().max_value_len, PuncCell.get().max_value_len) + 1,
         // Unknown queries are a benign 0 rather than a trap.
         else => 0,
@@ -356,24 +356,24 @@ test "jd_scratch_ptr is writable and holds a full window" {
 test "jd_abi_layout reports the real struct sizes" {
     try std.testing.expectEqual(
         @as(u32, @sizeOf(JdState)),
-        jd_abi_layout(@intFromEnum(AbiQuery.sizeof_state)),
+        jd_abi_layout(@backingInt(AbiQuery.sizeof_state)),
     );
     try std.testing.expectEqual(
         @as(u32, @sizeOf(QueryOption)),
-        jd_abi_layout(@intFromEnum(AbiQuery.sizeof_option)),
+        jd_abi_layout(@backingInt(AbiQuery.sizeof_option)),
     );
     try std.testing.expectEqual(
         @as(u32, pagination.HINT_CAP),
-        jd_abi_layout(@intFromEnum(AbiQuery.hint_cap)),
+        jd_abi_layout(@backingInt(AbiQuery.hint_cap)),
     );
     try std.testing.expectEqual(
         @as(u32, query.SCRATCH_OPTIONS),
-        jd_abi_layout(@intFromEnum(AbiQuery.scratch_options)),
+        jd_abi_layout(@backingInt(AbiQuery.scratch_options)),
     );
     // 2 × 300-byte longest entry + 1 literal.
     try std.testing.expectEqual(
         @as(u32, 601),
-        jd_abi_layout(@intFromEnum(AbiQuery.max_commit_len)),
+        jd_abi_layout(@backingInt(AbiQuery.max_commit_len)),
     );
     // Unknown queries are a benign 0 rather than a trap.
     try std.testing.expectEqual(@as(u32, 0), jd_abi_layout(9999));

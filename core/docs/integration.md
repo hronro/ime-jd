@@ -6,8 +6,8 @@ A short, self-contained guide to linking and calling the library from your appli
 
 ```sh
 zig build                                    # debug
-zig build -Doptimize=ReleaseSmall            # smallest binary
-zig build -Doptimize=ReleaseFast             # fastest binary
+zig build -Doptimize=small                   # smallest binary
+zig build -Doptimize=fast                    # fastest binary
 ```
 
 Outputs land in `zig-out/lib/` (and `zig-out/bin/` for the DLL on Windows):
@@ -29,7 +29,7 @@ The public header is at `include/jd.h`; a Clang/Swift module map is at `include/
 `zig build` accepts the standard `-Dtarget=` option:
 
 ```sh
-zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall
+zig build -Dtarget=aarch64-macos -Doptimize=small
 zig build -Dtarget=aarch64-linux-musl
 zig build -Dtarget=aarch64-ios
 zig build -Dtarget=x86_64-windows
@@ -377,4 +377,4 @@ The `page_size`, candidate-selector and page-nav lines are where the per-platfor
 
 Native builds use `std.heap.smp_allocator` (WebAssembly uses `std.heap.wasm_allocator` instead — see [WebAssembly](#webassembly)) — pure Zig, no libc dependency — and only ever touch it twice per context: one `alignedAlloc` inside `jd_init`, one matching `free` inside `jd_deinit`. Everything else (the BFS enumeration state, the anchor cache, the state block, the read scratch) lives in fixed-size regions of the per-context allocation, carved at init time or inlined in the context struct.
 
-Because there is no runtime allocator traffic, there is no per-context leak detection to enable in Debug builds — leaks would only ever come from a misuse of `jd_init` / `jd_deinit` on the caller's side, which any standard heap-checker (Valgrind, AddressSanitizer, etc.) will surface against the one alloc/free pair.
+Because there is no runtime allocator traffic, there is no per-context leak detection to enable in `debug` builds — leaks would only ever come from a misuse of `jd_init` / `jd_deinit` on the caller's side, which any standard heap-checker (Valgrind, AddressSanitizer, etc.) will surface against the one alloc/free pair.

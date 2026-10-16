@@ -23,7 +23,7 @@ ios/
 ## Requirements
 
 - Xcode 26+ — the liquid-glass style references iOS 26 SDK symbols (`UIGlassEffect`); the deployment target stays **iOS 13**
-- [`zig`](https://ziglang.org) 0.16.0 — `brew install zig`
+- [`zig`](https://ziglang.org) 0.17.0 — `brew install zig`
 - [`xcodegen`](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
 
 ## Build & run

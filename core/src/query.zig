@@ -1366,8 +1366,16 @@ test "trie composition + paired key commits both" {
 // held (the longest real dictionary entry is 300 bytes).
 // =========================================================================
 
-const LONG_A = "季" ** 100; // 300 bytes — matches the longest real entry
-const LONG_B = "鸡" ** 80; // 240 bytes
+const LONG_A = repeat("季", 100); // 300 bytes — matches the longest real entry
+const LONG_B = repeat("鸡", 80); // 240 bytes
+
+/// `s` repeated `n` times. Stands in for the array multiplication
+/// (`"季" ** 100`) that Zig 0.17 removed: splat `s` into an `[n][s.len]u8`
+/// and reinterpret that as one flat byte array.
+fn repeat(comptime s: []const u8, comptime n: usize) *const [n * s.len]u8 {
+    const buf: [n][s.len]u8 = @splat(s[0..s.len].*);
+    return @ptrCast(&buf);
+}
 
 fn buildLongValueTrie(allocator: std.mem.Allocator) !trie_mod.TrieHandle {
     return trie_mod.buildTrie(allocator, &.{

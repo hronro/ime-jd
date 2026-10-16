@@ -39,7 +39,7 @@ pub const HINT_CAP: usize = 8;
 comptime {
     // `jd.h` hard-codes `char hint[8]`. Keep the domain invariant inside
     // it as a hard compile error — `std.debug.assert` compiles to nothing
-    // in ReleaseFast, and an overflowing hint would silently truncate.
+    // in `fast` builds, and an overflowing hint would silently truncate.
     if (trie_mod.MAX_KEYS_LEN > HINT_CAP) {
         @compileError("MAX_KEYS_LEN outgrew the inline hint capacity declared in jd.h (char hint[8])");
     }

@@ -104,13 +104,13 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Build libjd
         working-directory: core
         # Non-wasm targets build a static + dynamic lib; the wasm target builds
-        # a reactor .wasm. All ship ReleaseFast.
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+        # a reactor .wasm. All ship `fast` builds.
+        run: zig build -Doptimize=fast -Dtarget=${{ matrix.zig_target }}
 
       - name: Stage libjd bundle
         shell: bash

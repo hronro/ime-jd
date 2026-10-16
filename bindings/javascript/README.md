@@ -58,7 +58,7 @@ Committing a candidate the user clicked needs no engine call — insert `c.value
 The wrapper does not embed the module — you provide it, exactly like `bindings/rust` links a prebuilt-or-zig-built libjd. Build it with
 
 ```sh
-zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast   # in core/
+zig build -Dtarget=wasm32-freestanding -Doptimize=fast   # in core/
 ```
 
 or download the `libjd-<ver>-wasm.wasm.tar.xz` release asset. `JdModule.instantiate` accepts wasm bytes (`BufferSource`), a compiled `WebAssembly.Module`, or a `fetch` `Response` (streaming, with an `arrayBuffer()` fallback).

@@ -4,7 +4,7 @@
 //
 // Fast-path precedence:
 //   JD_WASM set        -> trust it, build nothing (CI hands us the release wasm).
-//   zig on PATH        -> `zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast`.
+//   zig on PATH        -> `zig build -Dtarget=wasm32-freestanding -Doptimize=fast`.
 //   zig missing + wasm -> warn and reuse the existing zig-out/bin/jd.wasm.
 //   zig missing, no wasm -> hard error with instructions.
 
@@ -29,16 +29,16 @@ if (zig.status !== 0 || zig.error) {
     process.exit(0);
   }
   console.error(
-    "[build-wasm] zig not found and no prebuilt wasm. Install Zig 0.16, or set " +
+    "[build-wasm] zig not found and no prebuilt wasm. Install Zig 0.17, or set " +
       "JD_WASM to a prebuilt jd.wasm.",
   );
   process.exit(1);
 }
 
-console.log("[build-wasm] zig build -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast");
+console.log("[build-wasm] zig build -Dtarget=wasm32-freestanding -Doptimize=fast");
 const build = spawnSync(
   "zig",
-  ["build", "-Dtarget=wasm32-freestanding", "-Doptimize=ReleaseFast"],
+  ["build", "-Dtarget=wasm32-freestanding", "-Doptimize=fast"],
   { cwd: coreDir, stdio: "inherit" },
 );
 process.exit(build.status ?? 1);

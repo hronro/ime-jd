@@ -3,7 +3,7 @@
     .name = .jd,
     .version = "0.7.1",
     .fingerprint = 0x94143493696fbd65,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",

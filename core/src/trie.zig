@@ -19,7 +19,7 @@ const ALPHA: usize = 27;
 /// Domain invariant: the longest key sequence a dictionary entry may have.
 /// `Context.pressed_keys` in query.zig is sized to exactly this, so
 /// `buildBlob` rejects longer entries as a hard error (it runs in the
-/// generator's ReleaseFast build, where `std.debug.assert` would vanish).
+/// generator's `fast` build, where `std.debug.assert` would vanish).
 pub const MAX_KEYS_LEN: usize = 6;
 
 fn keyRank(c: u8) u8 {
@@ -202,7 +202,7 @@ const ChildRecord = struct {
 pub fn buildBlob(
     allocator: std.mem.Allocator,
     entries: []const Entry,
-    target_endian: std.builtin.Endian,
+    target_endian: std.lang.Endian,
 ) ![]align(4) u8 {
     // ---- size the work arrays ----
     var max_nodes: usize = 1;
@@ -220,7 +220,7 @@ pub fn buildBlob(
 
     // ---- Phase 1: walk entries, build trie shape, count values ----
     // Hard errors, not asserts: this code runs in the generator's
-    // ReleaseFast build, where `std.debug.assert` compiles to nothing —
+    // `fast` build, where `std.debug.assert` compiles to nothing —
     // a violated invariant here must fail the build, not ship as UB.
     var max_value_len: u32 = 0;
     for (entries) |e| {
@@ -236,7 +236,7 @@ pub fn buildBlob(
             // Reject bytes outside the a-z + ';' alphabet. Without this, one
             // bad dictionary line can give a node a 28th distinct child and
             // overflow Phase 4's fixed [ALPHA] insertion buffers — silent
-            // stack corruption in the generator's ReleaseFast build.
+            // stack corruption in the generator's `fast` build.
             if (!isValidKeyByte(k)) return error.EntryKeyOutsideAlphabet;
             var rec_idx = nodes[cur].first_child;
             var found: u32 = 0;
@@ -285,7 +285,7 @@ pub fn buildBlob(
         }
     }
     // The root's subtree count is the global maximum, and the packed node
-    // stores counts in 24 bits (fmt.Node.pack asserts that only in Debug).
+    // stores counts in 24 bits (fmt.Node.pack asserts that only in `debug`).
     if (counts[0] > 0x00FF_FFFF) return error.TooManyValuesTotal;
 
     // ---- Phase 2b: subtree node count + path bytes, for sizing the per-
@@ -479,8 +479,8 @@ pub fn buildBlob(
     // The struct writes above all use host-native u32 storage. If the
     // target's endianness differs, swap every u32 field in place so the
     // runtime can `@ptrCast` straight to []const Node etc. on its side.
-    if (target_endian != builtin.cpu.arch.endian()) {
-        byteSwapBlob(buf, builtin.cpu.arch.endian());
+    if (target_endian != builtin.target.cpu.arch.endian()) {
+        byteSwapBlob(buf, builtin.target.cpu.arch.endian());
     }
 
     return buf;
@@ -493,7 +493,7 @@ pub fn buildBlob(
 /// The function only touches the u32 fields (header, node, value,
 /// child-indices); u8 fields (`Node.values_len`, child keys, strings) and
 /// padding bytes are left untouched.
-fn byteSwapBlob(buf: []align(4) u8, current_endian: std.builtin.Endian) void {
+fn byteSwapBlob(buf: []align(4) u8, current_endian: std.lang.Endian) void {
     const node_count = std.mem.readInt(u32, buf[0..4], current_endian);
     const values_count = std.mem.readInt(u32, buf[4..8], current_endian);
     const child_keys_total = std.mem.readInt(u32, buf[8..12], current_endian);
@@ -550,7 +550,7 @@ pub const TrieHandle = struct {
 pub fn buildTrie(allocator: std.mem.Allocator, entries: []const Entry) !TrieHandle {
     // Use host endianness — the handle is consumed in the same process, so
     // the runtime reads it natively.
-    const bytes = try buildBlob(allocator, entries, builtin.cpu.arch.endian());
+    const bytes = try buildBlob(allocator, entries, builtin.target.cpu.arch.endian());
     errdefer allocator.free(bytes);
     return .{ .bytes = bytes, .trie = try Trie.fromBytes(bytes) };
 }
@@ -678,7 +678,7 @@ test "entries with keys longer than MAX_KEYS_LEN are a hard error" {
 test "entries with keys outside the a-z ';' alphabet are a hard error" {
     // Uppercase, digits, and whitespace are the likely dictionary typos;
     // each must fail the build instead of overflowing Phase 4's fixed
-    // [ALPHA] insertion buffers in the ReleaseFast generator.
+    // [ALPHA] insertion buffers in the generator's `fast` build.
     inline for (.{ "A", "0", " ", "a-", "a\tb" }) |keys| {
         try testing.expectError(error.EntryKeyOutsideAlphabet, buildTrie(testing.allocator, &.{
             .{ .keys = keys, .value = "x" },
@@ -700,7 +700,7 @@ test "isValidKeyByte matches the a-z ';' alphabet exactly" {
 
 test "more than 255 values on one key sequence is a hard error" {
     // values_len is a u8 in the blob node; 256 entries sharing one key
-    // sequence used to truncate silently in ReleaseFast.
+    // sequence used to truncate silently in `fast` builds.
     var entries: [256]Entry = undefined;
     for (&entries) |*e| e.* = .{ .keys = "a", .value = "x" };
     try testing.expectError(error.TooManyValuesPerNode, buildTrie(testing.allocator, &entries));
@@ -719,8 +719,8 @@ test "fromBytes rejects undersized buffer" {
 }
 
 test "buildBlob produces a byte-swapped blob for cross-endian targets" {
-    const host = builtin.cpu.arch.endian();
-    const opposite: std.builtin.Endian = switch (host) {
+    const host = builtin.target.cpu.arch.endian();
+    const opposite: std.lang.Endian = switch (host) {
         .little => .big,
         .big => .little,
     };
