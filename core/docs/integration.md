@@ -10,6 +10,8 @@ zig build -Doptimize=small                   # smallest binary
 zig build -Doptimize=fast                    # fastest binary
 ```
 
+Every build except `debug` strips debug info from the library: no DWARF, no `jd.pdb` on Windows, and only the exported `jd_*` functions keep their symbol names. Add `-Dstrip=false` to keep it, e.g. to symbolicate crashes inside the engine.
+
 Outputs land in `zig-out/lib/` (and `zig-out/bin/` for the DLL on Windows):
 
 | Platform | Static library      | Dynamic library                     |

@@ -69,6 +69,8 @@ See [docs/integration.md](./docs/integration.md#webassembly) for the WebAssembly
 
 The `-Dtables_eol=lf|crlf` option controls how the build-time generator splits table files. Defaults to `lf`; pass `crlf` on Windows checkouts that may have CRLF endings.
 
+Every build except `-Doptimize=debug` strips debug info from the library. Pass `-Dstrip=false` to keep it, e.g. to symbolicate a crash inside the engine.
+
 ## Layout
 
 ```

@@ -8,6 +8,12 @@ pub fn build(b: *std.Build) void {
     // checkout has CRLF endings on Windows.
     const tables_eol_option = b.option([]const u8, "tables_eol", "EOL for tables/*.txt files (default: lf)") orelse "lf";
 
+    // Release builds of the library ship without debug info. Zig only strips
+    // `small` by default; `fast` and `safe` would otherwise carry DWARF (or a
+    // PDB on Windows). Pass -Dstrip=false to keep it, e.g. to symbolicate a
+    // crash.
+    const strip = b.option(bool, "strip", "Strip debug info from the library (default: true unless -Doptimize=debug)") orelse (optimize != .debug);
+
     // Pass the target's endianness so the generators can byte-swap fields
     // when the host and target differ. They run on the host, so they can't
     // infer this on their own.
@@ -127,6 +133,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = strip,
     });
     lib_mod.addImport("trie", trie_target_mod);
     lib_mod.addImport("blob_format", blob_format_target_mod);
