@@ -9,7 +9,7 @@
 #
 # iPhone Duo (required from April 2027): the simulator boots folded, so only
 # the OUTER display (1398x2034) is captured. The inner one (2007x2853) renders
-# black until the device is unfolded in Device Hub, which simctl can't do.
+# black until the device is unfolded (scripts/duo-hinge.sh open).
 #
 # Requirements: macOS with Xcode, plus `zig` and `xcodegen` on PATH (same as a
 # normal iOS build — the build step invokes both).

@@ -159,19 +159,45 @@ final class KeyLayoutTests: XCTestCase {
     }
 
     /// The large iPhones get the stock keyboard's taller plane in portrait —
-    /// per style, as the stock rows' spacing differs — and only there.
-    func testLargePhonesGetTallerPlanes() {
-        XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, compactHeight: false), 216)
-        XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, compactHeight: false, largePhone: true,
+    /// per style, as the stock rows' spacing differs — and only there; the
+    /// iPhone Duo's unfolded inner display a shorter one.
+    func testPlaneHeightsPerGeometry() {
+        XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, geometry: .stock), 216)
+        XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, geometry: .stock, largePhone: true,
                                             style: .classic), 226)
-        XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, compactHeight: false, largePhone: true,
+        XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, geometry: .stock, largePhone: true,
                                             style: .liquidGlass), 232)
         for style: KeyboardTheme.Style in [.classic, .liquidGlass] {
-            XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, compactHeight: true, largePhone: true,
-                                                style: style), 162)
-            XCTAssertEqual(KeyLayout.keysHeight(idiom: .pad, compactHeight: false, largePhone: true,
+            XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, geometry: .stockCompact, compactHeight: true,
+                                                largePhone: true, style: style), 162)
+            XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, geometry: .wide, largePhone: true,
+                                                style: style), 206)
+            XCTAssertEqual(KeyLayout.keysHeight(idiom: .pad, geometry: .classic, largePhone: true,
                                                 style: style), 264)
         }
+    }
+
+    /// The bottom row follows the stock keyboard without an emoji key: with
+    /// the globe in the row, the iPhone SE's widths on the regular phones
+    /// (and below, where the globe sits under the keyboard) and on the
+    /// home-button Plus phones (classic), the iPhone Duo's own on its outer
+    /// and inner displays.
+    func testBottomRowWidthsPerDevice() {
+        func widths(_ geometry: KeyGeometry, globe: Bool, large: Bool,
+                    style: KeyboardTheme.Style = .liquidGlass) -> [CGFloat] {
+            KeyLayout.rows(layer: .letters, idiom: .phone, showGlobe: globe, geometry: geometry,
+                           largePhone: large, style: style).last!.map(\.weight)
+        }
+        XCTAssertEqual(widths(.stock, globe: false, large: false), [1.25, 6.25, 2.5])
+        XCTAssertEqual(widths(.stock, globe: true, large: false), [1.25, 1.25, 5, 2.5])
+        XCTAssertEqual(widths(.stock, globe: false, large: true), [1.25, 6.25, 2.5])
+        XCTAssertEqual(widths(.stock, globe: true, large: true), [1.5, 1, 6, 1.5])
+        XCTAssertEqual(widths(.stock, globe: true, large: true, style: .classic), [1.25, 1.25, 5, 2.5])
+        let wide = widths(.wide, globe: true, large: true)
+        XCTAssertEqual(wide.count, 4)
+        XCTAssertEqual(wide[0], 1.4)
+        XCTAssertEqual(wide[1], 0.935)
+        XCTAssertEqual(wide[3], 1.4)
     }
 
     /// The stock geometry lays rows on a 10-unit grid (the 8-key 123 row
@@ -181,14 +207,17 @@ final class KeyLayoutTests: XCTestCase {
         for layer: KeyboardLayer in [.letters, .numbers, .symbols] {
             for showGlobe in [false, true] {
                 let classic = KeyLayout.rows(layer: layer, idiom: .phone, showGlobe: showGlobe)
-                for geometry: KeyGeometry in [.stock, .stockCompact] {
-                    let rows = KeyLayout.rows(layer: layer, idiom: .phone, showGlobe: showGlobe,
-                                              geometry: geometry)
-                    XCTAssertEqual(rows.map { $0.map(\.cap).filter { $0 != .spacer } },
-                                   classic.map { $0.map(\.cap).filter { $0 != .spacer } })
-                    for row in rows where row.count < 12 {
-                        XCTAssertEqual(row.reduce(0) { $0 + $1.weight }, 10, accuracy: 0.001,
-                                       "\(layer) \(geometry) row \(row.map(\.cap.label))")
+                for geometry: KeyGeometry in [.stock, .stockCompact, .wide] {
+                    for largePhone in [false, true] {
+                        let rows = KeyLayout.rows(layer: layer, idiom: .phone, showGlobe: showGlobe,
+                                                  geometry: geometry, largePhone: largePhone,
+                                                  style: .liquidGlass)
+                        XCTAssertEqual(rows.map { $0.map(\.cap).filter { $0 != .spacer } },
+                                       classic.map { $0.map(\.cap).filter { $0 != .spacer } })
+                        for row in rows where row.count < 12 {
+                            XCTAssertEqual(row.reduce(0) { $0 + $1.weight }, 10, accuracy: 0.001,
+                                           "\(layer) \(geometry) row \(row.map(\.cap.label))")
+                        }
                     }
                 }
             }

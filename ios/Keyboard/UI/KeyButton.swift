@@ -130,10 +130,11 @@ final class KeyButton: UIControl {
     }
 
     /// Sized to the stock keyboard's glyphs: in-row globe 20pt (iPhone Duo,
-    /// iOS 27); shift, delete and return 19pt in liquid glass (iOS 27), shift
-    /// and delete 20pt in classic (iOS 18.6).
+    /// iOS 27); shift, delete and return 19pt in liquid glass (iOS 27) — 20pt
+    /// on the Duo's unfolded inner display — and shift and delete 20pt in
+    /// classic (iOS 18.6).
     private var symbolConfiguration: UIImage.SymbolConfiguration {
-        let size: CGFloat = spec.cap == .globe || theme.style == .classic ? 20 : 19
+        let size: CGFloat = spec.cap == .globe || theme.style == .classic || geometry == .wide ? 20 : 19
         return UIImage.SymbolConfiguration(font: .systemFont(ofSize: size))
     }
 
@@ -146,8 +147,7 @@ final class KeyButton: UIControl {
         cornerLabel.isHidden = !markedSpace
         cornerLabel.accessibilityLabel = displayText
         titleLabel.isHidden = name != nil || markedSpace
-        let face = Self.face(for: spec.cap, text: displayText, style: theme.style,
-                             phoneGrid: geometry != .classic)
+        let face = Self.face(for: spec.cap, text: displayText, style: theme.style, geometry: geometry)
         titleLabel.font = face.font
         titleCenterY.constant = -face.rise
     }
@@ -156,16 +156,22 @@ final class KeyButton: UIControl {
     /// larger than iPad's, small letters larger still and raised, to balance
     /// capitals, digits and marks: in liquid glass (iOS 27) small letters
     /// 24.5pt 2.3pt above center, the rest 21.5pt 1.2pt above, with an 18pt
-    /// plane key; in classic (iOS 18.6) small letters light 25.5pt 2.8pt
-    /// above center, the rest regular 22pt centered.
+    /// plane key — 30.5pt and 27.5pt, 2.8pt and 0.8pt up, on the iPhone Duo's
+    /// unfolded inner display; in classic (iOS 18.6) small letters light
+    /// 25.5pt 2.8pt above center, the rest regular 22pt centered.
     private static func face(for cap: KeyCap, text: String, style: KeyboardTheme.Style,
-                             phoneGrid: Bool) -> (font: UIFont, rise: CGFloat) {
+                             geometry: KeyGeometry) -> (font: UIFont, rise: CGFloat) {
         let glass = style == .liquidGlass
+        let phoneGrid = geometry != .classic
         switch cap {
         case .char, .insertLiteral:
             guard phoneGrid else { return (.systemFont(ofSize: 22), 0) }
             var smallLetter = false
             if case .char = cap { smallLetter = text != text.uppercased() }
+            // The iPhone Duo's unfolded inner display: the same scheme, larger.
+            if glass, geometry == .wide {
+                return smallLetter ? (.systemFont(ofSize: 30.5), 2.8) : (.systemFont(ofSize: 27.5), 0.8)
+            }
             switch (glass, smallLetter) {
             case (true, true):   return (.systemFont(ofSize: 24.5), 2.3)
             case (true, false):  return (.systemFont(ofSize: 21.5), 1.2)
@@ -316,7 +322,7 @@ final class KeyButton: UIControl {
         let popup = KeyPopupView(text: displayText, theme: theme,
                                  keyFrame: convert(bounds, to: host),
                                  hostBounds: host.bounds,
-                                 glyphSize: titleLabel.font.pointSize)
+                                 glyphSize: titleLabel.font.pointSize, geometry: geometry)
         host.addSubview(popup)
         self.popup = popup
     }
@@ -336,8 +342,7 @@ final class KeyButton: UIControl {
         popup?.removeFromSuperview()
         let popup = KeyPopupView(alternates: [displayText] + spec.alternates, theme: theme,
                                  keyFrame: convert(bounds, to: host),
-                                 hostBounds: host.bounds,
-                                 glyphSize: titleLabel.font.pointSize)
+                                 hostBounds: host.bounds, geometry: geometry)
         host.addSubview(popup)
         self.popup = popup
         showingAlternates = true

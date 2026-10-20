@@ -40,6 +40,12 @@ final class KeyboardLayoutView: UIView {
     /// A Plus / Pro Max iPhone, whose stock rows are taller (see `metrics`).
     var largePhone = false { didSet { if largePhone != oldValue { setNeedsLayout() } } }
 
+    /// How far the system already holds this keyboard in from each screen
+    /// edge — on the iPhone Duo's outer display it hosts the extension 7pt
+    /// in, where the stock keys start — so the portrait side margin only
+    /// makes up the rest of the stock one.
+    var systemSideInset: CGFloat = 0 { didSet { if systemSideInset != oldValue { setNeedsLayout() } } }
+
     init(theme: KeyboardTheme, idiom: KeyboardIdiom) {
         self.theme = theme
         self.idiom = idiom
@@ -73,16 +79,25 @@ final class KeyboardLayoutView: UIView {
     ///   lower than this view's bottom edge (the system parks a third-party
     ///   keyboard above its globe/mic chin), so the rows hug that edge: within
     ///   4pt in portrait, exact in landscape and on the large phones.
+    /// - iPhone Duo, unfolded (iOS 27.1, `.wide`): 10pt side margins and key
+    ///   gaps inside the 801pt the system gives the keyboard, 13pt row gaps.
     private var metrics: (side: CGFloat, hGap: CGFloat, top: CGFloat, bottom: CGFloat, vGap: CGFloat) {
         let glass = theme.style == .liquidGlass
         switch geometry {
         case .classic:
             return (idiom == .pad ? 5 : 3, idiom == .pad ? 7 : 5, 5, 5, 8)
         case .stock:
-            if glass { return (6.5, 6, 12, largePhone ? 7 : 0, 11) }
-            return largePhone ? (4, 6, 8, 5, 11) : (3, 6, 8, 4, 12)
+            let m: (side: CGFloat, hGap: CGFloat, top: CGFloat, bottom: CGFloat, vGap: CGFloat)
+            if glass {
+                m = (6.5, 6, 12, largePhone ? 7 : 0, 11)
+            } else {
+                m = largePhone ? (4, 6, 8, 5, 11) : (3, 6, 8, 4, 12)
+            }
+            return (max(0, m.side - systemSideInset), m.hGap, m.top, m.bottom, m.vGap)
         case .stockCompact:
             return glass ? (4, 6, 8, 2, 8) : (3, 16.0 / 3, 8, 2, 8)
+        case .wide:
+            return (10, 10, 8, 4, 13)
         }
     }
 

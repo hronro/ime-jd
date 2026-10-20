@@ -119,11 +119,21 @@ final class KeyboardThemeTests: XCTestCase {
     /// Candidates take the stock Pinyin keyboard's size in every style:
     /// 20pt on iPhone, 22pt on iPad.
     func testCandidateFontSizePerIdiom() {
-        let phone = UITraitCollection(traitsFrom: [lightTraits, UITraitCollection(userInterfaceIdiom: .phone)])
-        let pad = UITraitCollection(traitsFrom: [lightTraits, UITraitCollection(userInterfaceIdiom: .pad)])
+        func traits(_ idiom: UIUserInterfaceIdiom, _ h: UIUserInterfaceSizeClass,
+                    _ v: UIUserInterfaceSizeClass) -> UITraitCollection {
+            UITraitCollection { traits in
+                traits.userInterfaceStyle = .light
+                traits.userInterfaceIdiom = idiom
+                traits.horizontalSizeClass = h
+                traits.verticalSizeClass = v
+            }
+        }
         for forceClassic in [false, true] {
-            XCTAssertEqual(resolve(traits: phone, forceClassic: forceClassic).candidateFontSize, 20)
-            XCTAssertEqual(resolve(traits: pad, forceClassic: forceClassic).candidateFontSize, 22)
+            let size = { self.resolve(traits: $0, forceClassic: forceClassic).candidateFontSize }
+            XCTAssertEqual(size(traits(.phone, .compact, .regular)), 20)   // iPhone portrait
+            XCTAssertEqual(size(traits(.phone, .regular, .compact)), 20)   // large iPhone landscape
+            XCTAssertEqual(size(traits(.phone, .regular, .regular)), 22)   // iPhone Duo unfolded
+            XCTAssertEqual(size(traits(.pad, .regular, .regular)), 22)
         }
     }
 

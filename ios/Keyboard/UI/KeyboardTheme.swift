@@ -65,7 +65,7 @@ struct KeyboardTheme: Equatable {
     /// iOS 26. Nil in classic, which keeps the text.
     var returnSymbol: String? = nil
     /// Candidate glyph size, bar and expanded grid alike (see
-    /// `candidateFontSize(idiom:)`).
+    /// `candidateFontSize(traits:)`).
     var candidateFontSize: CGFloat = 20
 
     // MARK: - Key chrome (derived from the style, tuned in one place)
@@ -130,7 +130,7 @@ struct KeyboardTheme: Equatable {
             if #available(iOS 27.0, *) { theme.detachedCallout = true }
             theme.returnSymbol = Self.returnSymbol(returnKeyType)
         }
-        theme.candidateFontSize = Self.candidateFontSize(idiom: traits.userInterfaceIdiom)
+        theme.candidateFontSize = Self.candidateFontSize(traits: traits)
         if glass ? Self.glassReturnIsTinted(returnKeyType) : Self.returnIsTinted(returnKeyType) {
             // The stock glass keyboard keeps the pre-26 blue in both
             // appearances, not the lighter iOS 26 `systemBlue`.
@@ -174,9 +174,11 @@ struct KeyboardTheme: Equatable {
 
     /// The stock Pinyin keyboard's candidate size, bar and expanded grid
     /// alike, in both styles (measured on iOS 18.6, 26.5 and 27): 20pt on
-    /// iPhone, 22pt on iPad.
-    static func candidateFontSize(idiom: UIUserInterfaceIdiom) -> CGFloat {
-        idiom == .pad ? 22 : 20
+    /// iPhone, 22pt on iPad — and on the iPhone Duo's unfolded inner display,
+    /// the one iPhone keyboard that is regular in both size classes.
+    static func candidateFontSize(traits: UITraitCollection) -> CGFloat {
+        let regular = traits.horizontalSizeClass == .regular && traits.verticalSizeClass == .regular
+        return traits.userInterfaceIdiom == .pad || regular ? 22 : 20
     }
 
     /// Localized return-key label for the host's return key type (built-in wording).

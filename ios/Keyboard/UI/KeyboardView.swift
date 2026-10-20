@@ -41,22 +41,32 @@ final class KeyboardView: UIView {
         didSet { if compactHeight != oldValue, keyGeometry != .classic { rebuildKeys() } }
     }
 
-    /// A Plus / Pro Max iPhone (414pt wide and up), whose stock keyboard has
-    /// taller rows. Read off the portrait width — the keyboard spans the
-    /// screen — so a presentation knows it by its first layout pass.
+    /// A regular-width iPhone keyboard: the iPhone Duo's unfolded inner
+    /// display (and only that — a large iPhone in landscape is compact height).
+    private var regularWidth = false {
+        didSet { if regularWidth != oldValue, idiom == .phone { rebuildKeys() } }
+    }
+
+    /// A Plus / Pro Max iPhone (414pt wide and up, the iPhone Duo's outer
+    /// display included), whose stock keyboard has taller rows. Read off the
+    /// portrait width — the keyboard spans the screen — so a presentation
+    /// knows it by its first layout pass.
     private var largePhone = false {
         didSet {
             guard largePhone != oldValue else { return }
             keyGrid.largePhone = largePhone
+            rebuildKeys()   // the in-row globe's bottom row differs (see KeyLayout)
             onHeightChanged?()
         }
     }
 
-    /// The stock iPhone proportions, in either style. iPad — whose stock
+    /// The stock iPhone proportions, in either style; on the iPhone Duo's
+    /// unfolded inner display, its roomier `.wide` grid. iPad — whose stock
     /// keyboard is a different, full-size layout — keeps the original ones.
     private var keyGeometry: KeyGeometry {
         guard idiom == .phone else { return .classic }
-        return compactHeight ? .stockCompact : .stock
+        if compactHeight { return .stockCompact }
+        return regularWidth ? .wide : .stock
     }
 
     private var layer_: KeyboardLayer = .letters
@@ -77,8 +87,9 @@ final class KeyboardView: UIView {
     private var items: [Candidate] = []
 
     var preferredHeight: CGFloat {
-        CandidateBarView.height + KeyLayout.keysHeight(idiom: idiom, compactHeight: compactHeight,
-                                                       largePhone: largePhone, style: theme.style)
+        CandidateBarView.height + KeyLayout.keysHeight(idiom: idiom, geometry: keyGeometry,
+                                                       compactHeight: compactHeight, largePhone: largePhone,
+                                                       style: theme.style)
     }
 
     init(session: InputSession, theme: KeyboardTheme = .light) {
@@ -157,15 +168,22 @@ final class KeyboardView: UIView {
     private func updateForTraits() {
         let newIdiom: KeyboardIdiom = traitCollection.userInterfaceIdiom == .pad ? .pad : .phone
         let newCompact = traitCollection.verticalSizeClass == .compact
-        let changed = newIdiom != idiom || newCompact != compactHeight
+        let newRegularWidth = traitCollection.horizontalSizeClass == .regular
+        let changed = newIdiom != idiom || newCompact != compactHeight || newRegularWidth != regularWidth
         idiom = newIdiom
         compactHeight = newCompact
+        regularWidth = newRegularWidth
         if changed { onHeightChanged?() }
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         if idiom == .phone, !compactHeight, bounds.width > 0 { largePhone = bounds.width >= 414 }
+        // The system can host the keyboard narrower than the screen — 452pt
+        // of the iPhone Duo's 466pt outer display — and that inset is part of
+        // the stock side margin.
+        let screenWidth = window?.windowScene?.screen.bounds.width ?? bounds.width
+        keyGrid.systemSideInset = idiom == .phone ? max(0, (screenWidth - bounds.width) / 2) : 0
     }
 
     /// Switch the visible plane: the owner opens each field on the plane its
@@ -245,7 +263,7 @@ final class KeyboardView: UIView {
     private func rebuildKeys() {
         let geometry = keyGeometry
         keyGrid.setRows(KeyLayout.rows(layer: layer_, idiom: idiom, showGlobe: showsNextKeyboardKey,
-                                       geometry: geometry),
+                                       geometry: geometry, largePhone: largePhone, style: theme.style),
                         geometry: geometry)
         keyGrid.updateShift(shift)
     }

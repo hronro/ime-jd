@@ -25,6 +25,8 @@ final class KeyPopupView: UIView {
     private var reversed = false
     private var contentLeft: CGFloat = 0
     private var cellWidth: CGFloat = 0
+    /// Height of the floating panel's selection cell (centered in the panel).
+    private var highlightHeight: CGFloat = 141.0 / 3
     /// A floating shape hovers apart from the key (see `init(floating:…)`).
     private var floating = false
     /// The pressed key's bottom edge, in this view's coordinates: sliding well
@@ -38,10 +40,10 @@ final class KeyPopupView: UIView {
     /// The enlarged single-glyph preview above a pressed key. `glyphSize` is
     /// the key's own font size (the floating bubble scales from it).
     convenience init(text: String, theme: KeyboardTheme, keyFrame: CGRect, hostBounds: CGRect,
-                     glyphSize: CGFloat) {
+                     glyphSize: CGFloat, geometry: KeyGeometry = .stock) {
         if theme.detachedCallout {
             self.init(floating: [text], alternatesRow: false, theme: theme,
-                      keyFrame: keyFrame, hostBounds: hostBounds, glyphSize: glyphSize)
+                      keyFrame: keyFrame, hostBounds: hostBounds, glyphSize: glyphSize, geometry: geometry)
         } else {
             self.init(values: [text], alternatesRow: false, theme: theme,
                       keyFrame: keyFrame, hostBounds: hostBounds)
@@ -52,10 +54,10 @@ final class KeyPopupView: UIView {
     /// the screen's center — reversed on the right half — so the callout stays
     /// on-screen and the primary starts out directly above the finger.
     convenience init(alternates values: [String], theme: KeyboardTheme, keyFrame: CGRect, hostBounds: CGRect,
-                     glyphSize: CGFloat) {
+                     geometry: KeyGeometry = .stock) {
         if theme.style == .liquidGlass {
             self.init(floating: values, alternatesRow: true, theme: theme,
-                      keyFrame: keyFrame, hostBounds: hostBounds, glyphSize: glyphSize)
+                      keyFrame: keyFrame, hostBounds: hostBounds, glyphSize: 0, geometry: geometry)
         } else {
             self.init(values: values, alternatesRow: true, theme: theme,
                       keyFrame: keyFrame, hostBounds: hostBounds)
@@ -65,24 +67,27 @@ final class KeyPopupView: UIView {
     /// The floating shapes, measured off the stock keyboard on the iOS 26.5
     /// and 27.0 iPhone simulators (in points; 3x pixels / 3):
     /// - iOS 27 bubble: 12.17 wider than the key on each side, 65.67 tall,
-    ///   3.33 above the key, the glyph 1.54x the key's.
+    ///   3.33 above the key, the glyph 1.54x the key's — on the iPhone Duo's
+    ///   unfolded inner display (iOS 27.1) 70.33 tall, the glyph 1.4x.
     /// - Alternates panel (26 and 27): 67.67 tall, 3.33 (27) / 5.67 (26) above
-    ///   the key, cells up to 37.5 wide (narrower when the row would not fit),
-    ///   the glyph at the key's size, the selection a 47-tall rounded cell.
+    ///   the key, cells 4 wider than the key (narrower when the row would not
+    ///   fit), the glyph 21pt whatever the key's, the selection a 47-tall
+    ///   rounded cell — on the unfolded iPhone Duo 71 tall, the selection 51.
     /// Light fills are white with a soft shadow; dark ones a frosted material
     /// (see below). Like the stock bubble, either shape may run to the screen
     /// edge; one that would rise past this extension's top edge — which it
     /// cannot draw beyond — slides down over its key instead.
     private init(floating values: [String], alternatesRow: Bool, theme: KeyboardTheme,
-                 keyFrame: CGRect, hostBounds: CGRect, glyphSize: CGFloat) {
+                 keyFrame: CGRect, hostBounds: CGRect, glyphSize: CGFloat, geometry: KeyGeometry) {
         self.theme = theme
         let ios27 = theme.detachedCallout
         let gap: CGFloat = ios27 ? 10.0 / 3 : 17.0 / 3
-        let height: CGFloat = alternatesRow ? 203.0 / 3 : 197.0 / 3
+        let wide = geometry == .wide
+        let height: CGFloat = alternatesRow ? (wide ? 71 : 203.0 / 3) : (wide ? 211.0 / 3 : 197.0 / 3)
         var frame: CGRect
         if alternatesRow {
             let pad: CGFloat = ios27 ? 31.0 / 3 : 21.75 / 3
-            let cellWidth = min(112.5 / 3, (hostBounds.width - 2 * pad) / CGFloat(values.count))
+            let cellWidth = min(keyFrame.width + 4, (hostBounds.width - 2 * pad) / CGFloat(values.count))
             let width = CGFloat(values.count) * cellWidth + 2 * pad
             let reversed = keyFrame.midX > hostBounds.midX
             // The cell nearest the key centers over it; the rest extend inward.
@@ -93,6 +98,7 @@ final class KeyPopupView: UIView {
             self.reversed = reversed
             self.contentLeft = pad
             self.cellWidth = cellWidth
+            self.highlightHeight = wide ? 51 : 141.0 / 3
             self.displayValues = reversed ? values.reversed() : values
         } else {
             let width = keyFrame.width + 2 * (73.0 / 6)
@@ -150,7 +156,7 @@ final class KeyPopupView: UIView {
             highlight = hl
         }
         addLabels(to: body, height: bounds.height, alternatesRow: alternatesRow,
-                  font: .systemFont(ofSize: alternatesRow ? glyphSize : glyphSize * 1.54))
+                  font: .systemFont(ofSize: alternatesRow ? 21 : glyphSize * (wide ? 1.4 : 1.54)))
     }
 
     private init(values: [String], alternatesRow: Bool, theme: KeyboardTheme,
@@ -310,14 +316,11 @@ final class KeyPopupView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// Height of the floating panel's selection cell (centered in the panel).
-    private static let floatingHighlightHeight: CGFloat = 141.0 / 3
-
     /// One label per value across the cells, plus the 半/全 tags of width
     /// twins; an alternates row starts with its primary selected.
     private func addLabels(to content: UIView, height: CGFloat, alternatesRow: Bool, font: UIFont,
                            drop: CGFloat = 0) {
-        let badgeTop = floating ? (height - Self.floatingHighlightHeight) / 2 + 3 : 3
+        let badgeTop = floating ? (height - highlightHeight) / 2 + 3 : 3
         for (i, value) in displayValues.enumerated() {
             let label = UILabel()
             label.text = value
@@ -378,8 +381,8 @@ final class KeyPopupView: UIView {
         if let i = selectedDisplay {
             hl.isHidden = false
             hl.frame = floating
-                ? CGRect(x: labels[i].frame.minX, y: (bounds.height - Self.floatingHighlightHeight) / 2,
-                         width: cellWidth, height: Self.floatingHighlightHeight)
+                ? CGRect(x: labels[i].frame.minX, y: (bounds.height - highlightHeight) / 2,
+                         width: cellWidth, height: highlightHeight)
                 : labels[i].frame.insetBy(dx: 2, dy: 4)
         } else {
             hl.isHidden = true
