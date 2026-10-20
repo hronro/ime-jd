@@ -7,9 +7,10 @@
 # come out at the exact App Store pixel sizes, so no resizing is needed. Typing
 # uses the 键道6 code `jmdzi`, which yields 「键道」.
 #
-# iPhone Duo (required from April 2027): the simulator boots folded, so only
-# the OUTER display (1398x2034) is captured. The inner one (2007x2853) renders
-# black until the device is unfolded (scripts/duo-hinge.sh open).
+# iPhone Duo (required from April 2027): both displays are captured. The
+# device is folded for the outer display (1398x2034) and unfolded for the
+# inner one (2853x2007, landscape) with scripts/duo-hinge.sh, then folded
+# again, as it boots.
 #
 # Requirements: macOS with Xcode, plus `zig` and `xcodegen` on PATH (same as a
 # normal iOS build — the build step invokes both).
@@ -23,6 +24,10 @@
 # Override the simulators if your Xcode ships different model names:
 #   IPHONE_NAME="iPhone 17 Pro Max" IPAD_NAME="iPad Pro 13-inch (M5)" \
 #     DUO_NAME="iPhone Duo" ios/scripts/screenshots.sh
+#
+# Each device runs on the newest iOS runtime that has it; IOS_VERSION pins a
+# runtime instead (27.0, or 27 for its newest minor):
+#   IOS_VERSION=27.0 ios/scripts/screenshots.sh --ipad-only
 #
 # Output: ios/build/screenshots/<device>/<appearance>/NN-name.png (gitignored).
 
@@ -39,8 +44,8 @@ OUT_ROOT="$IOS_DIR/build/screenshots"
 
 IPHONE_NAME="${IPHONE_NAME:-iPhone 18 Pro Max}"   # 6.9" display
 IPAD_NAME="${IPAD_NAME:-iPad Pro 13-inch (M5)}"   # 13" display
-DUO_NAME="${DUO_NAME:-iPhone Duo}"                # outer display (iOS 27.1 runtime)
-SETTLE="${SETTLE:-3}"                              # seconds to let the UI render before capture
+DUO_NAME="${DUO_NAME:-iPhone Duo}"                # both displays (iOS 27.1 runtime)
+SETTLE="${SETTLE:-1}"                              # seconds to let the UI settle once the preview is ready
 
 # Each shot is "filename|launch args". `-type` feeds keys so the candidate bar
 # fills; `-popup <key>` floats the key-press bubble over that key (iPhone only —
@@ -73,25 +78,31 @@ done
 
 APP_PATH="${APP_PATH:-$DD/Build/Products/Debug-iphonesimulator/JdIME.app}"
 
-# First available simulator UDID for a device name (name may contain parens,
-# e.g. "iPad Pro 13-inch (M5)", so match it as a fixed string, then pull the UUID).
-udid_for_name() {
-  xcrun simctl list devices available \
-    | grep -F "$1 (" \
-    | grep -Eo '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' \
-    | head -1
+# "UDID VERSION" of the simulator with this name on the newest iOS runtime
+# that has one, or on IOS_VERSION's. simctl lists runtimes oldest first, so
+# the first match would be the oldest. The name may contain parens, e.g.
+# "iPad Pro 13-inch (M5)", so it is matched as a fixed string; the UDID follows.
+device_for_name() {
+  xcrun simctl list devices available | awk -v name="$1" -v want="${IOS_VERSION:-}" '
+    /^-- / { ios = ($2 == "iOS"); ver = $3; next }
+    ios && index($0, "    " name " (") == 1 && (want == "" || ver == want || index(ver, want ".") == 1) {
+      n = split(ver, v, ".")
+      key = v[1] * 1000000 + v[2] * 1000 + (n > 2 ? v[3] : 0)
+      if (key > best) { best = key; found = substr($0, length(name) + 7, 36) " " ver }
+    }
+    END { if (found != "") print found }'
 }
 
-resolve_udid() {
-  local name="$1" udid
-  udid="$(udid_for_name "$name" || true)"
-  if [ -z "$udid" ]; then
-    echo "error: no available simulator named '$name'." >&2
-    echo "set IPHONE_NAME / IPAD_NAME to one of these:" >&2
+resolve_device() {
+  local name="$1" device
+  device="$(device_for_name "$name")"
+  if [ -z "$device" ]; then
+    echo "error: no available simulator named '$name'${IOS_VERSION:+ on iOS $IOS_VERSION}." >&2
+    echo "set IPHONE_NAME / IPAD_NAME / DUO_NAME (or IOS_VERSION) to match one of these:" >&2
     xcrun simctl list devices available >&2
     exit 1
   fi
-  printf '%s' "$udid"
+  printf '%s' "$device"
 }
 
 build_app() {
@@ -112,25 +123,51 @@ display_port() {
     | awk -v w="$2" '/^Port:/ { u = "" } /UUID:/ { u = $2 } $0 ~ "Default width: " w "$" { print u; exit }'
 }
 
+# set_pose UDID closed|open — fold or unfold an iPhone Duo (duo-hinge.sh), and
+# check the display about to be captured came on.
+set_pose() {
+  local result
+  result="$("$SCRIPT_DIR/duo-hinge.sh" "$2" "$1")"
+  echo "  -- $result"
+  case "$2:$result" in
+    closed:*"inner display active"* | open:*"outer display active"*)
+      echo "error: $result after duo-hinge.sh $2" >&2
+      exit 1 ;;
+  esac
+}
+
 capture() {
-  local udid="$1" outfile="$2" args="$3" display="$4"
+  local udid="$1" outfile="$2" args="$3" display="$4" ready tries=0
+  ready="$(mktemp -u /tmp/jd-screenshot-ready.XXXXXX)"
   xcrun simctl terminate "$udid" "$BUNDLE_ID" >/dev/null 2>&1 || true
-  # shellcheck disable=SC2086 -- args are space-separated flags; the split is intentional
-  xcrun simctl launch "$udid" "$BUNDLE_ID" $args >/dev/null
+  # The preview creates $ready once it has applied the launch args, which can
+  # take many seconds on a cold launch or a busy machine; wait up to a minute.
+  # shellcheck disable=SC2086 # args are space-separated flags; the split is intentional
+  SIMCTL_CHILD_JD_QA_READY="$ready" xcrun simctl launch "$udid" "$BUNDLE_ID" $args >/dev/null
+  while [ ! -e "$ready" ] && [ "$tries" -lt 120 ]; do
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+  [ -e "$ready" ] || echo "    the preview didn't report ready within 60s; capturing anyway" >&2
+  rm -f "$ready"
   sleep "$SETTLE"
   xcrun simctl io "$udid" screenshot ${display:+"--display=$display"} "$outfile" >/dev/null
   echo "    ✓ $(basename "$outfile")"
 }
 
-# shoot_device LABEL NAME [DISPLAY_WIDTH] — the width picks one display of a
-# multi-display device; omitted, simctl captures the main one.
+# shoot_device LABEL NAME [DISPLAY_WIDTH [POSE]] — the width picks one display
+# of a multi-display device (omitted, simctl captures the main one); the pose
+# (closed / open) first folds or unfolds an iPhone Duo so that display is on.
 shoot_device() {
-  local label="$1" name="$2" width="${3:-}" udid display="" mode dir entry
-  udid="$(resolve_udid "$name")"
-  echo "==> $label: $name ($udid)"
-  xcrun simctl boot "$udid" 2>/dev/null || true   # "already booted" is fine
-  xcrun simctl bootstatus "$udid" >/dev/null       # wait until fully booted
+  local label="$1" name="$2" width="${3:-}" pose="${4:-}" device udid display="" mode dir entry
+  device="$(resolve_device "$name")"
+  udid="${device% *}"
+  echo "==> $label: $name, iOS ${device#* } ($udid)"
+  xcrun simctl bootstatus "$udid" -b >/dev/null   # boot if needed, wait until fully up
   xcrun simctl install "$udid" "$APP_PATH"
+  if [ -n "$pose" ]; then
+    set_pose "$udid" "$pose"
+  fi
   if [ -n "$width" ]; then
     display="$(display_port "$udid" "$width")"
     if [ -z "$display" ]; then
@@ -161,7 +198,10 @@ for d in $DEVICES; do
   case "$d" in
     iphone) shoot_device "iphone-6.9" "$IPHONE_NAME" ;;
     ipad)   shoot_device "ipad-13"    "$IPAD_NAME" ;;
-    duo)    shoot_device "duo-outer"  "$DUO_NAME" 1398 ;;
+    duo)    shoot_device "duo-outer"  "$DUO_NAME" 1398 closed
+            shoot_device "duo-inner"  "$DUO_NAME" 2007 open
+            duo="$(resolve_device "$DUO_NAME")"
+            set_pose "${duo% *}" closed ;;
   esac
 done
 

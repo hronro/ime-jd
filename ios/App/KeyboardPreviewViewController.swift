@@ -9,6 +9,8 @@ final class KeyboardPreviewViewController: UIViewController {
     private let textView = UITextView()
     private var keyboard: KeyboardView!
     private var heightConstraint: NSLayoutConstraint!
+    /// The keyboard's leading and trailing insets (see `hostedSideInset`).
+    private var sideConstraints: [NSLayoutConstraint] = []
     /// The extension rides the system keyboard backdrop (liquid glass: the
     /// panel's material), which doesn't exist in-app — this stand-in fills in
     /// behind the (fully transparent) keyboard so the preview looks like the
@@ -84,11 +86,13 @@ final class KeyboardPreviewViewController: UIViewController {
 
         view.addSubview(kb)
         heightConstraint = kb.heightAnchor.constraint(equalToConstant: kb.preferredHeight)
-        var constraints = [
+        sideConstraints = [
+            kb.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: kb.trailingAnchor),
+        ]
+        var constraints = sideConstraints + [
             textView.bottomAnchor.constraint(equalTo: kb.topAnchor, constant: -12),
 
-            kb.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            kb.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             kb.bottomAnchor.constraint(equalTo: g.bottomAnchor),
             heightConstraint!,
         ]
@@ -174,6 +178,23 @@ final class KeyboardPreviewViewController: UIViewController {
     /// full width, as the real keyboard's do.
     private func updateSafeAreaFollowing() {
         keyboard?.followsHorizontalSafeArea = traitCollection.verticalSizeClass == .compact
+    }
+
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        let inset = hostedSideInset
+        for c in sideConstraints where c.constant != inset { c.constant = inset }
+    }
+
+    /// iPhone Duo's inner display hosts the keyboard narrower than the
+    /// screen: 801pt, centered in its 951pt (iOS 27.1). There the preview's
+    /// keys take the same width, as the real keyboard's do; the backdrop
+    /// still spans the screen, like the system keyboard panel.
+    private var hostedSideInset: CGFloat {
+        let t = traitCollection
+        guard t.userInterfaceIdiom == .phone, t.horizontalSizeClass == .regular,
+              t.verticalSizeClass == .regular else { return 0 }
+        return max(0, (view.bounds.width - 801) / 2)
     }
 
     private func currentTheme() -> KeyboardTheme {
