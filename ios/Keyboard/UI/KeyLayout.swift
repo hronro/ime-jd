@@ -43,7 +43,8 @@ enum KeyCap: Equatable {
     case ret
     case spacer   // invisible gap; reserves width to center a row (no button, no tap)
 
-    /// Glyph shown on the key (special keys use SF Symbols, set in KeyButton).
+    /// Glyph shown on the key — or, where KeyButton draws an SF Symbol instead
+    /// (the globe; shift and delete in liquid glass), the key's label.
     var label: String {
         switch self {
         case .char(let b):       return String(Character(Unicode.Scalar(b)))
@@ -81,22 +82,43 @@ struct KeySpec {
 
 enum KeyboardIdiom { case phone, pad }
 
+/// How the planes proportion their keys. `.classic` is iPad's layout;
+/// `.stock` / `.stockCompact` mirror the stock iPhone keyboard in portrait /
+/// landscape — the same grid before and since iOS 26 (measured on iOS 18.6
+/// and 27), which narrows shift and delete (the letters keep their half-key
+/// offset, so the gap to them widens) and sizes the bottom row's keys
+/// differently per orientation. Only the spacing differs per style (see
+/// `KeyboardLayoutView`).
+enum KeyGeometry { case classic, stock, stockCompact }
+
 /// Builds the row/key model for a layer. Widths are proportional, so the same model
 /// lays out across iPhone/iPad and orientations.
 enum KeyLayout {
-    static func rows(layer: KeyboardLayer, idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
+    static func rows(
+        layer: KeyboardLayer,
+        idiom: KeyboardIdiom,
+        showGlobe: Bool,
+        geometry: KeyGeometry = .classic
+    ) -> [[KeySpec]] {
         switch layer {
-        case .letters: return letters(idiom: idiom, showGlobe: showGlobe)
-        case .numbers: return numbers(idiom: idiom, showGlobe: showGlobe)
-        case .symbols: return symbols(idiom: idiom, showGlobe: showGlobe)
+        case .letters: return letters(idiom: idiom, showGlobe: showGlobe, geometry: geometry)
+        case .numbers: return numbers(idiom: idiom, showGlobe: showGlobe, geometry: geometry)
+        case .symbols: return symbols(idiom: idiom, showGlobe: showGlobe, geometry: geometry)
         }
     }
 
-    /// Key height for the plane area (excludes the candidate bar).
-    static func keysHeight(idiom: KeyboardIdiom, compactHeight: Bool) -> CGFloat {
+    /// Key height for the plane area (excludes the candidate bar). The stock
+    /// keyboard's rows grow on the large iPhones (`largePhone`: the Plus /
+    /// Pro Max sizes) — to 45pt from 42pt in classic, from 43pt in liquid
+    /// glass, whose large-phone rows also sit 7pt clear of this view's bottom.
+    static func keysHeight(idiom: KeyboardIdiom, compactHeight: Bool, largePhone: Bool = false,
+                           style: KeyboardTheme.Style = .classic) -> CGFloat {
         switch idiom {
-        case .phone: return compactHeight ? 162 : 216
-        case .pad:   return compactHeight ? 352 : 264
+        case .phone:
+            if compactHeight || !largePhone { return compactHeight ? 162 : 216 }
+            return style == .liquidGlass ? 232 : 226
+        case .pad:
+            return compactHeight ? 352 : 264
         }
     }
 
@@ -201,7 +223,7 @@ enum KeyLayout {
         return nil
     }
 
-    private static func letters(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
+    private static func letters(idiom: KeyboardIdiom, showGlobe: Bool, geometry: KeyGeometry) -> [[KeySpec]] {
         var rows: [[KeySpec]] = []
         rows.append(charRow("qwertyuiop"))
         // 9-key home row, centered like the built-in keyboard. ';' is omitted: on
@@ -210,8 +232,8 @@ enum KeyLayout {
         // punctuation inventory has no '；' — the #+= plane carries a '；' key
         // that inserts via the engine-bypass path, leaving the shortcut intact.)
         rows.append([KeySpec(.spacer, 0.5)] + charRow("asdfghjkl") + [KeySpec(.spacer, 0.5)])
-        rows.append([KeySpec(.shift, 1.5)] + charRow("zxcvbnm") + [KeySpec(.backspace, 1.5)])
-        rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe))
+        rows.append(flankedRow(.shift, charRow("zxcvbnm"), .backspace, geometry))
+        rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe, geometry: geometry))
         return rows
     }
 
@@ -223,42 +245,65 @@ enum KeyLayout {
     // reach, the rare ones live on #+=. Keys insert their mark via the engine-
     // bypass path (see InputSession.insertLiteral); visually similar variants —
     // including marks beyond the engine inventory — hang off `alternates`.
-    private static func numbers(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
+    private static func numbers(idiom: KeyboardIdiom, showGlobe: Bool, geometry: KeyGeometry) -> [[KeySpec]] {
         var rows: [[KeySpec]] = [
             litRow(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]),
             litRow(["-", "/", "：", "～", "（", "）", "$", "@", "“", "”"]),
-            [KeySpec(.toLayer(.symbols), 1.5)]
-                + litRow(["。", "，", "、", "；", "？", "！", "…", "·"])
-                + [KeySpec(.backspace, 1.5)],
+            flankedRow(.toLayer(.symbols), litRow(["。", "，", "、", "；", "？", "！", "…", "·"]),
+                       .backspace, geometry),
         ]
-        rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe, leftLayer: .letters))
+        rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe, leftLayer: .letters, geometry: geometry))
         return rows
     }
 
-    private static func symbols(idiom: KeyboardIdiom, showGlobe: Bool) -> [[KeySpec]] {
+    private static func symbols(idiom: KeyboardIdiom, showGlobe: Bool, geometry: KeyGeometry) -> [[KeySpec]] {
         var rows: [[KeySpec]] = [
             litRow(["「", "」", "【", "】", "{", "}", "#", "%", "&", "*"]),
             litRow(["_", "=", "+", "×", "÷", "\\", "|", "《", "》", "`"]),
-            // Seven keys, no spacers: weights sum to 10, so the grid aligns
-            // with the 10-key rows above and the row reads as full.
-            [KeySpec(.toLayer(.numbers), 1.5)]
-                + litRow(["※", "℃", "√", "→", "★", "♡", "©"])
-                + [KeySpec(.backspace, 1.5)],
+            // Seven keys: weights sum to 10, so the grid aligns with the
+            // 10-key rows above and the row reads as full.
+            flankedRow(.toLayer(.numbers), litRow(["※", "℃", "√", "→", "★", "♡", "©"]),
+                       .backspace, geometry),
         ]
-        rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe, leftLayer: .letters))
+        rows.append(bottomRow(idiom: idiom, showGlobe: showGlobe, leftLayer: .letters, geometry: geometry))
         return rows
+    }
+
+    /// `[left] keys [right]` (shift / plane key … delete). iPad's classic row
+    /// gives the outer keys 1.5 units; the stock iPhone row narrows them to
+    /// 1.3 and leaves the rest as gap, so the inner keys keep the same position.
+    private static func flankedRow(_ left: KeyCap, _ inner: [KeySpec], _ right: KeyCap,
+                                   _ geometry: KeyGeometry) -> [KeySpec] {
+        guard geometry != .classic else {
+            return [KeySpec(left, 1.5)] + inner + [KeySpec(right, 1.5)]
+        }
+        return [KeySpec(left, 1.3), KeySpec(.spacer, 0.2)] + inner
+            + [KeySpec(.spacer, 0.2), KeySpec(right, 1.3)]
     }
 
     /// `[123/ABC] [🌐] [ space ] [ return ]` — globe omitted when the host hides it.
     private static func bottomRow(
         idiom: KeyboardIdiom,
         showGlobe: Bool,
-        leftLayer: KeyboardLayer = .numbers
+        leftLayer: KeyboardLayer = .numbers,
+        geometry: KeyGeometry
     ) -> [[KeySpec]].Element {
-        var row: [KeySpec] = [KeySpec(.toLayer(leftLayer), 2.0)]
-        if showGlobe { row.append(KeySpec(.globe, 1.2)) }
-        row.append(KeySpec(.space, 5.0))
-        row.append(KeySpec(.ret, 2.0))
+        guard geometry != .classic else {
+            var row: [KeySpec] = [KeySpec(.toLayer(leftLayer), 2.0)]
+            if showGlobe { row.append(KeySpec(.globe, 1.2)) }
+            row.append(KeySpec(.space, 5.0))
+            row.append(KeySpec(.ret, 2.0))
+            return row
+        }
+        // The stock widths: the plane key (and the globe) as wide as the stock
+        // keyboard's 123 and emoji keys, return as its return key; the space
+        // bar takes the rest, the emoji key's slot included (there is none).
+        let small: CGFloat = geometry == .stock ? 1.25 : 1
+        let ret: CGFloat = geometry == .stock ? 2.5 : 2
+        var row: [KeySpec] = [KeySpec(.toLayer(leftLayer), small)]
+        if showGlobe { row.append(KeySpec(.globe, small)) }
+        row.append(KeySpec(.space, 10 - CGFloat(row.count) * small - ret))
+        row.append(KeySpec(.ret, ret))
         return row
     }
 }

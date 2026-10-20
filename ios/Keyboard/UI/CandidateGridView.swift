@@ -45,6 +45,7 @@ final class CandidateGridView: UIView, UICollectionViewDataSource, UICollectionV
         collection.backgroundColor = .clear
         collection.register(GridCell.self, forCellWithReuseIdentifier: "c")
         collection.translatesAutoresizingMaskIntoConstraints = false
+        CandidateBarView.hideEdgeEffects(of: collection)
 
         addSubview(closeButton)
         addSubview(topSeparator)

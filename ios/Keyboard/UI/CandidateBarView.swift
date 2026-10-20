@@ -5,8 +5,8 @@ import UIKit
 /// A dumb renderer — the owner supplies items and handles selection / lazy loading.
 final class CandidateBarView: UIView, UIScrollViewDelegate {
     /// 54 rather than the English keyboard's 44: closer to the system Chinese
-    /// keyboard's taller bar, and — with the key plane's 5pt top margin — just
-    /// enough headroom for the key-press callout to keep its full system
+    /// keyboard's taller bar, and — with the key plane's top margin — enough
+    /// headroom for the key-press callout to keep (nearly) its full system
     /// proportions on the top key row (the balloon cannot rise above the
     /// keyboard's own surface, see `KeyPopupView`).
     static let height: CGFloat = 54
@@ -52,6 +52,7 @@ final class CandidateBarView: UIView, UIScrollViewDelegate {
         scroll.showsHorizontalScrollIndicator = false
         scroll.delegate = self
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        Self.hideEdgeEffects(of: scroll)
 
         // The built-in Pinyin keyboard's affordance: a thin secondary-gray SF Symbol
         // chevron, not a filled text triangle. Starts hidden so the idle bar shows
@@ -98,6 +99,19 @@ final class CandidateBarView: UIView, UIScrollViewDelegate {
             topSeparator.bottomAnchor.constraint(equalTo: bottomAnchor),
             topSeparator.heightAnchor.constraint(equalToConstant: 0.5),
         ])
+    }
+
+    /// UIKit's scroll edge effects (iOS 26+) blur content scrolling under a
+    /// bar. Inside the extension iOS 27 applies them to the candidates — the
+    /// strip sits right under the system keyboard panel's top edge — and the
+    /// soft blur covered every candidate. Nothing here ever scrolls under a
+    /// bar, so they go.
+    static func hideEdgeEffects(of scrollView: UIScrollView) {
+        guard #available(iOS 26.0, *) else { return }
+        for edge in [scrollView.topEdgeEffect, scrollView.leftEdgeEffect,
+                     scrollView.bottomEdgeEffect, scrollView.rightEdgeEffect] {
+            edge.isHidden = true
+        }
     }
 
     func apply(theme: KeyboardTheme) {
@@ -151,7 +165,7 @@ final class CandidateBarView: UIView, UIScrollViewDelegate {
     static func title(_ cand: Candidate, theme: KeyboardTheme) -> NSAttributedString {
         let result = NSMutableAttributedString(
             string: cand.value,
-            attributes: [.font: UIFont.systemFont(ofSize: 21), .foregroundColor: theme.candidateText]
+            attributes: [.font: UIFont.systemFont(ofSize: theme.candidateFontSize), .foregroundColor: theme.candidateText]
         )
         if let hint = cand.hint, !hint.isEmpty {
             result.append(NSAttributedString(

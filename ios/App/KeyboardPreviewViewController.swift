@@ -9,9 +9,11 @@ final class KeyboardPreviewViewController: UIViewController {
     private let textView = UITextView()
     private var keyboard: KeyboardView!
     private var heightConstraint: NSLayoutConstraint!
-    /// Liquid glass only: the extension rides the system keyboard panel's
-    /// material, which doesn't exist in-app — this stand-in fills in behind
-    /// the (fully transparent) keyboard so the preview looks like the real thing.
+    /// The extension rides the system keyboard backdrop (liquid glass: the
+    /// panel's material), which doesn't exist in-app — this stand-in fills in
+    /// behind the (fully transparent) keyboard so the preview looks like the
+    /// real thing: a material under the theme's wash in liquid glass, the
+    /// stock backdrop's flat colour in classic.
     private var previewBackdrop: UIVisualEffectView?
 
     override func viewDidLoad() {
@@ -40,6 +42,12 @@ final class KeyboardPreviewViewController: UIViewController {
            CommandLine.arguments.indices.contains(i + 1) {
             textView.keyboardType = Self.keyboardType(named: CommandLine.arguments[i + 1])
         }
+        // `-return search` QA launch arg: give the field that return key type
+        // (a UIReturnKeyType case name), to see how the return key renders it.
+        if let i = CommandLine.arguments.firstIndex(of: "-return"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            textView.returnKeyType = Self.returnKeyType(named: CommandLine.arguments[i + 1])
+        }
 
         // `-system` QA launch arg: let the SYSTEM keyboard drive the field
         // instead of the inline preview — with the extension enabled in the
@@ -58,6 +66,7 @@ final class KeyboardPreviewViewController: UIViewController {
         let kb = KeyboardView(session: session, theme: currentTheme())
         kb.translatesAutoresizingMaskIntoConstraints = false
         kb.showsNextKeyboardKey = false   // no input-mode switching inside the app
+        kb.returnLabel = KeyboardTheme.returnLabel(textView.returnKeyType)
         kb.onReturn = { [weak self] in
             guard let self else { return }
             if self.session.isComposing { self.session.handle(.commitRaw) }
@@ -65,13 +74,13 @@ final class KeyboardPreviewViewController: UIViewController {
         }
         kb.onHeightChanged = { [weak self] in self?.updateHeight() }
         self.keyboard = kb
+        updateSafeAreaFollowing()
 
-        if currentTheme().style == .liquidGlass {
-            let backdrop = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
-            backdrop.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(backdrop)
-            previewBackdrop = backdrop
-        }
+        let glass = currentTheme().style == .liquidGlass
+        let backdrop = UIVisualEffectView(effect: glass ? UIBlurEffect(style: .systemMaterial) : nil)
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(backdrop)
+        previewBackdrop = backdrop
 
         view.addSubview(kb)
         heightConstraint = kb.heightAnchor.constraint(equalToConstant: kb.preferredHeight)
@@ -154,7 +163,17 @@ final class KeyboardPreviewViewController: UIViewController {
         super.traitCollectionDidChange(previous)
         keyboard?.applyTheme(currentTheme())
         applyBackdropWash()
+        updateSafeAreaFollowing()
         updateHeight()
+    }
+
+    /// The extension's view only gets horizontal safe-area insets in
+    /// landscape (the notch). In portrait the app window can have insets a
+    /// keyboard window doesn't — iPhone Duo's outer display keeps its status
+    /// bar in a column on the right — so there the preview's keys span the
+    /// full width, as the real keyboard's do.
+    private func updateSafeAreaFollowing() {
+        keyboard?.followsHorizontalSafeArea = traitCollection.verticalSizeClass == .compact
     }
 
     private func currentTheme() -> KeyboardTheme {
@@ -164,9 +183,27 @@ final class KeyboardPreviewViewController: UIViewController {
         KeyboardTheme.resolve(
             traits: traitCollection,
             appearance: .default,
-            returnKeyType: .default,
+            returnKeyType: textView.returnKeyType,
             forceClassic: CommandLine.arguments.contains("-classic")
         )
+    }
+
+    /// `UIReturnKeyType` by case name, for the `-return` QA arg.
+    private static func returnKeyType(named name: String) -> UIReturnKeyType {
+        switch name {
+        case "go":            return .go
+        case "google":        return .google
+        case "join":          return .join
+        case "next":          return .next
+        case "route":         return .route
+        case "search":        return .search
+        case "send":          return .send
+        case "yahoo":         return .yahoo
+        case "done":          return .done
+        case "emergencyCall": return .emergencyCall
+        case "continue":      return .continue
+        default:              return .default
+        }
     }
 
     /// `UIKeyboardType` by case name, for the `-field` QA arg.

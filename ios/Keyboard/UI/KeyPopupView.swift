@@ -8,6 +8,11 @@ import UIKit
 /// (`KeyButton` drives the selection). Classic: a solid fill with the popup
 /// shadow. Liquid glass: a blur material masked to the callout, frosted to the
 /// system callout's brightness (not `UIGlassEffect` — see the note in `init`).
+///
+/// Floating variants follow the newer system keyboards: iOS 27 shows the
+/// pressed glyph in a rounded bubble hovering above the key, and both iOS 26
+/// and 27 pick alternates in a rounded panel hovering above the row (see
+/// `init(floating:…)`).
 final class KeyPopupView: UIView {
     private let theme: KeyboardTheme
     private var displayValues: [String] = []
@@ -20,39 +25,155 @@ final class KeyPopupView: UIView {
     private var reversed = false
     private var contentLeft: CGFloat = 0
     private var cellWidth: CGFloat = 0
+    /// A floating shape hovers apart from the key (see `init(floating:…)`).
+    private var floating = false
+    /// The pressed key's bottom edge, in this view's coordinates: sliding well
+    /// below it drops the alternates selection.
+    private var keyBottom: CGFloat = 0
     private var selectedDisplay: Int? { didSet { if selectedDisplay != oldValue { renderSelection() } } }
 
     /// The highlighted alternate (nil when the finger slid away from the row).
     var selectedValue: String? { selectedDisplay.map { displayValues[$0] } }
 
-    /// The enlarged single-glyph preview above a pressed key.
-    convenience init(text: String, theme: KeyboardTheme, keyFrame: CGRect, hostBounds: CGRect) {
-        self.init(values: [text], alternatesRow: false, theme: theme,
-                  keyFrame: keyFrame, hostBounds: hostBounds)
+    /// The enlarged single-glyph preview above a pressed key. `glyphSize` is
+    /// the key's own font size (the floating bubble scales from it).
+    convenience init(text: String, theme: KeyboardTheme, keyFrame: CGRect, hostBounds: CGRect,
+                     glyphSize: CGFloat) {
+        if theme.detachedCallout {
+            self.init(floating: [text], alternatesRow: false, theme: theme,
+                      keyFrame: keyFrame, hostBounds: hostBounds, glyphSize: glyphSize)
+        } else {
+            self.init(values: [text], alternatesRow: false, theme: theme,
+                      keyFrame: keyFrame, hostBounds: hostBounds)
+        }
     }
 
     /// The expanded press-and-hold group (primary first). Cells extend toward
     /// the screen's center — reversed on the right half — so the callout stays
     /// on-screen and the primary starts out directly above the finger.
-    convenience init(alternates values: [String], theme: KeyboardTheme, keyFrame: CGRect, hostBounds: CGRect) {
-        self.init(values: values, alternatesRow: true, theme: theme,
-                  keyFrame: keyFrame, hostBounds: hostBounds)
+    convenience init(alternates values: [String], theme: KeyboardTheme, keyFrame: CGRect, hostBounds: CGRect,
+                     glyphSize: CGFloat) {
+        if theme.style == .liquidGlass {
+            self.init(floating: values, alternatesRow: true, theme: theme,
+                      keyFrame: keyFrame, hostBounds: hostBounds, glyphSize: glyphSize)
+        } else {
+            self.init(values: values, alternatesRow: true, theme: theme,
+                      keyFrame: keyFrame, hostBounds: hostBounds)
+        }
+    }
+
+    /// The floating shapes, measured off the stock keyboard on the iOS 26.5
+    /// and 27.0 iPhone simulators (in points; 3x pixels / 3):
+    /// - iOS 27 bubble: 12.17 wider than the key on each side, 65.67 tall,
+    ///   3.33 above the key, the glyph 1.54x the key's.
+    /// - Alternates panel (26 and 27): 67.67 tall, 3.33 (27) / 5.67 (26) above
+    ///   the key, cells up to 37.5 wide (narrower when the row would not fit),
+    ///   the glyph at the key's size, the selection a 47-tall rounded cell.
+    /// Light fills are white with a soft shadow; dark ones a frosted material
+    /// (see below). Like the stock bubble, either shape may run to the screen
+    /// edge; one that would rise past this extension's top edge — which it
+    /// cannot draw beyond — slides down over its key instead.
+    private init(floating values: [String], alternatesRow: Bool, theme: KeyboardTheme,
+                 keyFrame: CGRect, hostBounds: CGRect, glyphSize: CGFloat) {
+        self.theme = theme
+        let ios27 = theme.detachedCallout
+        let gap: CGFloat = ios27 ? 10.0 / 3 : 17.0 / 3
+        let height: CGFloat = alternatesRow ? 203.0 / 3 : 197.0 / 3
+        var frame: CGRect
+        if alternatesRow {
+            let pad: CGFloat = ios27 ? 31.0 / 3 : 21.75 / 3
+            let cellWidth = min(112.5 / 3, (hostBounds.width - 2 * pad) / CGFloat(values.count))
+            let width = CGFloat(values.count) * cellWidth + 2 * pad
+            let reversed = keyFrame.midX > hostBounds.midX
+            // The cell nearest the key centers over it; the rest extend inward.
+            let x = reversed
+                ? keyFrame.midX + pad + cellWidth / 2 - width
+                : keyFrame.midX - pad - cellWidth / 2
+            frame = CGRect(x: x, y: keyFrame.minY - gap - height, width: width, height: height)
+            self.reversed = reversed
+            self.contentLeft = pad
+            self.cellWidth = cellWidth
+            self.displayValues = reversed ? values.reversed() : values
+        } else {
+            let width = keyFrame.width + 2 * (73.0 / 6)
+            frame = CGRect(x: keyFrame.midX - width / 2, y: keyFrame.minY - gap - height,
+                           width: width, height: height)
+            self.displayValues = values
+            self.cellWidth = width
+        }
+        frame.origin.x = min(max(frame.minX, hostBounds.minX), hostBounds.maxX - frame.width)
+        frame.origin.y = max(frame.minY, hostBounds.minY)
+
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        floating = true
+        keyBottom = keyFrame.maxY - frame.minY
+
+        // Light: near-opaque white (measured 253), with a soft shadow. Dark: a
+        // frosted material — keys behind the stock shapes show through as
+        // soft, lighter blobs (`UIGlassEffect` keeps them legible, too clear),
+        // brightening toward the bottom.
+        let radius: CGFloat = alternatesRow ? 20 : 15
+        let body: UIView
+        if theme.isDark {
+            let material = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+            material.frame = bounds
+            material.layer.cornerRadius = radius
+            material.layer.cornerCurve = .continuous
+            material.clipsToBounds = true
+            let frost = CAGradientLayer()
+            frost.frame = bounds
+            frost.colors = [UIColor(white: 1, alpha: 0.065).cgColor, UIColor(white: 1, alpha: 0.145).cgColor]
+            material.contentView.layer.addSublayer(frost)
+            addSubview(material)
+            body = material.contentView
+        } else {
+            body = UIView(frame: bounds)
+            body.backgroundColor = .white
+            body.layer.cornerRadius = radius
+            body.layer.cornerCurve = .continuous
+            addSubview(body)
+            layer.shadowColor = UIColor.black.cgColor
+            layer.shadowOpacity = 0.11
+            layer.shadowRadius = 6
+            layer.shadowOffset = CGSize(width: 0, height: 1)
+            layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: radius).cgPath
+        }
+
+        if alternatesRow {
+            let hl = CALayer()
+            hl.backgroundColor = theme.alternatesHighlight.cgColor
+            hl.cornerRadius = 9.5
+            hl.cornerCurve = .continuous
+            hl.isHidden = true
+            body.layer.addSublayer(hl)
+            highlight = hl
+        }
+        addLabels(to: body, height: bounds.height, alternatesRow: alternatesRow,
+                  font: .systemFont(ofSize: alternatesRow ? glyphSize : glyphSize * 1.54))
     }
 
     private init(values: [String], alternatesRow: Bool, theme: KeyboardTheme,
                  keyFrame: CGRect, hostBounds: CGRect) {
         self.theme = theme
 
-        // Balloon + neck above the key top, in the system keyboard's proportions.
-        // The extension cannot draw above its own surface (the system keyboard
-        // overflows the panel there), so if headroom ever runs out the neck dips
-        // into the key rather than squashing the balloon. (The candidate bar is
-        // sized so standard layouts fit without dipping — see CandidateBarView.)
-        let neckHeight: CGFloat = 13
-        let idealAbove = keyFrame.height + neckHeight
+        // Balloon + neck above the key top, in the system keyboard's proportions:
+        // iOS 26's necks down right above the key; the pre-26 one (measured on
+        // iOS 18.6) rises higher — 23pt more than the key is tall — and necks
+        // down over a longer sweep that ends inside the key. The extension
+        // cannot draw above its own surface (the system keyboard overflows the
+        // panel there), so if headroom ever runs out the neck dips further
+        // into the key rather than squashing the balloon. (The candidate bar
+        // is sized so standard layouts fit with little dipping — see
+        // CandidateBarView.)
+        let classic = theme.style == .classic
+        let neckHeight: CGFloat = classic ? 17 : 13
+        let dip: CGFloat = classic ? 4 : 0
+        let idealAbove = keyFrame.height + (classic ? 23 : neckHeight)
         let headroom = keyFrame.minY - hostBounds.minY
-        let overlap = min(max(0, idealAbove - headroom), 10)
-        let aboveKey = min(idealAbove - overlap, headroom)
+        let shortfall = min(max(0, idealAbove - headroom), 10)
+        let overlap = dip + shortfall
+        let aboveKey = min(idealAbove - shortfall, headroom)
         let balloonHeight = aboveKey + overlap - neckHeight
 
         let frame: CGRect
@@ -79,7 +200,7 @@ final class KeyPopupView: UIView {
             // keys (matches the system callout), capped so wide landscape keys
             // don't produce an outsized balloon. An edge key gives up overhang
             // on its outer side and regains it on the inner side.
-            let flare = min(keyFrame.width * 0.35, 14)
+            let flare = min(keyFrame.width * (classic ? 0.37 : 0.35), 14)
             let edgeMargin: CGFloat = 2
             let leftRoom = max(0, keyFrame.minX - hostBounds.minX - edgeMargin)
             let rightRoom = max(0, hostBounds.maxX - keyFrame.maxX - edgeMargin)
@@ -165,26 +286,48 @@ final class KeyPopupView: UIView {
             content = self
         }
 
+        keyBottom = bounds.height
         if alternatesRow {
             // Selection highlight behind the labels (moved by renderSelection).
             let hl = CALayer()
-            hl.backgroundColor = UIColor.systemBlue.cgColor
+            hl.backgroundColor = theme.alternatesHighlight.cgColor
             hl.cornerRadius = 8
             hl.cornerCurve = .continuous
             hl.isHidden = true
             content.layer.addSublayer(hl)
             highlight = hl
         }
+        // The pre-26 balloon's glyph is light — a small letter 40pt, a capital
+        // 37.5pt — and sits a little below the balloon's middle (iOS 18.6).
+        let classicGlyph = classic && !alternatesRow
+        let smallLetter = values.first.map { $0 != $0.uppercased() } ?? false
+        addLabels(to: content, height: balloonHeight, alternatesRow: alternatesRow,
+                  font: alternatesRow ? .systemFont(ofSize: 24)
+                      : classic ? .systemFont(ofSize: smallLetter ? 40 : 37.5, weight: .light)
+                      : .systemFont(ofSize: 32),
+                  drop: classicGlyph ? 1.7 : 0)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Height of the floating panel's selection cell (centered in the panel).
+    private static let floatingHighlightHeight: CGFloat = 141.0 / 3
+
+    /// One label per value across the cells, plus the 半/全 tags of width
+    /// twins; an alternates row starts with its primary selected.
+    private func addLabels(to content: UIView, height: CGFloat, alternatesRow: Bool, font: UIFont,
+                           drop: CGFloat = 0) {
+        let badgeTop = floating ? (height - Self.floatingHighlightHeight) / 2 + 3 : 3
         for (i, value) in displayValues.enumerated() {
             let label = UILabel()
             label.text = value
             label.textColor = theme.popupText
-            label.font = .systemFont(ofSize: alternatesRow ? 24 : 32)
+            label.font = font
             label.adjustsFontSizeToFitWidth = true
             label.minimumScaleFactor = 0.5
             label.textAlignment = .center
-            label.frame = CGRect(x: contentLeft + CGFloat(i) * cellWidth, y: 0,
-                                 width: cellWidth, height: balloonHeight)
+            label.frame = CGRect(x: contentLeft + CGFloat(i) * cellWidth, y: drop,
+                                 width: cellWidth, height: height)
             content.addSubview(label)
             labels.append(label)
             // A width pair in one group (@ and ＠) is two near-identical
@@ -196,7 +339,7 @@ final class KeyPopupView: UIView {
                 tag.text = badge
                 tag.font = .systemFont(ofSize: 9, weight: .medium)
                 tag.textColor = theme.popupText.withAlphaComponent(0.55)
-                tag.frame = CGRect(x: label.frame.minX + 4, y: 3, width: 14, height: 11)
+                tag.frame = CGRect(x: label.frame.minX + 4, y: badgeTop, width: 14, height: 11)
                 content.addSubview(tag)
                 badges.append(tag)
             } else {
@@ -210,15 +353,13 @@ final class KeyPopupView: UIView {
         }
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
     // MARK: - Alternates selection (driven by KeyButton's touch tracking)
 
     /// Update the highlighted cell for a touch in the POPUP's coordinate space.
     /// X is clamped into the row; sliding well below the key deselects.
     func updateSelection(forTouch point: CGPoint) {
         guard !displayValues.isEmpty, highlight != nil else { return }
-        if point.y > bounds.height + 30 {
+        if point.y > keyBottom + 30 {
             selectedDisplay = nil
             return
         }
@@ -236,15 +377,18 @@ final class KeyPopupView: UIView {
         guard let hl = highlight else { return }
         if let i = selectedDisplay {
             hl.isHidden = false
-            hl.frame = labels[i].frame.insetBy(dx: 2, dy: 4)
+            hl.frame = floating
+                ? CGRect(x: labels[i].frame.minX, y: (bounds.height - Self.floatingHighlightHeight) / 2,
+                         width: cellWidth, height: Self.floatingHighlightHeight)
+                : labels[i].frame.insetBy(dx: 2, dy: 4)
         } else {
             hl.isHidden = true
         }
         for (j, label) in labels.enumerated() {
             let selected = j == selectedDisplay
-            label.textColor = selected ? .white : theme.popupText
+            label.textColor = selected ? theme.alternatesHighlightText : theme.popupText
             badges[j]?.textColor = selected
-                ? UIColor.white.withAlphaComponent(0.85)
+                ? theme.alternatesHighlightText.withAlphaComponent(0.85)
                 : theme.popupText.withAlphaComponent(0.55)
         }
     }

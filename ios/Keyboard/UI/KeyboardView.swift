@@ -15,6 +15,18 @@ final class KeyboardView: UIView {
 
     var showsNextKeyboardKey = true { didSet { if showsNextKeyboardKey != oldValue { rebuildKeys() } } }
 
+    /// Whether the bar, keys, and candidate grid keep clear of the horizontal
+    /// safe-area insets (true: the notch in landscape) or span the full width.
+    /// The extension keeps the default; the in-app preview turns it off where
+    /// the app window has insets a keyboard window doesn't (see there).
+    var followsHorizontalSafeArea = true {
+        didSet {
+            guard followsHorizontalSafeArea != oldValue else { return }
+            NSLayoutConstraint.deactivate(followsHorizontalSafeArea ? edgeConstraints : safeAreaConstraints)
+            NSLayoutConstraint.activate(followsHorizontalSafeArea ? safeAreaConstraints : edgeConstraints)
+        }
+    }
+
     /// Localized label for the return key (set from the host's returnKeyType).
     /// Guarded: the setter walks every key, and the owner re-asserts it on
     /// every layout pass (see KeyboardViewController.viewWillLayoutSubviews).
@@ -24,7 +36,28 @@ final class KeyboardView: UIView {
 
     private(set) var theme: KeyboardTheme
     private var idiom: KeyboardIdiom = .phone { didSet { if idiom != oldValue { rebuildKeys() } } }
-    private var compactHeight = false
+    /// iPhone landscape. The stock geometry proportions the rows per orientation.
+    private var compactHeight = false {
+        didSet { if compactHeight != oldValue, keyGeometry != .classic { rebuildKeys() } }
+    }
+
+    /// A Plus / Pro Max iPhone (414pt wide and up), whose stock keyboard has
+    /// taller rows. Read off the portrait width — the keyboard spans the
+    /// screen — so a presentation knows it by its first layout pass.
+    private var largePhone = false {
+        didSet {
+            guard largePhone != oldValue else { return }
+            keyGrid.largePhone = largePhone
+            onHeightChanged?()
+        }
+    }
+
+    /// The stock iPhone proportions, in either style. iPad — whose stock
+    /// keyboard is a different, full-size layout — keeps the original ones.
+    private var keyGeometry: KeyGeometry {
+        guard idiom == .phone else { return .classic }
+        return compactHeight ? .stockCompact : .stock
+    }
 
     private var layer_: KeyboardLayer = .letters
     private var shift: ShiftState = .off
@@ -34,11 +67,18 @@ final class KeyboardView: UIView {
     private let keyGrid: KeyboardLayoutView
     private var gridOverlay: CandidateGridView?
 
+    /// The horizontal extent of the content, pinned to the safe area or to
+    /// the edges per `followsHorizontalSafeArea`.
+    private let contentGuide = UILayoutGuide()
+    private var safeAreaConstraints: [NSLayoutConstraint] = []
+    private var edgeConstraints: [NSLayoutConstraint] = []
+
     /// Accumulated candidates for the current composition (across loaded pages).
     private var items: [Candidate] = []
 
     var preferredHeight: CGFloat {
-        CandidateBarView.height + KeyLayout.keysHeight(idiom: idiom, compactHeight: compactHeight)
+        CandidateBarView.height + KeyLayout.keysHeight(idiom: idiom, compactHeight: compactHeight,
+                                                       largePhone: largePhone, style: theme.style)
     }
 
     init(session: InputSession, theme: KeyboardTheme = .light) {
@@ -67,17 +107,29 @@ final class KeyboardView: UIView {
         addSubview(candidateBar)
         addSubview(keyGrid)
         // Keep content inside the safe area so the notch / rounded corners don't
-        // cover the left column or first candidate in landscape (no-op in portrait,
-        // where the horizontal insets are 0). The background still fills edge-to-edge.
+        // cover the left column or first candidate in landscape (no-op in the
+        // extension in portrait, where the horizontal insets are 0). The
+        // background still fills edge-to-edge.
+        addLayoutGuide(contentGuide)
         let safe = safeAreaLayoutGuide
-        NSLayoutConstraint.activate([
+        safeAreaConstraints = [
+            contentGuide.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
+            contentGuide.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
+        ]
+        edgeConstraints = [
+            contentGuide.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentGuide.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(safeAreaConstraints + [
+            contentGuide.topAnchor.constraint(equalTo: topAnchor),
+            contentGuide.bottomAnchor.constraint(equalTo: bottomAnchor),
             candidateBar.topAnchor.constraint(equalTo: topAnchor),
-            candidateBar.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
-            candidateBar.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
+            candidateBar.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor),
+            candidateBar.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
             candidateBar.heightAnchor.constraint(equalToConstant: CandidateBarView.height),
             keyGrid.topAnchor.constraint(equalTo: candidateBar.bottomAnchor),
-            keyGrid.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
-            keyGrid.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
+            keyGrid.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor),
+            keyGrid.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
             keyGrid.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
 
@@ -93,6 +145,10 @@ final class KeyboardView: UIView {
         updateForTraits()
     }
 
+    // Deprecated like the method it overrides (iOS 17 moved to trait-change
+    // registration, which the iOS 15 floor lacks): keeps the iOS 17 test
+    // bundle, which compiles this file too, from warning on the super call.
+    @available(iOS, deprecated: 17.0)
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
         updateForTraits()
@@ -105,6 +161,11 @@ final class KeyboardView: UIView {
         idiom = newIdiom
         compactHeight = newCompact
         if changed { onHeightChanged?() }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if idiom == .phone, !compactHeight, bounds.width > 0 { largePhone = bounds.width >= 414 }
     }
 
     /// Switch the visible plane: the owner opens each field on the plane its
@@ -145,12 +206,19 @@ final class KeyboardView: UIView {
         // updates can lag a live appearance flip, so layout is the only
         // reliable hook) — the guard makes that ~free.
         guard theme != self.theme else { return }
+        let restyled = theme.style != self.theme.style
         self.theme = theme
         backgroundColor = theme.keyboardBackground
         syncAppearance()
         candidateBar.apply(theme: theme)
         keyGrid.apply(theme: theme)
         gridOverlay?.apply(theme: theme)
+        // Key faces and the plane's height follow the style (the QA
+        // `-classic` switch; the OS never changes it under a running keyboard).
+        if restyled {
+            rebuildKeys()
+            onHeightChanged?()
+        }
     }
 
     private func syncAppearance() {
@@ -175,7 +243,10 @@ final class KeyboardView: UIView {
     // MARK: - Keys
 
     private func rebuildKeys() {
-        keyGrid.setRows(KeyLayout.rows(layer: layer_, idiom: idiom, showGlobe: showsNextKeyboardKey))
+        let geometry = keyGeometry
+        keyGrid.setRows(KeyLayout.rows(layer: layer_, idiom: idiom, showGlobe: showsNextKeyboardKey,
+                                       geometry: geometry),
+                        geometry: geometry)
         keyGrid.updateShift(shift)
     }
 
@@ -223,6 +294,7 @@ final class KeyboardView: UIView {
 
     private func renderCandidates(_ snap: SessionSnapshot) {
         items = snap.candidates
+        keyGrid.composing = !snap.rawBuffer.isEmpty
         candidateBar.reset(
             composing: snap.rawBuffer,
             items: items,
@@ -259,8 +331,8 @@ final class KeyboardView: UIView {
         addSubview(grid)
         NSLayoutConstraint.activate([
             grid.topAnchor.constraint(equalTo: candidateBar.topAnchor),
-            grid.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor),
-            grid.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor),
+            grid.leadingAnchor.constraint(equalTo: contentGuide.leadingAnchor),
+            grid.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
             grid.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         gridOverlay = grid

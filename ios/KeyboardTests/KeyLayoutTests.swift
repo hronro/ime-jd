@@ -157,4 +157,41 @@ final class KeyLayoutTests: XCTestCase {
             XCTAssertEqual(KeyboardLayer.initial(for: type), .letters, "type \(type.rawValue)")
         }
     }
+
+    /// The large iPhones get the stock keyboard's taller plane in portrait —
+    /// per style, as the stock rows' spacing differs — and only there.
+    func testLargePhonesGetTallerPlanes() {
+        XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, compactHeight: false), 216)
+        XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, compactHeight: false, largePhone: true,
+                                            style: .classic), 226)
+        XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, compactHeight: false, largePhone: true,
+                                            style: .liquidGlass), 232)
+        for style: KeyboardTheme.Style in [.classic, .liquidGlass] {
+            XCTAssertEqual(KeyLayout.keysHeight(idiom: .phone, compactHeight: true, largePhone: true,
+                                                style: style), 162)
+            XCTAssertEqual(KeyLayout.keysHeight(idiom: .pad, compactHeight: false, largePhone: true,
+                                                style: style), 264)
+        }
+    }
+
+    /// The stock geometry lays rows on a 10-unit grid (the 8-key 123 row
+    /// excepted, as in classic) and keeps the same keys as classic — only the
+    /// proportions differ, so no plane loses or gains a key.
+    func testStockGeometryKeepsKeysOnTheGrid() {
+        for layer: KeyboardLayer in [.letters, .numbers, .symbols] {
+            for showGlobe in [false, true] {
+                let classic = KeyLayout.rows(layer: layer, idiom: .phone, showGlobe: showGlobe)
+                for geometry: KeyGeometry in [.stock, .stockCompact] {
+                    let rows = KeyLayout.rows(layer: layer, idiom: .phone, showGlobe: showGlobe,
+                                              geometry: geometry)
+                    XCTAssertEqual(rows.map { $0.map(\.cap).filter { $0 != .spacer } },
+                                   classic.map { $0.map(\.cap).filter { $0 != .spacer } })
+                    for row in rows where row.count < 12 {
+                        XCTAssertEqual(row.reduce(0) { $0 + $1.weight }, 10, accuracy: 0.001,
+                                       "\(layer) \(geometry) row \(row.map(\.cap.label))")
+                    }
+                }
+            }
+        }
+    }
 }
