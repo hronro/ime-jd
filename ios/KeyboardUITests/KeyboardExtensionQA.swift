@@ -92,7 +92,11 @@ final class KeyboardExtensionQA: XCTestCase {
 
     @MainActor
     private func tapKey(_ app: XCUIApplication, _ label: String) {
-        let key = app.staticTexts[label].firstMatch
+        // Text keys are static texts; symbol keys (the globe, and shift /
+        // delete wherever they're SF Symbols) are images labeled with their
+        // text glyph.
+        let key = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@", label)).firstMatch
         XCTAssertTrue(key.waitForExistence(timeout: 5), "key '\(label)' not found")
         key.tap()
         Thread.sleep(forTimeInterval: 0.4)
@@ -102,6 +106,13 @@ final class KeyboardExtensionQA: XCTestCase {
     /// Idempotent: skips adding when 键道 is already in the keyboards list.
     @MainActor
     private func enableInSettingsIfNeeded() {
+        // Xcode 27 installs the app under test only when a test first
+        // launches it, and Settings offers no keyboard for an app that isn't
+        // installed — so on a fresh simulator, launch before looking.
+        let host = XCUIApplication()
+        host.launch()
+        host.terminate()
+
         let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
         settings.launch()
 
@@ -129,7 +140,8 @@ final class KeyboardExtensionQA: XCTestCase {
         ).firstMatch
         if !jdRow.waitForExistence(timeout: 2) {
             addRow.tap()
-            // THIRD-PARTY KEYBOARDS section lists the container app's name.
+            // THIRD-PARTY KEYBOARDS section lists the container app's name
+            // (iOS 27: below the suggested keyboards; the tap scrolls to it).
             tapFirst(settings, "键道")
             XCTAssertTrue(jdRow.waitForExistence(timeout: 5), "键道 was not added")
         }

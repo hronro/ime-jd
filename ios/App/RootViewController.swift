@@ -103,7 +103,7 @@ final class RootViewController: UIViewController {
     private func makeStepsCard() -> UIView {
         let steps = [
             "打开「设置」→「通用」→「键盘」",
-            "轻点「键盘」→「添加新键盘…」",
+            "轻点「键盘」→「添加新键盘」",
             "在列表中选择「键道」",
         ]
         let rows = steps.enumerated().map { makeStepRow(number: $0.offset + 1, text: $0.element) }
@@ -234,39 +234,29 @@ final class RootViewController: UIViewController {
     }
 
     /// A full-width call-to-action. `prominent` = filled (primary action);
-    /// otherwise tinted (secondary). Uses `UIButton.Configuration` on iOS 15+ for
-    /// native padding, icon layout, and pressed states, with a manual fallback at
-    /// the iOS 13 deployment floor.
+    /// otherwise tinted (secondary). `UIButton.Configuration` supplies native
+    /// padding, icon layout, and pressed states.
     private func makeButton(title: String, prominent: Bool, systemImage: String?) -> ActionButton {
         let button = ActionButton(type: .system)
         button.translatesAutoresizingMaskIntoConstraints = false
-        if #available(iOS 15.0, *) {
-            var cfg = prominent ? UIButton.Configuration.filled() : UIButton.Configuration.tinted()
-            cfg.title = title
-            cfg.baseBackgroundColor = .systemBlue
-            cfg.baseForegroundColor = prominent ? .white : .systemBlue
-            cfg.cornerStyle = .large
-            cfg.contentInsets = NSDirectionalEdgeInsets(top: 15, leading: 20, bottom: 15, trailing: 20)
-            if let systemImage {
-                cfg.image = UIImage(systemName: systemImage)
-                cfg.imagePlacement = .leading
-                cfg.imagePadding = 8
-                cfg.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
-            }
-            cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-                var out = incoming
-                out.font = .systemFont(ofSize: 17, weight: .semibold)
-                return out
-            }
-            button.configuration = cfg
-        } else {
-            button.setTitle(title, for: .normal)
-            button.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
-            button.setTitleColor(prominent ? .white : .systemBlue, for: .normal)
-            button.backgroundColor = prominent ? .systemBlue : UIColor.systemBlue.withAlphaComponent(0.12)
-            button.layer.cornerRadius = 14
-            button.layer.cornerCurve = .continuous
+        var cfg = prominent ? UIButton.Configuration.filled() : UIButton.Configuration.tinted()
+        cfg.title = title
+        cfg.baseBackgroundColor = .systemBlue
+        cfg.baseForegroundColor = prominent ? .white : .systemBlue
+        cfg.cornerStyle = .large
+        cfg.contentInsets = NSDirectionalEdgeInsets(top: 15, leading: 20, bottom: 15, trailing: 20)
+        if let systemImage {
+            cfg.image = UIImage(systemName: systemImage)
+            cfg.imagePlacement = .leading
+            cfg.imagePadding = 8
+            cfg.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
         }
+        cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var out = incoming
+            out.font = .systemFont(ofSize: 17, weight: .semibold)
+            return out
+        }
+        button.configuration = cfg
         button.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
         return button
     }

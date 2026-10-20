@@ -22,7 +22,7 @@ ios/
 
 ## Requirements
 
-- Xcode 26+ — the liquid-glass style references iOS 26 SDK symbols (`UIGlassEffect`); the deployment target stays **iOS 13**
+- Xcode 26+ — the liquid-glass style references iOS 26 SDK symbols (`UIGlassEffect`); the deployment target is **iOS 15**, the lowest Xcode 27 accepts (the test bundles target iOS 17, Xcode 27's XCTest floor)
 - [`zig`](https://ziglang.org) 0.17.0 — `brew install zig`
 - [`xcodegen`](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
 
@@ -38,19 +38,21 @@ The "Build libjd" prebuild phase compiles `../core` for the platform being built
 
 ```sh
 xcodebuild -project JdIME-iOS.xcodeproj -scheme JdIME-iOS \
-  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
+(Simulator names follow the installed runtimes — `xcrun simctl list devices available`; Xcode 27's iOS 27 runtime has no iPhone 17 Pro.)
+
 ### Enabling the keyboard
 
-After installing the container app: **Settings ▸ General ▸ Keyboard ▸ Keyboards ▸ Add New Keyboard… ▸ 键道**. No "Allow Full Access" needed. The container app also has an **in-app preview** ("在应用内试用键盘") to try the keyboard without enabling it system-wide.
+After installing the container app: **Settings ▸ General ▸ Keyboard ▸ Keyboards ▸ Add New Keyboard ▸ 键道** (on iOS 27 a sheet that lists third-party keyboards below the suggested ones). No "Allow Full Access" needed. The container app also has an **in-app preview** ("在应用内试用键盘") to try the keyboard without enabling it system-wide.
 
 ## Tests
 
 ```sh
 xcodebuild -project JdIME-iOS.xcodeproj -scheme JdIME-iOS \
-  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
   CODE_SIGNING_ALLOWED=NO test
 ```
 

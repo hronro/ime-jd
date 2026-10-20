@@ -10,7 +10,7 @@
 #   PLATFORM_NAME              -> iphoneos | iphonesimulator
 #   ARCHS                      -> arch(es) being built (e.g. "arm64" or "arm64 x86_64")
 #   DERIVED_FILE_DIR           -> per-target derived-files directory
-#   IPHONEOS_DEPLOYMENT_TARGET -> minimum iOS version (e.g. 13.0)
+#   IPHONEOS_DEPLOYMENT_TARGET -> minimum iOS version (e.g. 15.0)
 #   LIBJD_A                    -> optional path to a prebuilt libjd.a; when set it's
 #                                 used directly instead of invoking zig (the CI
 #                                 fast-path, like macOS). It must cover every arch
@@ -27,7 +27,7 @@ mkdir -p "$OUT_DIR"
 
 PLATFORM_NAME="${PLATFORM_NAME:-iphonesimulator}"
 ARCHS="${ARCHS:-$(uname -m)}"
-MIN_IOS="${IPHONEOS_DEPLOYMENT_TARGET:-13.0}"
+MIN_IOS="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
 
 # Fast path: a prebuilt libjd.a was supplied (e.g. the CI `build-libs` artifact).
 # Use it directly instead of invoking zig — the only requirement is that it covers
@@ -69,8 +69,13 @@ for arch in $ARCHS; do
         iphonesimulator:x86_64) zig_target="x86_64-ios.$MIN_IOS-simulator" ;;
         *) echo "error: unsupported PLATFORM_NAME:arch '$PLATFORM_NAME:$arch'" >&2; exit 1 ;;
     esac
-    (cd "$CORE_DIR" && zig build -Dtarget="$zig_target" "$OPT" >&2)
-    cp "$CORE_DIR/zig-out/lib/libjd.a" "$OUT_DIR/libjd-$arch.a"
+    # Install under this target's own derived dir, not the shared core/zig-out:
+    # Xcode runs the targets' prebuild phases in parallel, and the test bundles
+    # build for a newer deployment target than the app — through one shared
+    # zig-out, the extension could copy (and link) the test bundle's slice.
+    prefix="$OUT_DIR/zig-out-$arch"
+    (cd "$CORE_DIR" && zig build -Dtarget="$zig_target" "$OPT" --prefix "$prefix" >&2)
+    cp "$prefix/lib/libjd.a" "$OUT_DIR/libjd-$arch.a"
     slices="$slices $OUT_DIR/libjd-$arch.a"
 done
 

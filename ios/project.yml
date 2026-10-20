@@ -2,7 +2,7 @@ name: JdIME-iOS
 options:
   bundleIdPrefix: com.hronro
   deploymentTarget:
-    iOS: "13.0"          # floor for clean dark-mode theming (userInterfaceStyle)
+    iOS: "15.0"          # Xcode 27's floor (it rejects anything lower)
   createIntermediateGroups: true
   groupSortPosition: top
   generateEmptyDirectories: true
@@ -16,7 +16,7 @@ settings:
     MARKETING_VERSION: "0.0.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"
-    IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
     TARGETED_DEVICE_FAMILY: "1,2"   # iPhone + iPad
     # The "Build libjd" Run Script Phase shells out to `zig` and reads ../core;
     # script sandboxing would block both. Keep it off (also what CI relies on).
@@ -93,6 +93,9 @@ targets:
   JdKeyboardTests:
     type: bundle.unit-test
     platform: iOS
+    # Xcode 27's XCTest is built for iOS 17+; a lower target here only makes
+    # ld warn. Test bundles only — the shipped app stays at 15.0.
+    deploymentTarget: "17.0"
     sources:
       - path: KeyboardTests
       - path: Keyboard/Engine
@@ -122,6 +125,7 @@ targets:
   JdKeyboardUITests:
     type: bundle.ui-testing
     platform: iOS
+    deploymentTarget: "17.0"   # XCTest floor, as JdKeyboardTests
     sources:
       - path: KeyboardUITests
     dependencies:

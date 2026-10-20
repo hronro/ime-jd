@@ -1,10 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Blank launch screen: a single full-bleed view in systemBackground so the
      launch image matches RootViewController's first frame in both light and
-     dark mode. Required because the app ships an iOS 13 deployment floor — the
-     dict-based UILaunchScreen key is only honored at MinimumOSVersion 14+, so a
-     storyboard (referenced by UILaunchStoryboardName) is what satisfies the
-     iPad-multitasking launch-screen requirement across 13→latest. -->
+     dark mode. Referenced by UILaunchStoryboardName, it satisfies the
+     iPad-multitasking launch-screen requirement (see the note in Info.plist). -->
 <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="22685" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
     <device id="retina6_12" orientation="portrait" appearance="light"/>
     <dependencies>

@@ -61,7 +61,7 @@ The offset is persisted per `presentationOffset.{model}.ios{major}.{portrait|lan
 
 ### Critical timing detail
 
-The offset **must be applied in `viewIsAppearing(_:)`** (and restored in `viewDidAppear`). Applying it earlier — in `viewDidLoad` or `viewWillAppear` — **reintroduces the jitter**. This was confirmed empirically on device; the precise reason iOS treats the earlier timing differently is not fully understood. `viewIsAppearing(_:)` is back-deployed to iOS 13, so it is safe at the project's iOS 13 deployment target.
+The offset **must be applied in `viewIsAppearing(_:)`** (and restored in `viewDidAppear`). Applying it earlier — in `viewDidLoad` or `viewWillAppear` — **reintroduces the jitter**. This was confirmed empirically on device; the precise reason iOS treats the earlier timing differently is not fully understood. `viewIsAppearing(_:)` is back-deployed to iOS 13, so it is safe at the project's iOS 15 deployment target.
 
 Implementation: `ios/Keyboard/KeyboardViewController.swift` — `viewIsAppearing` / `viewDidAppear` / `viewDidLayoutSubviews` / `viewWillDisappear`, the `applyHeight()` / `samplePresentationOffset()` helpers, and the `presentationOffset` (UserDefaults) property. The height constraint stays `.defaultHigh`; `KeyboardView` is pinned to all four edges of the input view and its rows lay out proportionally, so it fills whatever height is applied.
 

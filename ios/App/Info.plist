@@ -27,10 +27,29 @@
     <false/>
     <key>LSRequiresIPhoneOS</key>
     <true/>
-    <!-- Storyboard launch screen (not the dict-based UILaunchScreen): the app's
-         deployment floor is iOS 13, and App Store validation only accepts the
-         UILaunchScreen key when MinimumOSVersion is 14+. A storyboard is honored
-         on every version, satisfying the iPad-multitasking launch-screen rule. -->
+    <!-- UIScene life cycle, one scene (window built in SceneDelegate): an app
+         built with the iOS 27 SDK fails to launch without it. -->
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <false/>
+        <key>UISceneConfigurations</key>
+        <dict>
+            <key>UIWindowSceneSessionRoleApplication</key>
+            <array>
+                <dict>
+                    <key>UISceneConfigurationName</key>
+                    <string>Default Configuration</string>
+                    <key>UISceneDelegateClassName</key>
+                    <string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+                </dict>
+            </array>
+        </dict>
+    </dict>
+    <!-- Storyboard launch screen, satisfying the iPad-multitasking launch-screen
+         rule. Chosen when the floor was iOS 13: App Store validation only accepts
+         the dict-based UILaunchScreen key at MinimumOSVersion 14+, so at today's
+         iOS 15 floor that key would do as well. -->
     <key>UILaunchStoryboardName</key>
     <string>LaunchScreen</string>
     <key>UISupportedInterfaceOrientations</key>

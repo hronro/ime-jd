@@ -1,24 +1,28 @@
 #!/usr/bin/env bash
 # Generate App Store screenshots for the 键道 keyboard by driving the container
 # app's in-app preview (the real KeyboardView) into each state via its QA launch
-# args, then capturing with simctl on the two required device sizes.
+# args, then capturing with simctl on the required device sizes.
 #
-# Screenshots captured on the 6.9" iPhone and 13" iPad simulators come out at
-# the exact App Store pixel sizes, so no resizing is needed. Typing uses the
-# 键道6 code `jmdzi`, which yields 「键道」.
+# Screenshots captured on the 6.9" iPhone, 13" iPad, and iPhone Duo simulators
+# come out at the exact App Store pixel sizes, so no resizing is needed. Typing
+# uses the 键道6 code `jmdzi`, which yields 「键道」.
+#
+# iPhone Duo (required from April 2027): the simulator boots folded, so only
+# the OUTER display (1398x2034) is captured. The inner one (2007x2853) renders
+# black until the device is unfolded in Device Hub, which simctl can't do.
 #
 # Requirements: macOS with Xcode, plus `zig` and `xcodegen` on PATH (same as a
 # normal iOS build — the build step invokes both).
 #
 # Usage:
-#   ios/scripts/screenshots.sh                # build, both devices, light + dark
+#   ios/scripts/screenshots.sh                # build, all devices, light + dark
 #   ios/scripts/screenshots.sh --no-build     # reuse the previous build
-#   ios/scripts/screenshots.sh --iphone-only  # or --ipad-only
+#   ios/scripts/screenshots.sh --iphone-only  # or --ipad-only / --duo-only
 #   ios/scripts/screenshots.sh --light-only   # or --dark-only
 #
 # Override the simulators if your Xcode ships different model names:
-#   IPHONE_NAME="iPhone 16 Pro Max" IPAD_NAME="iPad Pro 13-inch (M5)" \
-#     ios/scripts/screenshots.sh
+#   IPHONE_NAME="iPhone 17 Pro Max" IPAD_NAME="iPad Pro 13-inch (M5)" \
+#     DUO_NAME="iPhone Duo" ios/scripts/screenshots.sh
 #
 # Output: ios/build/screenshots/<device>/<appearance>/NN-name.png (gitignored).
 
@@ -33,8 +37,9 @@ IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DD="$IOS_DIR/build/DD-screenshots"
 OUT_ROOT="$IOS_DIR/build/screenshots"
 
-IPHONE_NAME="${IPHONE_NAME:-iPhone 17 Pro Max}"   # 6.9" display
+IPHONE_NAME="${IPHONE_NAME:-iPhone 18 Pro Max}"   # 6.9" display
 IPAD_NAME="${IPAD_NAME:-iPad Pro 13-inch (M5)}"   # 13" display
+DUO_NAME="${DUO_NAME:-iPhone Duo}"                # outer display (iOS 27.1 runtime)
 SETTLE="${SETTLE:-3}"                              # seconds to let the UI render before capture
 
 # Each shot is "filename|launch args". `-type` feeds keys so the candidate bar
@@ -50,7 +55,7 @@ SHOTS=(
 )
 
 DO_BUILD=1
-DEVICES="iphone ipad"
+DEVICES="iphone ipad duo"
 APPEARANCES="light dark"
 
 while [ $# -gt 0 ]; do
@@ -58,6 +63,7 @@ while [ $# -gt 0 ]; do
     --no-build)    DO_BUILD=0 ;;
     --iphone-only) DEVICES="iphone" ;;
     --ipad-only)   DEVICES="ipad" ;;
+    --duo-only)    DEVICES="duo" ;;
     --light-only)  APPEARANCES="light" ;;
     --dark-only)   APPEARANCES="dark" ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -98,23 +104,40 @@ build_app() {
     CODE_SIGNING_ALLOWED=NO -quiet build
 }
 
+# Port UUID of the device display with the given pixel width — how a
+# multi-display device (iPhone Duo) picks the screen to capture. Port UUIDs
+# change on every boot, so look it up after booting.
+display_port() {
+  xcrun simctl io "$1" enumerate \
+    | awk -v w="$2" '/^Port:/ { u = "" } /UUID:/ { u = $2 } $0 ~ "Default width: " w "$" { print u; exit }'
+}
+
 capture() {
-  local udid="$1" outfile="$2" args="$3"
+  local udid="$1" outfile="$2" args="$3" display="$4"
   xcrun simctl terminate "$udid" "$BUNDLE_ID" >/dev/null 2>&1 || true
   # shellcheck disable=SC2086 -- args are space-separated flags; the split is intentional
   xcrun simctl launch "$udid" "$BUNDLE_ID" $args >/dev/null
   sleep "$SETTLE"
-  xcrun simctl io "$udid" screenshot "$outfile" >/dev/null
+  xcrun simctl io "$udid" screenshot ${display:+"--display=$display"} "$outfile" >/dev/null
   echo "    ✓ $(basename "$outfile")"
 }
 
+# shoot_device LABEL NAME [DISPLAY_WIDTH] — the width picks one display of a
+# multi-display device; omitted, simctl captures the main one.
 shoot_device() {
-  local label="$1" name="$2" udid mode dir entry
+  local label="$1" name="$2" width="${3:-}" udid display="" mode dir entry
   udid="$(resolve_udid "$name")"
   echo "==> $label: $name ($udid)"
   xcrun simctl boot "$udid" 2>/dev/null || true   # "already booted" is fine
   xcrun simctl bootstatus "$udid" >/dev/null       # wait until fully booted
   xcrun simctl install "$udid" "$APP_PATH"
+  if [ -n "$width" ]; then
+    display="$(display_port "$udid" "$width")"
+    if [ -z "$display" ]; then
+      echo "error: $name has no ${width}px-wide display" >&2
+      exit 1
+    fi
+  fi
   rm -rf "${OUT_ROOT:?}/$label"
   for mode in $APPEARANCES; do
     xcrun simctl ui "$udid" appearance "$mode" >/dev/null
@@ -122,7 +145,7 @@ shoot_device() {
     mkdir -p "$dir"
     echo "  -- $mode"
     for entry in "${SHOTS[@]}"; do
-      capture "$udid" "$dir/${entry%%|*}.png" "${entry#*|}"
+      capture "$udid" "$dir/${entry%%|*}.png" "${entry#*|}" "$display"
     done
   done
 }
@@ -138,6 +161,7 @@ for d in $DEVICES; do
   case "$d" in
     iphone) shoot_device "iphone-6.9" "$IPHONE_NAME" ;;
     ipad)   shoot_device "ipad-13"    "$IPAD_NAME" ;;
+    duo)    shoot_device "duo-outer"  "$DUO_NAME" 1398 ;;
   esac
 done
 
