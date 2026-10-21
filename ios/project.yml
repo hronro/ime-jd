@@ -1,6 +1,10 @@
 name: JdIME-iOS
 options:
   bundleIdPrefix: com.hronro
+  # LastUpgradeCheck: the Xcode whose recommended settings this spec has
+  # reviewed (see settings below). A newer Xcode shows "Update to recommended
+  # settings" again — adopt what fits here, then bump this.
+  xcodeVersion: "27.1"
   deploymentTarget:
     iOS: "15.0"          # Xcode 27's floor (it rejects anything lower)
   createIntermediateGroups: true
@@ -21,6 +25,15 @@ settings:
     # The "Build libjd" Run Script Phase shells out to `zig` and reads ../core;
     # script sandboxing would block both. Keep it off (also what CI relies on).
     ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # Xcode 27.1's other recommended settings, except raising the deployment
+    # target to $(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET) (iOS 17): the classic
+    # style keeps iOS 15 and 16 on purpose. The symbol generators are no-ops
+    # until there are colour/image assets or String Catalogs; `toolchain`
+    # (ibtool's default in 27.1) compiles the launch storyboard without a
+    # simulator runtime.
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
+    IBC_COCOATOUCH_COMPILER_MODE: toolchain
 
 targets:
   JdIME-iOS:
