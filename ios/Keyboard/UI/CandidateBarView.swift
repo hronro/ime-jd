@@ -148,7 +148,7 @@ final class CandidateBarView: UIView, UIScrollViewDelegate {
     private func cell(_ cand: Candidate, index: Int) -> UIButton {
         let b = ActionButton(type: .system)
         b.setAttributedTitle(Self.title(cand, theme: theme), for: .normal)
-        b.contentEdgeInsets = .init(top: 4, left: 12, bottom: 4, right: 12)
+        b.titlePadding = CGSize(width: 12, height: 4)
         b.onTap { [weak self] in self?.onSelect?(index) }
         return b
     }
