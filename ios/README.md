@@ -73,6 +73,8 @@ The container app's preview screen takes launch args for screenshot-driven QA (`
 - `-return search` — give the field that `UIReturnKeyType` (case name), to see the return key's glyph / label and tint for it (under `-system`, the system keyboard's too)
 - `-system` — use the SYSTEM keyboard instead of the inline preview: with the extension enabled, that is the real 键道 extension in its real hosting context
 
+With `SIMCTL_CHILD_JD_QA_READY=<path>` set for `simctl launch`, the preview creates that file once it has applied these args, so a screenshot loop can wait for it rather than for a fixed delay (`scripts/screenshots.sh` does).
+
 ### Extension-context QA (JdKeyboardQA scheme)
 
 `simctl` cannot synthesize taps, and third-party keyboards are trust-gated behind the Settings enable flow (writing `AppleKeyboards` defaults is not enough). The `JdKeyboardQA` scheme runs a UI test that enables 键道 in Settings, switches to it via the globe key inside the preview app (`-preview -system`), then holds the app open and drops a marker file so a host-side loop can take screenshots:

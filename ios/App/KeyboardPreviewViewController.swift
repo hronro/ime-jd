@@ -63,6 +63,11 @@ final class KeyboardPreviewViewController: UIViewController {
         // Suppress the system keyboard while keeping the text view editable via
         // UIKeyInput, so only our preview keyboard is shown.
         textView.inputView = UIView()
+        // Without the system keyboard, iPadOS 27 floats the field's shortcuts
+        // bar over the preview as a pill with a dictation button; emptying the
+        // bar keeps it away.
+        textView.inputAssistantItem.leadingBarButtonGroups = []
+        textView.inputAssistantItem.trailingBarButtonGroups = []
         host.input = textView
 
         let kb = KeyboardView(session: session, theme: currentTheme())
@@ -155,6 +160,13 @@ final class KeyboardPreviewViewController: UIViewController {
                 .flatMap { CommandLine.arguments.indices.contains($0 + 1)
                     ? Int(CommandLine.arguments[$0 + 1]) : nil } ?? 0
             keyboard.showKeyAlternates(CommandLine.arguments[i + 1], selected: selected)
+        }
+        // `JD_QA_READY` environment variable (`SIMCTL_CHILD_JD_QA_READY` to
+        // `simctl launch`): a file to create once the flags above are applied,
+        // so a screenshot loop captures when the preview is ready instead of
+        // after a guessed delay.
+        if let path = ProcessInfo.processInfo.environment["JD_QA_READY"] {
+            FileManager.default.createFile(atPath: path, contents: nil)
         }
     }
 
