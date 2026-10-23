@@ -1,20 +1,56 @@
 use std::io::{Result, Write};
+use std::process::ExitCode;
 use std::time::Instant;
 
 use crossterm::{event, terminal};
 
+use crate::user_dict;
+
 /// How many candidates the debug REPL prints per keystroke.
 const WINDOW: u32 = 4;
 
-pub fn debug_mode<W>(w: &mut W) -> Result<()>
+/// `user_dict` is the path of a `value<TAB>keys` text file whose phrases are
+/// merged into every candidate list. The REPL is the one place the dropped
+/// lines are listed. A dictionary that cannot be loaded ends the run with
+/// exit status 2.
+pub fn debug_mode<W>(w: &mut W, user_dict: Option<&str>) -> Result<ExitCode>
 where
     W: Write,
 {
+    // Loaded before raw mode, so its lines print as ordinary text.
+    let loaded = match user_dict {
+        Some(path) => match user_dict::load(path) {
+            Ok(loaded) => Some(loaded),
+            Err(message) => {
+                eprintln!("jd-cli: user dict: {message}");
+                return Ok(ExitCode::from(2));
+            }
+        },
+        None => None,
+    };
+    if let Some(loaded) = &loaded {
+        writeln!(w, "User dict: {}", loaded.summary())?;
+        for (line, text) in &loaded.dropped_lines {
+            writeln!(w, "  dropped line {line}: {text}")?;
+        }
+    }
+
     terminal::enable_raw_mode()?;
+    // jd_init validates the user dictionary blob in one linear pass, so
+    // this timing includes it when one is loaded.
     let init_start = Instant::now();
-    let mut jd = jd::JdContext::new().expect("failed to initialize the jd engine");
+    let mut jd = match &loaded {
+        Some(loaded) => jd::JdContext::with_user_dict(loaded.dict),
+        None => jd::JdContext::new(),
+    }
+    .expect("failed to initialize the jd engine");
     let init_elapsed = init_start.elapsed();
-    write!(w, "Initialized in {:?}\n\r", init_elapsed)?;
+    let dict_note = if loaded.is_some() {
+        " (with user dict)"
+    } else {
+        ""
+    };
+    write!(w, "Initialized in {:?}{}\n\r", init_elapsed, dict_note)?;
     w.flush()?;
 
     loop {
@@ -67,7 +103,7 @@ where
 
     terminal::disable_raw_mode()?;
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn describe(jd: &jd::JdContext, window: &[jd::Candidate]) -> String {

@@ -15,3 +15,4 @@ strip = true
 crossterm = "0.29"
 unicode-width = "0.2"
 jd = { path = "../bindings/rust" }
+memmap2 = "0.9"
