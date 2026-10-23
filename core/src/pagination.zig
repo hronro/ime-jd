@@ -17,6 +17,13 @@
 //! Critically, the cursor is NOT the commit anchor. `query.zig` keeps a
 //! separate `anchor_index` for that, so a frontend can enumerate far ahead
 //! without changing what space / `;` commit.
+//!
+//! A trie composition enumerates two sources: the built-in trie's subtree
+//! (`NodePagination`, a BFS) and the user dictionary's entries below the
+//! same prefix (`UserCursor`, a walk over pre-sorted buckets). Both yield
+//! (depth, key rank) order, so `TriePagination` merges them with a plain
+//! two-way merge — each side exposes a peek — and the flat index space the
+//! frontend sees is the merged sequence.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -25,7 +32,12 @@ const testing = std.testing;
 const trie_mod = @import("trie");
 const Trie = trie_mod.Trie;
 const Node = trie_mod.Trie.Node;
+const user_dict = @import("./user_dict.zig");
+const UserDict = user_dict.UserDict;
+const UserEntry = user_dict.Entry;
 const buildTestTrie = @import("./trie_test_data.zig").buildTestTrie;
+
+const MAX_KEYS_LEN: usize = trie_mod.MAX_KEYS_LEN;
 const punc_fmt = @import("punc_format");
 const punc_mod = @import("./punc.zig");
 
@@ -110,6 +122,10 @@ pub const NodePagination = struct {
     path_buf: []u8,
     path_buf_len: usize,
     skipped: u8,
+    /// Whether the node at `frontier_head` has had its children enqueued.
+    /// Expansion happens on the first visit and exactly once, which is
+    /// what lets `settle` be called any number of times before a consume.
+    head_expanded: bool,
 
     pub fn init(buffers: Buffers, trie: *const Trie, node: *const Node) Self {
         buffers.frontier[0] = .{ .node = node, .path_start = 0, .path_len = 0 };
@@ -123,6 +139,7 @@ pub const NodePagination = struct {
             .path_buf = buffers.path_buf,
             .path_buf_len = 0,
             .skipped = 0,
+            .head_expanded = false,
         };
     }
 
@@ -130,12 +147,13 @@ pub const NodePagination = struct {
         return self.start_node.count();
     }
 
-    fn rewind(self: *Self) void {
+    pub fn rewind(self: *Self) void {
         self.frontier[0] = .{ .node = self.start_node, .path_start = 0, .path_len = 0 };
         self.frontier_len = 1;
         self.path_buf_len = 0;
         self.frontier_head = 0;
         self.skipped = 0;
+        self.head_expanded = false;
         self.cursor_index = 0;
     }
 
@@ -157,38 +175,50 @@ pub const NodePagination = struct {
         return want;
     }
 
-    /// Consume the value at the cursor, writing it to `out` when non-null.
-    fn consumeOne(self: *Self, out: ?*QueryOption) void {
-        if (builtin.is_test) consume_calls += 1;
-        while (true) {
+    /// Park the cursor on the next value: expand the head node's children
+    /// on its first visit and step past nodes that carry no values.
+    /// Returns false once the subtree is exhausted. Idempotent, so a peek
+    /// followed by a consume does no extra work.
+    fn settle(self: *Self) bool {
+        while (self.frontier_head < self.frontier_len) {
             const entry = self.frontier[self.frontier_head];
-            const values = entry.node.values(self.trie);
-
-            if (self.skipped == 0) {
+            if (!self.head_expanded) {
                 self.enqueueChildren(entry);
-                if (values.len() == 0) {
-                    self.frontier_head += 1;
-                    continue;
-                }
+                self.head_expanded = true;
             }
-
-            if (out) |o| {
-                o.value = values.at(self.skipped).ptr;
-                if (entry.path_len == 0) {
-                    o.clearHint();
-                } else {
-                    o.setHint(self.path_buf[entry.path_start..][0..entry.path_len]);
-                }
-            }
-
-            self.skipped += 1;
-            if (self.skipped == values.len()) {
-                self.frontier_head += 1;
-                self.skipped = 0;
-            }
-            self.cursor_index += 1;
-            return;
+            if (self.skipped < entry.node.values(self.trie).len()) return true;
+            self.frontier_head += 1;
+            self.skipped = 0;
+            self.head_expanded = false;
         }
+        return false;
+    }
+
+    /// The key path, from the start node, of the next value to be emitted
+    /// — without consuming it. Null once exhausted. This is what lets a
+    /// merge compare this stream against another before taking from it.
+    pub fn peekPath(self: *Self) ?[]const u8 {
+        if (!self.settle()) return null;
+        const entry = self.frontier[self.frontier_head];
+        return self.path_buf[entry.path_start..][0..entry.path_len];
+    }
+
+    /// Consume the value at the cursor, writing it to `out` when non-null.
+    /// A no-op once exhausted.
+    pub fn consumeOne(self: *Self, out: ?*QueryOption) void {
+        if (!self.settle()) return;
+        if (builtin.is_test) consume_calls += 1;
+        const entry = self.frontier[self.frontier_head];
+        if (out) |o| {
+            o.value = entry.node.values(self.trie).at(self.skipped).ptr;
+            if (entry.path_len == 0) {
+                o.clearHint();
+            } else {
+                o.setHint(self.path_buf[entry.path_start..][0..entry.path_len]);
+            }
+        }
+        self.skipped += 1;
+        self.cursor_index += 1;
     }
 
     fn enqueueChildren(self: *Self, entry: FrontierEntry) void {
@@ -210,6 +240,179 @@ pub const NodePagination = struct {
             };
             self.frontier_len += 1;
         }
+    }
+};
+
+/// Enumeration of a user dictionary's entries below a prefix, in the order
+/// `NodePagination` yields a subtree: by key length, then by key rank. The
+/// dictionary's per-length buckets are sorted exactly so (see
+/// `user_dict.zig`), which makes this cursor a handful of integers — no
+/// frontier, no path buffer, nothing sized by the dictionary — and is why
+/// a context can be created with any blob without resizing anything.
+pub const UserCursor = struct {
+    const Self = @This();
+
+    dict: UserDict,
+    prefix_len: u8,
+    /// `ranges[L-1]`: the entries of key length L below the prefix, as
+    /// absolute entry indices. Empty for every L below the prefix length.
+    ranges: [MAX_KEYS_LEN]user_dict.Range,
+    total: u32,
+    /// Cursor: the length bucket being walked and the next index in it.
+    len: usize,
+    idx: u32,
+
+    pub fn init(dict: UserDict, prefix_keys: []const u8) Self {
+        std.debug.assert(prefix_keys.len <= MAX_KEYS_LEN);
+        var rank_buf: [MAX_KEYS_LEN]u8 = undefined;
+        const ranks = user_dict.ranksOf(prefix_keys, &rank_buf);
+        var self: Self = .{
+            .dict = dict,
+            .prefix_len = @intCast(prefix_keys.len),
+            .ranges = undefined,
+            .total = 0,
+            .len = 0,
+            .idx = 0,
+        };
+        for (1..MAX_KEYS_LEN + 1) |len| {
+            self.ranges[len - 1] = dict.rangeFor(len, ranks);
+            self.total += self.ranges[len - 1].len();
+        }
+        self.rewind();
+        return self;
+    }
+
+    pub fn rewind(self: *Self) void {
+        self.len = @max(@as(usize, self.prefix_len), 1);
+        self.idx = self.ranges[self.len - 1].start;
+    }
+
+    fn settle(self: *Self) bool {
+        while (self.len <= MAX_KEYS_LEN) {
+            if (self.idx < self.ranges[self.len - 1].end) return true;
+            self.len += 1;
+            if (self.len <= MAX_KEYS_LEN) self.idx = self.ranges[self.len - 1].start;
+        }
+        return false;
+    }
+
+    /// The next entry to be emitted, or null once exhausted.
+    pub fn peek(self: *Self) ?*const UserEntry {
+        if (!self.settle()) return null;
+        return &self.dict.entries[self.idx];
+    }
+
+    /// The keys still needed below the prefix to reach `entry`, as rank
+    /// bytes — the entry's hint, before translation back to key bytes.
+    pub fn hintRanks(self: *const Self, entry: *const UserEntry) []const u8 {
+        return entry.keys[self.prefix_len..entry.keys_len];
+    }
+
+    pub fn consumeOne(self: *Self, out: ?*QueryOption) void {
+        const entry = self.peek() orelse return;
+        if (out) |o| {
+            o.value = self.dict.valuePtr(entry);
+            const ranks = self.hintRanks(entry);
+            if (ranks.len == 0) {
+                o.clearHint();
+            } else {
+                var keys: [MAX_KEYS_LEN]u8 = undefined;
+                for (ranks, 0..) |r, i| keys[i] = trie_mod.keyOfRank(r);
+                o.setHint(keys[0..ranks.len]);
+            }
+        }
+        self.idx += 1;
+    }
+};
+
+/// The enumerator behind a trie composition: the built-in trie's subtree
+/// below the composed prefix (absent when the built-in trie has no node
+/// there) merged with the user dictionary's entries below the same prefix
+/// (absent without a user dictionary). Both streams come in (depth, key
+/// rank) order, so one two-way merge yields the flat candidate list. On an
+/// exact tie — the same completion in both — the user's entry comes first,
+/// which is how a user overrides what a code commits by default.
+pub const TriePagination = struct {
+    const Self = @This();
+
+    base: ?NodePagination,
+    user: ?UserCursor,
+    cursor_index: u32,
+    total: u32,
+
+    pub fn init(
+        buffers: Buffers,
+        trie: *const Trie,
+        node: ?*const Node,
+        dict: ?UserDict,
+        prefix_keys: []const u8,
+    ) Self {
+        var self: Self = .{ .base = null, .user = null, .cursor_index = 0, .total = 0 };
+        if (node) |n| {
+            self.base = NodePagination.init(buffers, trie, n);
+            self.total += n.count();
+        }
+        if (dict) |d| {
+            self.user = UserCursor.init(d, prefix_keys);
+            self.total += self.user.?.total;
+        }
+        return self;
+    }
+
+    pub fn totalOptions(self: *const Self) u32 {
+        return self.total;
+    }
+
+    fn rewind(self: *Self) void {
+        if (self.base) |*b| b.rewind();
+        if (self.user) |*u| u.rewind();
+        self.cursor_index = 0;
+    }
+
+    /// Write the options at flat indices `[start, start + count)` into
+    /// `out`, clipped by `out.len` and by the total. Returns how many were
+    /// written. Same cursor discipline as `NodePagination.readRange`.
+    pub fn readRange(self: *Self, start: u32, count: u32, out: []QueryOption) u32 {
+        const total = self.totalOptions();
+        if (start >= total) return 0;
+        const cap: u32 = @intCast(@min(out.len, @as(usize, std.math.maxInt(u32))));
+        const want = @min(@min(count, total - start), cap);
+        if (want == 0) return 0;
+
+        if (start < self.cursor_index) self.rewind();
+        while (self.cursor_index < start) self.consumeOne(null);
+
+        var i: u32 = 0;
+        while (i < want) : (i += 1) self.consumeOne(&out[i]);
+        return want;
+    }
+
+    /// Whether the user entry goes before the built-in value whose path
+    /// below the start node is `base_path`: shorter completion first, then
+    /// key rank, and the user entry on an exact tie.
+    fn userFirst(user: *const UserCursor, entry: *const UserEntry, base_path: []const u8) bool {
+        const ranks = user.hintRanks(entry);
+        if (ranks.len != base_path.len) return ranks.len < base_path.len;
+        for (ranks, base_path) |ur, bk| {
+            const br = trie_mod.keyRank(bk);
+            if (ur != br) return ur < br;
+        }
+        return true;
+    }
+
+    fn consumeOne(self: *Self, out: ?*QueryOption) void {
+        const base_path: ?[]const u8 = if (self.base) |*b| b.peekPath() else null;
+        const user_entry: ?*const UserEntry = if (self.user) |*u| u.peek() else null;
+        const take_user = if (user_entry) |ue|
+            (if (base_path) |bp| userFirst(&self.user.?, ue, bp) else true)
+        else
+            false;
+        if (take_user) {
+            self.user.?.consumeOne(out);
+        } else if (self.base) |*b| {
+            b.consumeOne(out);
+        }
+        self.cursor_index += 1;
     }
 };
 
@@ -255,7 +458,7 @@ pub const PuncPagination = struct {
 /// composition or a punctuation candidate window without duplicating the
 /// branching across every read.
 pub const Pager = union(enum) {
-    trie: NodePagination,
+    trie: TriePagination,
     punc: PuncPagination,
 
     pub fn totalOptions(self: *const Pager) u32 {
@@ -607,7 +810,7 @@ test "Pager.optionAt bounds-checks both variants" {
     defer harness.deinit(testing.allocator);
 
     const node = th.trie.root().getChild(&th.trie, 'a').?;
-    var trie_pager: Pager = .{ .trie = NodePagination.init(harness.buffers(), &th.trie, node) };
+    var trie_pager: Pager = .{ .trie = TriePagination.init(harness.buffers(), &th.trie, node, null, "a") };
     try testing.expectEqualStrings("甲", std.mem.sliceTo(trie_pager.optionAt(0).?.value, 0));
     try testing.expectEqualStrings("FooBar", std.mem.sliceTo(trie_pager.optionAt(10).?.value, 0));
     try testing.expect(trie_pager.optionAt(11) == null);
@@ -621,4 +824,172 @@ test "Pager.optionAt bounds-checks both variants" {
     var punc_pager: Pager = .{ .punc = PuncPagination.init(entry, &ph.punc) };
     try testing.expectEqualStrings("【", std.mem.sliceTo(punc_pager.optionAt(1).?.value, 0));
     try testing.expect(punc_pager.optionAt(2) == null);
+}
+
+// =========================================================================
+// Tests — TriePagination (built-in subtree merged with a user dictionary)
+// =========================================================================
+
+const TEST_FP: u32 = 0x5EED_0001;
+
+/// Under "a" the shared test trie has 11 values; these six user phrases add
+/// five below "a" (one ties the node's own value, one ties "ab", two open
+/// codes the trie lacks) and one elsewhere.
+const user_phrases =
+    "U甲\ta\n" ++
+    "UAA\taa\n" ++
+    "U乙\tab\n" ++
+    "U丁\tacd\n" ++
+    "UZ\taz\n" ++
+    "UB\tb\n";
+
+const expected_a_merged = [_]ExpectedOption{
+    .{ .value = "U甲" }, // tie at depth 0: user first
+    .{ .value = "甲" },
+    .{ .value = "UAA", .hint = "a" }, // "aa" precedes "ab"
+    .{ .value = "U乙", .hint = "b" }, // tie on "ab": user first
+    .{ .value = "乙", .hint = "b" },
+    .{ .value = "丙1", .hint = "c" },
+    .{ .value = "丙2", .hint = "c" },
+    .{ .value = "Foo", .hint = "e" },
+    .{ .value = "Bar", .hint = "f" },
+    .{ .value = "UZ", .hint = "z" }, // after every built-in depth-1 child
+    .{ .value = "U丁", .hint = "cd" }, // tie on "acd": user first
+    .{ .value = "丁1", .hint = "cd" },
+    .{ .value = "丁2", .hint = "cd" },
+    .{ .value = "丁3", .hint = "cd" },
+    .{ .value = "丁4", .hint = "ce" },
+    .{ .value = "FooBar", .hint = "c;" },
+};
+
+fn mergedPager(harness: *TestHarness, th: *const trie_mod.TrieHandle, dict: UserDict, prefix: []const u8) TriePagination {
+    var node: ?*const Node = th.trie.root();
+    for (prefix) |k| node = if (node) |n| n.getChild(&th.trie, k) else null;
+    return TriePagination.init(harness.buffers(), &th.trie, node, dict, prefix);
+}
+
+test "TriePagination merges both sources in (depth, rank) order, user first on ties" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
+    defer harness.deinit(testing.allocator);
+    var blob = try user_dict.buildAlloc(testing.allocator, user_phrases, &th.trie, TEST_FP, null);
+    defer blob.deinit(testing.allocator);
+    const dict = try blob.dict(TEST_FP);
+
+    var p = mergedPager(&harness, &th, dict, "a");
+    try testing.expectEqual(@as(u32, 16), p.totalOptions());
+
+    var out: [32]QueryOption = undefined;
+    const n = p.readRange(0, 32, &out);
+    try testing.expectEqual(@as(u32, 16), n);
+    try expectEqualOptions(&expected_a_merged, out[0..n]);
+}
+
+test "TriePagination windows, rewinds and clips like the plain enumerator" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
+    defer harness.deinit(testing.allocator);
+    var blob = try user_dict.buildAlloc(testing.allocator, user_phrases, &th.trie, TEST_FP, null);
+    defer blob.deinit(testing.allocator);
+    const dict = try blob.dict(TEST_FP);
+
+    var p = mergedPager(&harness, &th, dict, "a");
+
+    // Forward in windows of 5: one pass, each option exactly once.
+    consume_calls = 0;
+    var out: [5]QueryOption = undefined;
+    var start: u32 = 0;
+    while (true) {
+        const n = p.readRange(start, 5, &out);
+        if (n == 0) break;
+        try expectEqualOptions(expected_a_merged[start..][0..n], out[0..n]);
+        start += n;
+    }
+    try testing.expectEqual(@as(u32, 16), start);
+    // The built-in side was consumed exactly once per built-in value.
+    try testing.expectEqual(@as(usize, 11), consume_calls);
+
+    // Backwards: rewind and replay.
+    try testing.expectEqual(@as(u32, 3), p.readRange(2, 3, &out));
+    try expectEqualOptions(expected_a_merged[2..5], out[0..3]);
+    try testing.expectEqual(@as(u32, 1), p.readRange(15, 5, &out));
+    try expectEqualOptions(expected_a_merged[15..16], out[0..1]);
+    try testing.expectEqual(@as(u32, 0), p.readRange(16, 5, &out));
+    try testing.expectEqual(@as(u32, 0), p.readRange(0, 0, &out));
+}
+
+test "TriePagination over a prefix only the user dictionary knows" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
+    defer harness.deinit(testing.allocator);
+    var blob = try user_dict.buildAlloc(testing.allocator, user_phrases, &th.trie, TEST_FP, null);
+    defer blob.deinit(testing.allocator);
+    const dict = try blob.dict(TEST_FP);
+
+    // "b" has no built-in node at all.
+    var p = mergedPager(&harness, &th, dict, "b");
+    try testing.expect(p.base == null);
+    try testing.expectEqual(@as(u32, 1), p.totalOptions());
+    var out: [2]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 1), p.readRange(0, 2, &out));
+    try expectEqualOptions(&.{.{ .value = "UB" }}, out[0..1]);
+
+    // "az" is a user-only extension of a built-in node.
+    var q = mergedPager(&harness, &th, dict, "az");
+    try testing.expect(q.base == null);
+    try testing.expectEqual(@as(u32, 1), q.totalOptions());
+    try testing.expectEqual(@as(u32, 1), q.readRange(0, 2, &out));
+    try expectEqualOptions(&.{.{ .value = "UZ" }}, out[0..1]);
+
+    // A deeper prefix inside the built-in trie, with one user tie.
+    var r = mergedPager(&harness, &th, dict, "ac");
+    try testing.expectEqual(@as(u32, 8), r.totalOptions());
+    var out8: [8]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 8), r.readRange(0, 8, &out8));
+    try expectEqualOptions(&.{
+        .{ .value = "丙1" },
+        .{ .value = "丙2" },
+        .{ .value = "U丁", .hint = "d" },
+        .{ .value = "丁1", .hint = "d" },
+        .{ .value = "丁2", .hint = "d" },
+        .{ .value = "丁3", .hint = "d" },
+        .{ .value = "丁4", .hint = "e" },
+        .{ .value = "FooBar", .hint = ";" },
+    }, out8[0..8]);
+}
+
+test "TriePagination without a user dictionary is the plain enumeration" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
+    defer harness.deinit(testing.allocator);
+
+    const node = th.trie.root().getChild(&th.trie, 'a').?;
+    var p = TriePagination.init(harness.buffers(), &th.trie, node, null, "a");
+    try testing.expectEqual(@as(u32, 11), p.totalOptions());
+    var out: [16]QueryOption = undefined;
+    const n = p.readRange(0, 16, &out);
+    try testing.expectEqual(@as(u32, 11), n);
+    try expectEqualOptions(&expected_a, out[0..n]);
+}
+
+test "user hints at maximum depth stay inline and NUL-terminated" {
+    var th = try trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = "a", .value = "X" },
+    });
+    defer th.deinit(testing.allocator);
+    var harness = try TestHarness.init(testing.allocator, &th.trie);
+    defer harness.deinit(testing.allocator);
+    var blob = try user_dict.buildAlloc(testing.allocator, "Y\tabcdef\n", &th.trie, TEST_FP, null);
+    defer blob.deinit(testing.allocator);
+    const dict = try blob.dict(TEST_FP);
+
+    var p = mergedPager(&harness, &th, dict, "a");
+    var out: [2]QueryOption = undefined;
+    try testing.expectEqual(@as(u32, 2), p.readRange(0, 2, &out));
+    try expectEqualOptions(&.{ .{ .value = "X" }, .{ .value = "Y", .hint = "bcdef" } }, out[0..2]);
+    try testing.expectEqual(@as(u8, 0), out[1].hint[5]);
 }

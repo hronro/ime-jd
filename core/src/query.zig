@@ -32,6 +32,13 @@
 //! No case needs three segments (the `prev == null` assertions in F and H
 //! are what rule it out), so `JdState` carries two immortal pointers plus
 //! one inline byte and the engine needs no scratch buffer at all.
+//!
+//! A context may carry a user dictionary (`user_dict.zig`), a host-owned
+//! blob fixed at `jd_init`. The composed prefix is tracked as key bytes
+//! rather than built-in child indices, because a prefix may exist only in
+//! the user dictionary: `node` is then null while the composition goes on.
+//! "Does this key continue the prefix" asks both sources (`hasChild`), and
+//! the candidate list is their merge (`pagination.TriePagination`).
 
 const std = @import("std");
 const testing = std.testing;
@@ -42,8 +49,10 @@ const Node = trie_mod.Trie.Node;
 const pagination = @import("./pagination.zig");
 const punc_mod = @import("./punc.zig");
 const punc_fmt = @import("punc_format");
+const user_dict_mod = @import("./user_dict.zig");
+const UserDict = user_dict_mod.UserDict;
 
-const NodePagination = pagination.NodePagination;
+const TriePagination = pagination.TriePagination;
 const PuncPagination = pagination.PuncPagination;
 const QueryOption = pagination.QueryOption;
 
@@ -107,6 +116,9 @@ pub fn joinCommit(state: *const JdState, buf: []u8) ?[]const u8 {
 pub const InitOptions = struct {
     trie: *const Trie,
     punc: *const punc_mod.Punc,
+    /// A validated view over the host's user-dictionary blob, or null for
+    /// the built-in dictionary alone. Fixed for the context's lifetime.
+    user_dict: ?UserDict = null,
 };
 
 pub const Context = struct {
@@ -124,8 +136,10 @@ pub const Context = struct {
     /// (including the Context struct itself); in tests it's unused.
     raw: []align(@alignOf(usize)) u8,
 
-    /// One entry per descended trie key; bounded by max key length.
-    pressed_keys: [MAX_PRESSED_KEYS]usize,
+    /// The composed prefix: one key byte per descent, bounded by the max
+    /// key length. Replayed by `backspace`, and the prefix the user
+    /// dictionary is queried with.
+    pressed_keys: [MAX_PRESSED_KEYS]u8,
     pressed_keys_len: u8,
 
     /// Persistent paired-punctuation toggle state. Bit `k` tracks whether
@@ -158,8 +172,11 @@ pub const Context = struct {
 
     trie: *const Trie,
     punc: *const punc_mod.Punc,
+    user_dict: ?UserDict,
     root_node: *const Node,
-    node: *const Node,
+    /// The built-in node at the composed prefix: the root when nothing is
+    /// composed, null when only the user dictionary has the prefix.
+    node: ?*const Node,
     pager: ?pagination.Pager,
 
     /// Constructs a Context from pre-allocated buffers. `raw` is left
@@ -186,6 +203,7 @@ pub const Context = struct {
             .path_buf = buffers.path_buf,
             .trie = options.trie,
             .punc = options.punc,
+            .user_dict = options.user_dict,
             .root_node = root_node,
             .node = root_node,
             .pager = null,
@@ -194,6 +212,36 @@ pub const Context = struct {
 
     fn paginationBuffers(self: *Self) pagination.Buffers {
         return .{ .frontier = self.frontier_buf, .path_buf = self.path_buf };
+    }
+
+    fn prefix(self: *const Self) []const u8 {
+        return self.pressed_keys[0..self.pressed_keys_len];
+    }
+
+    /// Does either dictionary continue `prefix_keys` with `key`? `base` is
+    /// the built-in node at `prefix_keys`, or null when only the user
+    /// dictionary knows that prefix.
+    fn hasChild(self: *const Self, base: ?*const Node, prefix_keys: []const u8, key: u8) bool {
+        if (prefix_keys.len >= MAX_PRESSED_KEYS) return false;
+        if (base) |n| {
+            if (n.getChild(self.trie, key) != null) return true;
+        }
+        if (self.user_dict) |*d| {
+            var buf: [MAX_PRESSED_KEYS]u8 = undefined;
+            @memcpy(buf[0..prefix_keys.len], prefix_keys);
+            buf[prefix_keys.len] = key;
+            return d.hasPath(buf[0 .. prefix_keys.len + 1]);
+        }
+        return false;
+    }
+
+    /// Extend the composition by `key` — which `hasChild` has vouched for
+    /// — and open the enumeration below the new prefix.
+    fn descend(self: *Self, key: u8) void {
+        self.node = if (self.node) |n| n.getChild(self.trie, key) else null;
+        self.pressed_keys[self.pressed_keys_len] = key;
+        self.pressed_keys_len += 1;
+        self.startTriePager();
     }
 
     // ---------------------------------------------------------------
@@ -276,10 +324,20 @@ pub const Context = struct {
         self.endComposition();
     }
 
-    /// Install a fresh trie enumeration rooted at `node` and park the
-    /// anchor at its first candidate.
-    fn startTriePager(self: *Self, node: *const Node) void {
-        self.pager = .{ .trie = NodePagination.init(self.paginationBuffers(), self.trie, node) };
+    /// Install a fresh enumeration below the composed prefix — the
+    /// built-in subtree at `node` (if any) merged with the user
+    /// dictionary's entries (if any) — and park the anchor at its first
+    /// candidate. The prefix is never empty here, so `node` is never the
+    /// root.
+    fn startTriePager(self: *Self) void {
+        std.debug.assert(self.pressed_keys_len > 0);
+        self.pager = .{ .trie = TriePagination.init(
+            self.paginationBuffers(),
+            self.trie,
+            self.node,
+            self.user_dict,
+            self.prefix(),
+        ) };
         self.state.anchor_index = 0;
         self.refreshAnchor();
     }
@@ -330,11 +388,11 @@ pub const Context = struct {
             return;
         }
 
-        // Case B: ';' with no ';' child of the current node — only
-        // meaningful when the active pager is a trie pager (punc pagers
-        // don't shadow ';'). Commits the anchor's 2nd option, or its 1st
-        // with ';' appended as a fallback.
-        if (key == ';' and self.node.getChild(self.trie, ';') == null) {
+        // Case B: ';' with no ';' continuation of the composed prefix in
+        // either dictionary — only meaningful when the active pager is a
+        // trie pager (punc pagers don't shadow ';'). Commits the anchor's
+        // 2nd option, or its 1st with ';' appended as a fallback.
+        if (key == ';' and !self.hasChild(self.node, self.prefix(), ';')) {
             if (self.pager) |*p| {
                 if (p.* == .trie) {
                     if (self.anchorOption(1)) |second| {
@@ -414,14 +472,10 @@ pub const Context = struct {
         // was in a punc window and pressed a non-punc key.
         // ============================================================
 
-        // Case E: descend into a child of the current node.
-        if (self.node.getChild(self.trie, key)) |node| {
-            const key_index = self.node.indexOfChild(self.trie, key).?;
-
-            self.node = node;
-            self.startTriePager(node);
-            self.pressed_keys[self.pressed_keys_len] = key_index;
-            self.pressed_keys_len += 1;
+        // Case E: the key continues the composed prefix in either
+        // dictionary — descend.
+        if (self.hasChild(self.node, self.prefix(), key)) {
+            self.descend(key);
 
             const total = self.pager.?.totalOptions();
 
@@ -435,24 +489,24 @@ pub const Context = struct {
             self.state.options_count = total;
             if (prev) |p| self.setCommit(p, null, 0);
             return;
-        } else if (self.root_node.getChild(self.trie, key)) |node| {
-            // Case F: the current node has no child with `key`, but the
-            // root does — commit the anchor option, then jump.
+        } else if (self.hasChild(self.root_node, "", key)) {
+            // Case F: the prefix has no continuation with `key`, but a
+            // composition can start with it — commit the anchor option,
+            // then jump.
             //
             // `prev` cannot be set here: it is set only when we exited a
-            // punc window, which resets `self.node` to the root — and then
-            // the branch above would have matched.
+            // punc window, which resets the prefix to empty — and then the
+            // branch above would have matched.
             std.debug.assert(prev == null);
 
             // Read before the new pager overwrites `anchor_opts`. Safe to
-            // hold: option values are immortal blob pointers.
+            // hold: option values point into a dictionary blob that outlives
+            // the context.
             const prev_value = self.anchorOption(0).?.value;
 
-            self.node = node;
-            self.startTriePager(node);
+            self.node = self.root_node;
             self.pressed_keys_len = 0;
-            self.pressed_keys[self.pressed_keys_len] = self.root_node.indexOfChild(self.trie, key).?;
-            self.pressed_keys_len += 1;
+            self.descend(key);
 
             const total = self.pager.?.totalOptions();
 
@@ -468,17 +522,17 @@ pub const Context = struct {
             return;
         }
 
-        // Case G: at the root and the key has no child — commit
+        // Case G: nothing composed and the key starts nothing — commit
         // (`prev` if any, plus) the key byte.
-        if (self.node == self.root_node) {
+        if (self.pressed_keys_len == 0) {
             self.setCommit(prev, null, key);
             self.endComposition();
             return;
         }
 
-        // Case H: deep in the trie with no matching descent — commit the
-        // anchor option with `key` appended. `prev` cannot be set here
-        // (that would require `self.node == self.root_node`).
+        // Case H: deep in a composition with no matching descent — commit
+        // the anchor option with `key` appended. `prev` cannot be set here
+        // (that would require an empty prefix).
         std.debug.assert(prev == null);
         self.setCommit(self.anchorOption(0).?.value, null, key);
         self.endComposition();
@@ -500,17 +554,22 @@ pub const Context = struct {
         if (self.pressed_keys_len == 0) return;
 
         self.pressed_keys_len -= 1;
-        self.node = self.root_node;
-        for (self.pressed_keys[0..self.pressed_keys_len]) |index| {
-            self.node = self.node.getChildByIndex(self.trie, index).?;
-        }
-
-        if (self.node == self.root_node) {
+        if (self.pressed_keys_len == 0) {
             self.endComposition();
             return;
         }
 
-        self.startTriePager(self.node);
+        // Re-derive the built-in node for the shorter prefix. It may be
+        // absent (a user-dictionary-only prefix) — the shorter prefix is
+        // still composable, since it has at least the entries the longer
+        // one had.
+        var node: ?*const Node = self.root_node;
+        for (self.prefix()) |k| {
+            node = if (node) |n| n.getChild(self.trie, k) else null;
+        }
+        self.node = node;
+
+        self.startTriePager();
         self.state.options_count = self.pager.?.totalOptions();
     }
 };
@@ -525,14 +584,17 @@ pub const Context = struct {
 ///
 /// The PuncHandle is heap-allocated so its `punc` field's address stays
 /// stable when this struct is returned by value from `init`.
+const TEST_FP: u32 = 0x5EED_0002;
+
 const ContextHarness = struct {
     ctx: Context,
     frontier: []pagination.FrontierEntry,
     path_buf: []u8,
     punc_handle: *punc_mod.PuncHandle,
+    user_blob: ?user_dict_mod.Blob,
 
     fn init(allocator: std.mem.Allocator, trie: *const Trie) !ContextHarness {
-        return ContextHarness.initWithPunc(allocator, trie, &.{}, &.{});
+        return ContextHarness.initFull(allocator, trie, &.{}, &.{}, null);
     }
 
     fn initWithPunc(
@@ -541,6 +603,22 @@ const ContextHarness = struct {
         normals: []const punc_mod.NormalInput,
         paireds: []const punc_mod.PairedInput,
     ) !ContextHarness {
+        return ContextHarness.initFull(allocator, trie, normals, paireds, null);
+    }
+
+    /// `phrases` is user-dictionary text (`value<TAB>keys` lines), built
+    /// against `trie` the way a host would.
+    fn initWithUserDict(allocator: std.mem.Allocator, trie: *const Trie, phrases: []const u8) !ContextHarness {
+        return ContextHarness.initFull(allocator, trie, &.{}, &.{}, phrases);
+    }
+
+    fn initFull(
+        allocator: std.mem.Allocator,
+        trie: *const Trie,
+        normals: []const punc_mod.NormalInput,
+        paireds: []const punc_mod.PairedInput,
+        phrases: ?[]const u8,
+    ) !ContextHarness {
         const frontier = try allocator.alloc(pagination.FrontierEntry, trie.frontier_cap + 1);
         errdefer allocator.free(frontier);
         const path_buf = try allocator.alloc(u8, trie.path_buf_cap + 1);
@@ -548,16 +626,25 @@ const ContextHarness = struct {
         const punc_handle = try allocator.create(punc_mod.PuncHandle);
         errdefer allocator.destroy(punc_handle);
         punc_handle.* = try punc_mod.buildPunc(allocator, normals, paireds);
+        errdefer punc_handle.deinit(allocator);
+
+        var user_blob: ?user_dict_mod.Blob = null;
+        var dict: ?UserDict = null;
+        if (phrases) |text| {
+            user_blob = try user_dict_mod.buildAlloc(allocator, text, trie, TEST_FP, null);
+            dict = try user_blob.?.dict(TEST_FP);
+        }
 
         var self = ContextHarness{
             .ctx = undefined,
             .frontier = frontier,
             .path_buf = path_buf,
             .punc_handle = punc_handle,
+            .user_blob = user_blob,
         };
         self.ctx = Context.init(
             .{ .frontier = frontier, .path_buf = path_buf },
-            .{ .trie = trie, .punc = &punc_handle.punc },
+            .{ .trie = trie, .punc = &punc_handle.punc, .user_dict = dict },
         );
         return self;
     }
@@ -567,6 +654,7 @@ const ContextHarness = struct {
         allocator.free(self.path_buf);
         self.punc_handle.deinit(allocator);
         allocator.destroy(self.punc_handle);
+        if (self.user_blob) |*b| b.deinit(allocator);
     }
 };
 
@@ -1473,4 +1561,188 @@ test "long values: E1 auto-commit after abandoning a punc window" {
     ctx.pressKey('[');
     ctx.pressKey('b');
     try expectCommit(ctx, "「" ++ LONG_B);
+}
+
+// =========================================================================
+// Tests — user dictionary
+//
+// The user dictionary is a second source merged into the same state
+// machine: it can add candidates to a built-in code, open codes the
+// built-in trie lacks, and must be consulted everywhere the engine asks
+// "does this key continue the prefix".
+// =========================================================================
+
+test "user phrases merge into a built-in composition, user first on ties" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "U甲\ta\nU乙\tab\nUZ\taz\n");
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    ctx.pressKey('a');
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 14), ctx.state.options_count);
+    try expectWindow(ctx, 5, &.{
+        .{ .value = "U甲" },
+        .{ .value = "甲" },
+        .{ .value = "U乙", .hint = "b" },
+        .{ .value = "乙", .hint = "b" },
+        .{ .value = "丙1", .hint = "c" },
+    });
+
+    // Space commits the user's override; `;` the built-in it displaced.
+    ctx.pressKey(' ');
+    try expectCommit(ctx, "U甲");
+    ctx.pressKey('a');
+    ctx.pressKey(';');
+    try expectCommit(ctx, "甲");
+}
+
+test "a user word on a unique built-in code opens a window instead of auto-committing" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    // "ae" → Foo is the trie's E1 auto-commit; the user adds a second word.
+    var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "UFoo\tae\n");
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    ctx.pressKey('a');
+    ctx.pressKey('e');
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 2), ctx.state.options_count);
+    try expectWindow(ctx, 2, &.{ .{ .value = "UFoo" }, .{ .value = "Foo" } });
+    ctx.pressKey(' ');
+    try expectCommit(ctx, "UFoo");
+}
+
+test "a user-only code descends, composes with hints, and auto-commits when unique" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "UB\tb\nUZA\taza\nUZB\tazb\n");
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    // "b" exists only in the user dictionary and is unique: E1.
+    ctx.pressKey('b');
+    try expectCommit(ctx, "UB");
+    try testing.expectEqual(@as(u32, 0), ctx.state.options_count);
+
+    // "az" is a user-only extension below a built-in node; both completions
+    // still need a key, so no auto-commit.
+    ctx.pressKey('a');
+    ctx.pressKey('z');
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 2), ctx.state.options_count);
+    try expectWindow(ctx, 2, &.{ .{ .value = "UZA", .hint = "a" }, .{ .value = "UZB", .hint = "b" } });
+
+    ctx.pressKey('b');
+    try expectCommit(ctx, "UZB");
+    try testing.expectEqual(@as(u32, 0), ctx.state.options_count);
+}
+
+test "backspace replays a prefix that only the user dictionary knows" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "UZA\taza\nUZB\tazb\n");
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    ctx.pressKey('a');
+    ctx.pressKey('z');
+    try testing.expectEqual(@as(u32, 2), ctx.state.options_count);
+
+    // Back to "a": the built-in node returns, with the two user entries
+    // folded in at depth 2.
+    ctx.backspace();
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 13), ctx.state.options_count);
+    try expectWindow(ctx, 3, expected_a[0..3]);
+
+    ctx.pressKey('z');
+    try testing.expectEqual(@as(u32, 2), ctx.state.options_count);
+    ctx.backspace();
+    ctx.backspace();
+    try testing.expectEqual(@as(u32, 0), ctx.state.options_count);
+}
+
+test "a user-only root child triggers the commit-and-jump case" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "UB\tb\nUBC\tbc\n");
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    // 'b' is no child of "ac" in either dictionary, but starts a user-only
+    // composition: case F commits 丙1 and jumps.
+    ctx.pressKey('a');
+    ctx.pressKey('c');
+    ctx.pressKey('b');
+    try expectCommit(ctx, "丙1");
+    try testing.expectEqual(@as(u32, 2), ctx.state.options_count);
+    try expectWindow(ctx, 2, &.{ .{ .value = "UB" }, .{ .value = "UBC", .hint = "c" } });
+
+    // And F1 when the jumped-to code is unique.
+    ctx.pressKey('c');
+    try expectCommit(ctx, "UBC");
+}
+
+test "`;` descends when only the user dictionary continues the prefix with it" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "USemi\ta;\n");
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    // Without the user entry this would be case B (commit 乙).
+    ctx.pressKey('a');
+    ctx.pressKey(';');
+    try expectCommit(ctx, "USemi");
+}
+
+test "the literal fallbacks are unchanged by a user dictionary that lacks the key" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "UB\tb\n");
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    ctx.pressKey('x');
+    try expectCommit(ctx, "x");
+
+    ctx.pressKey('a');
+    ctx.pressKey('c');
+    ctx.pressKey('0');
+    try expectCommit(ctx, "丙10");
+}
+
+test "a user composition in flight is unaffected by a reading far ahead" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "U甲\ta\nUZ\taz\n");
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    ctx.pressKey('a');
+    try testing.expectEqual(@as(u32, 13), ctx.state.options_count);
+    var out: [8]QueryOption = undefined;
+    _ = ctx.readRange(8, 8, &out);
+    ctx.setAnchor(7); // UZ: after every built-in depth-1 completion
+    ctx.pressKey(' ');
+    try expectCommit(ctx, "UZ");
+}
+
+test "an empty user dictionary behaves exactly like none" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "# nothing here\n");
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    ctx.pressKey('a');
+    try testing.expectEqual(@as(u32, 11), ctx.state.options_count);
+    try expectWindow(ctx, 3, expected_a[0..3]);
+    ctx.pressKey('e');
+    try expectCommit(ctx, "Foo");
+    ctx.pressKey('x');
+    try expectCommit(ctx, "x");
 }

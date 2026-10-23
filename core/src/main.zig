@@ -7,9 +7,14 @@ const trie_mod = @import("trie");
 const punc_mod = @import("./punc.zig");
 const tables = @import("./tables.zig");
 const punc_tables = @import("./punctuation_marks.zig");
+const user_dict = @import("./user_dict.zig");
 
 const QueryOption = pagination.QueryOption;
 const JdState = query.JdState;
+const UserDict = user_dict.UserDict;
+const UserDictReport = user_dict.Report;
+const UserDictInfo = user_dict.Info;
+const UserDictStatus = user_dict.Status;
 
 /// Whether we're compiling for a WebAssembly target. Selects the allocator.
 const is_wasm = builtin.target.cpu.arch.isWasm();
@@ -108,9 +113,19 @@ fn computeLayout(frontier_cap: u32, path_buf_cap: u32) Layout {
     return .{ .total = off, .frontier_off = frontier_off, .path_off = path_off };
 }
 
-export fn jd_init() ?*JdContext {
+export fn jd_init(user_dict_blob: ?*const anyopaque, user_dict_len: usize) ?*JdContext {
     const t = TrieCell.get();
     const p = PuncCell.get();
+
+    // The user dictionary is the host's memory, validated here in one
+    // linear pass and then only ever read through the view stored in the
+    // context. A blob the engine cannot vouch for yields no context at
+    // all (`jd_user_dict_check` tells the host why).
+    var dict: ?UserDict = null;
+    if (user_dict_blob) |ptr| {
+        const bytes: [*]const u8 = @ptrCast(ptr);
+        dict = UserDict.fromBytes(bytes[0..user_dict_len], tables.blob_fingerprint) catch return null;
+    }
 
     const layout = computeLayout(t.frontier_cap, t.path_buf_cap);
     const raw = shared_allocator.alignedAlloc(u8, .@"8", layout.total) catch return null;
@@ -123,10 +138,94 @@ export fn jd_init() ?*JdContext {
     ctx.* = query.Context.init(.{
         .frontier = frontier_ptr[0..t.frontier_cap],
         .path_buf = raw[layout.path_off..][0..t.path_buf_cap],
-    }, .{ .trie = t, .punc = p });
+    }, .{ .trie = t, .punc = p, .user_dict = dict });
     ctx.raw = raw;
 
     return @ptrCast(ctx);
+}
+
+// =========================================================================
+// User dictionary — build and check blobs for jd_init. The host owns every
+// byte involved: `jd_user_dict_build` writes into the host's buffer, and a
+// blob handed to `jd_init` must outlive the context.
+// =========================================================================
+
+fn textSlice(ptr: ?[*]const u8, len: usize) []const u8 {
+    return if (ptr) |p| p[0..len] else "";
+}
+
+export fn jd_user_dict_blob_bound(phrases: ?[*]const u8, phrases_len: usize) usize {
+    return user_dict.blobBound(textSlice(phrases, phrases_len));
+}
+
+export fn jd_user_dict_build(
+    phrases: ?[*]const u8,
+    phrases_len: usize,
+    source_tag: u64,
+    blob: ?*anyopaque,
+    blob_cap: usize,
+    blob_len: ?*usize,
+    report: ?*UserDictReport,
+    dropped_lines: ?[*]u32,
+    dropped_cap: u32,
+) u32 {
+    var local: UserDictReport = undefined;
+    const rep = report orelse &local;
+    rep.* = .{ .status = 0, .line = 0, .entries = 0, .dropped = 0 };
+    if (blob_len) |l| l.* = 0;
+
+    const out_ptr = blob orelse {
+        rep.status = @backingInt(UserDictStatus.buffer_too_small);
+        return rep.status;
+    };
+    if (!std.mem.isAligned(@intFromPtr(out_ptr), 4)) {
+        rep.status = @backingInt(UserDictStatus.misaligned);
+        return rep.status;
+    }
+    const out: []align(4) u8 = @as([*]align(4) u8, @ptrCast(@alignCast(out_ptr)))[0..blob_cap];
+    const lines: []u32 = if (dropped_lines) |p| p[0..dropped_cap] else &.{};
+
+    const len = user_dict.build(
+        textSlice(phrases, phrases_len),
+        out,
+        TrieCell.get(),
+        tables.blob_fingerprint,
+        source_tag,
+        rep,
+        lines,
+    );
+    if (blob_len) |l| l.* = len;
+    return rep.status;
+}
+
+export fn jd_user_dict_check(blob: ?*const anyopaque, blob_len: usize, info: ?*UserDictInfo) u32 {
+    const ptr = blob orelse return @backingInt(UserDictStatus.corrupt);
+    const bytes: [*]const u8 = @ptrCast(ptr);
+    return @backingInt(UserDict.check(bytes[0..blob_len], tables.blob_fingerprint, info));
+}
+
+// =========================================================================
+// Memory for hosts without an allocator of their own — a WebAssembly host
+// cannot allocate inside linear memory, yet the user-dictionary calls take
+// host buffers. These wrap the library's allocator; the keystroke path
+// still never allocates.
+// =========================================================================
+
+/// Alignment of `jd_alloc` blocks: enough for a user-dictionary blob and
+/// for any scalar a host might lay out in one.
+const HOST_ALLOC_ALIGN: std.mem.Alignment = .@"16";
+
+export fn jd_alloc(size: usize) ?*anyopaque {
+    if (size == 0) return null;
+    const block = shared_allocator.alignedAlloc(u8, HOST_ALLOC_ALIGN, size) catch return null;
+    return @ptrCast(block.ptr);
+}
+
+export fn jd_free(ptr: ?*anyopaque, size: usize) void {
+    const p = ptr orelse return;
+    if (size == 0) return;
+    const block: [*]align(HOST_ALLOC_ALIGN.toByteUnits()) u8 = @ptrCast(@alignCast(p));
+    shared_allocator.free(block[0..size]);
 }
 
 export fn jd_press_key(handle: *JdContext, key: u8) void {
@@ -189,7 +288,13 @@ const AbiQuery = enum(u32) {
     /// Upper bound on the joined length of a commit, in bytes, excluding a
     /// NUL terminator: two longest values back to back plus one literal.
     /// Lets a C consumer size a stack buffer for joining the segments.
+    /// User-dictionary values are capped at `user_dict.VALUE_MAX`, which
+    /// is folded in so the bound holds whatever the host loads.
     max_commit_len = 4,
+    sizeof_user_dict_report = 5,
+    user_dict_max_entries = 6,
+    user_dict_value_max = 7,
+    sizeof_user_dict_info = 8,
 };
 
 export fn jd_abi_layout(what: u32) u32 {
@@ -199,7 +304,11 @@ export fn jd_abi_layout(what: u32) u32 {
         @backingInt(AbiQuery.hint_cap) => @intCast(pagination.HINT_CAP),
         @backingInt(AbiQuery.scratch_options) => @intCast(query.SCRATCH_OPTIONS),
         @backingInt(AbiQuery.max_commit_len) => 2 *
-            @max(TrieCell.get().max_value_len, PuncCell.get().max_value_len) + 1,
+            @max(TrieCell.get().max_value_len, PuncCell.get().max_value_len, user_dict.VALUE_MAX) + 1,
+        @backingInt(AbiQuery.sizeof_user_dict_report) => @sizeOf(UserDictReport),
+        @backingInt(AbiQuery.user_dict_max_entries) => user_dict.MAX_ENTRIES,
+        @backingInt(AbiQuery.user_dict_value_max) => user_dict.VALUE_MAX,
+        @backingInt(AbiQuery.sizeof_user_dict_info) => @sizeOf(UserDictInfo),
         // Unknown queries are a benign 0 rather than a trap.
         else => 0,
     };
@@ -235,7 +344,7 @@ test "commit segments stay valid across later calls on the same context" {
     // immortal (it points into an embedded blob), so unlike the old scratch
     // buffer a commit can be read long after the next keystroke. Driven
     // here on the real dictionary through the C ABI.
-    const handle = jd_init() orelse return error.OutOfMemory;
+    const handle = jd_init(null, 0) orelse return error.OutOfMemory;
     defer jd_deinit(handle);
 
     for ("jjj") |k| jd_press_key(handle, k);
@@ -265,7 +374,7 @@ test "'#' resolves to full-width ＃ through the punctuation table" {
     // Regression: gen_punc's comment rule used to swallow normal.txt's
     // `#` mapping line, so the shipped blob silently lacked the key and
     // '#' fell through to the trie as a literal ASCII byte.
-    const handle = jd_init() orelse return error.OutOfMemory;
+    const handle = jd_init(null, 0) orelse return error.OutOfMemory;
     defer jd_deinit(handle);
 
     jd_press_key(handle, '#');
@@ -274,9 +383,9 @@ test "'#' resolves to full-width ＃ through the punctuation table" {
 }
 
 test "multiple contexts share blobs but have independent state" {
-    const a = jd_init() orelse return error.OutOfMemory;
+    const a = jd_init(null, 0) orelse return error.OutOfMemory;
     defer jd_deinit(a);
-    const b = jd_init() orelse return error.OutOfMemory;
+    const b = jd_init(null, 0) orelse return error.OutOfMemory;
     defer jd_deinit(b);
 
     jd_press_key(a, 'j');
@@ -294,7 +403,7 @@ test "jd_read_range walks the real dictionary forward without replaying" {
     // Walking it in windows must touch each candidate exactly once — this
     // is the property that turns a candidate-strip scroll from O(N²) into
     // O(N), so it is worth locking down against the real data.
-    const handle = jd_init() orelse return error.OutOfMemory;
+    const handle = jd_init(null, 0) orelse return error.OutOfMemory;
     defer jd_deinit(handle);
 
     jd_press_key(handle, 'j');
@@ -315,7 +424,7 @@ test "jd_read_range walks the real dictionary forward without replaying" {
 }
 
 test "reading the whole dictionary list leaves the anchor commit intact" {
-    const handle = jd_init() orelse return error.OutOfMemory;
+    const handle = jd_init(null, 0) orelse return error.OutOfMemory;
     defer jd_deinit(handle);
 
     jd_press_key(handle, 'j');
@@ -341,7 +450,7 @@ test "reading the whole dictionary list leaves the anchor commit intact" {
 }
 
 test "jd_scratch_ptr is writable and holds a full window" {
-    const handle = jd_init() orelse return error.OutOfMemory;
+    const handle = jd_init(null, 0) orelse return error.OutOfMemory;
     defer jd_deinit(handle);
 
     jd_press_key(handle, 'j');
@@ -375,6 +484,208 @@ test "jd_abi_layout reports the real struct sizes" {
         @as(u32, 601),
         jd_abi_layout(@backingInt(AbiQuery.max_commit_len)),
     );
+    try std.testing.expectEqual(
+        @as(u32, @sizeOf(UserDictReport)),
+        jd_abi_layout(@backingInt(AbiQuery.sizeof_user_dict_report)),
+    );
+    try std.testing.expectEqual(user_dict.MAX_ENTRIES, jd_abi_layout(@backingInt(AbiQuery.user_dict_max_entries)));
+    try std.testing.expectEqual(user_dict.VALUE_MAX, jd_abi_layout(@backingInt(AbiQuery.user_dict_value_max)));
+    try std.testing.expectEqual(
+        @as(u32, @sizeOf(UserDictInfo)),
+        jd_abi_layout(@backingInt(AbiQuery.sizeof_user_dict_info)),
+    );
     // Unknown queries are a benign 0 rather than a trap.
     try std.testing.expectEqual(@as(u32, 0), jd_abi_layout(9999));
+}
+
+// =========================================================================
+// Tests — user dictionary through the C ABI, against the real blobs.
+// =========================================================================
+
+/// A built blob in host-style memory: the host sizes it by the bound and
+/// keeps it alive for as long as any context made from it.
+const HostBlob = struct {
+    buf: []align(4) u8,
+    len: usize,
+    report: UserDictReport,
+    dropped_lines: [8]u32,
+
+    const TAG: u64 = 0xFEED_FACE_CAFE_BEEF;
+
+    fn build(phrases: []const u8) !HostBlob {
+        const cap = jd_user_dict_blob_bound(phrases.ptr, phrases.len);
+        const buf = try std.testing.allocator.alignedAlloc(u8, .@"4", cap);
+        errdefer std.testing.allocator.free(buf);
+        var len: usize = 0;
+        var report: UserDictReport = undefined;
+        var lines: [8]u32 = @splat(0);
+        const status = jd_user_dict_build(phrases.ptr, phrases.len, TAG, buf.ptr, cap, &len, &report, &lines, lines.len);
+        try std.testing.expectEqual(status, report.status);
+        return .{ .buf = buf, .len = len, .report = report, .dropped_lines = lines };
+    }
+
+    fn deinit(self: *HostBlob) void {
+        std.testing.allocator.free(self.buf);
+    }
+
+    fn init(self: *const HostBlob) ?*JdContext {
+        return jd_init(self.buf.ptr, self.len);
+    }
+};
+
+fn baseHasPath(keys: []const u8) bool {
+    const t = TrieCell.get();
+    var node = t.root();
+    for (keys) |k| node = node.getChild(t, k) orelse return false;
+    return true;
+}
+
+test "a user dictionary built through the ABI merges into the real dictionary" {
+    // "zzzzzz" must be free in the built-in tables for this test to mean
+    // anything; "b" carries 不 as its first candidate.
+    try std.testing.expect(!baseHasPath("zzzzzz"));
+
+    var blob = try HostBlob.build(
+        "# user phrases\n" ++
+            "测试词\tb\n" ++
+            "不\tb\n" ++ // built-in on the same code → dropped
+            "键道\tzzzzzz\n",
+    );
+    defer blob.deinit();
+    try std.testing.expectEqual(@as(u32, 0), blob.report.status);
+    try std.testing.expectEqual(@as(u32, 2), blob.report.entries);
+    try std.testing.expectEqual(@as(u32, 1), blob.report.dropped);
+    try std.testing.expectEqual(@as(u32, 3), blob.dropped_lines[0]);
+
+    var info: UserDictInfo = undefined;
+    try std.testing.expectEqual(@as(u32, 0), jd_user_dict_check(blob.buf.ptr, blob.len, &info));
+    try std.testing.expectEqual(HostBlob.TAG, info.source_tag);
+    try std.testing.expectEqual(@as(u32, 2), info.entries);
+
+    const handle = blob.init() orelse return error.InitFailed;
+    defer jd_deinit(handle);
+
+    // The user word leads the built-in candidates on the same code.
+    jd_press_key(handle, 'b');
+    var out: [2]QueryOption = undefined;
+    try std.testing.expectEqual(@as(u32, 2), jd_read_range(handle, 0, 2, &out, 2));
+    try std.testing.expectEqualStrings("测试词", std.mem.sliceTo(out[0].value, 0));
+    try std.testing.expectEqualStrings("不", std.mem.sliceTo(out[1].value, 0));
+    jd_press_key(handle, ' ');
+    var buf: [1024]u8 = undefined;
+    try std.testing.expectEqualStrings("测试词", joined(handle, &buf) orelse return error.NoCommit);
+
+    // A user-only code composes and auto-commits on its last key.
+    for ("zzzzz") |k| jd_press_key(handle, k);
+    try std.testing.expectEqual(@as(u32, 1), jd_state_ptr(handle).options_count);
+    jd_press_key(handle, 'z');
+    try std.testing.expectEqualStrings("键道", joined(handle, &buf) orelse return error.NoCommit);
+    try std.testing.expectEqual(@as(u32, 0), jd_state_ptr(handle).options_count);
+
+    // The commit pointed into the host's blob, which is still alive.
+    const held = jd_state_ptr(handle).commit_a orelse return error.NoCommit;
+    try std.testing.expect(@intFromPtr(held) >= @intFromPtr(blob.buf.ptr));
+    try std.testing.expect(@intFromPtr(held) < @intFromPtr(blob.buf.ptr) + blob.len);
+}
+
+test "the same context without a user dictionary is unchanged" {
+    const handle = jd_init(null, 0) orelse return error.OutOfMemory;
+    defer jd_deinit(handle);
+    jd_press_key(handle, 'b');
+    var out: [1]QueryOption = undefined;
+    try std.testing.expectEqual(@as(u32, 1), jd_read_range(handle, 0, 1, &out, 1));
+    try std.testing.expectEqualStrings("不", std.mem.sliceTo(out[0].value, 0));
+}
+
+test "jd_init refuses a stale, corrupt or misaligned user dictionary" {
+    var blob = try HostBlob.build("测试词\tb\n");
+    defer blob.deinit();
+
+    // Fingerprint of another release.
+    const fp_off = 12;
+    blob.buf[fp_off] ^= 0xFF;
+    try std.testing.expectEqual(@backingInt(UserDictStatus.stale), jd_user_dict_check(blob.buf.ptr, blob.len, null));
+    try std.testing.expect(blob.init() == null);
+    blob.buf[fp_off] ^= 0xFF;
+    try std.testing.expectEqual(@as(u32, 0), jd_user_dict_check(blob.buf.ptr, blob.len, null));
+
+    // Truncated.
+    try std.testing.expectEqual(@backingInt(UserDictStatus.corrupt), jd_user_dict_check(blob.buf.ptr, blob.len - 1, null));
+    try std.testing.expect(jd_init(blob.buf.ptr, blob.len - 1) == null);
+
+    // Misaligned.
+    const off_by_one: [*]const u8 = blob.buf.ptr + 1;
+    try std.testing.expectEqual(@backingInt(UserDictStatus.misaligned), jd_user_dict_check(off_by_one, blob.len - 1, null));
+    try std.testing.expect(jd_init(off_by_one, blob.len - 1) == null);
+
+    // NULL with a length is simply "no dictionary".
+    const handle = jd_init(null, 16) orelse return error.OutOfMemory;
+    jd_deinit(handle);
+}
+
+test "jd_user_dict_build reports line errors and buffer problems" {
+    var report: UserDictReport = undefined;
+    var len: usize = 1;
+    var buf: [256]u8 align(4) = undefined;
+
+    const bad = "好\thz\noops\n";
+    try std.testing.expectEqual(
+        @backingInt(UserDictStatus.malformed_line),
+        jd_user_dict_build(bad.ptr, bad.len, 0, &buf, buf.len, &len, &report, null, 0),
+    );
+    try std.testing.expectEqual(@as(u32, 2), report.line);
+    try std.testing.expectEqual(@as(usize, 0), len);
+
+    const ok = "好\thz\n";
+    try std.testing.expectEqual(
+        @backingInt(UserDictStatus.buffer_too_small),
+        jd_user_dict_build(ok.ptr, ok.len, 0, &buf, 8, &len, &report, null, 0),
+    );
+    try std.testing.expectEqual(
+        @backingInt(UserDictStatus.buffer_too_small),
+        jd_user_dict_build(ok.ptr, ok.len, 0, null, 0, &len, &report, null, 0),
+    );
+    try std.testing.expectEqual(
+        @backingInt(UserDictStatus.misaligned),
+        jd_user_dict_build(ok.ptr, ok.len, 0, @as([*]u8, &buf) + 2, buf.len - 2, &len, &report, null, 0),
+    );
+
+    // The report is optional; the status still comes back.
+    try std.testing.expectEqual(
+        @as(u32, 0),
+        jd_user_dict_build(ok.ptr, ok.len, 0, &buf, buf.len, &len, null, null, 0),
+    );
+    try std.testing.expect(len > 0);
+    try std.testing.expectEqual(@as(u32, 0), jd_user_dict_check(&buf, len, null));
+
+    // An empty text is a valid, empty dictionary.
+    try std.testing.expectEqual(@as(u32, 0), jd_user_dict_build(null, 0, 0, &buf, buf.len, &len, &report, null, 0));
+    try std.testing.expectEqual(@as(u32, 0), report.entries);
+    const handle = jd_init(&buf, len) orelse return error.InitFailed;
+    jd_deinit(handle);
+}
+
+test "jd_alloc hands out aligned blocks a host can build into and free" {
+    try std.testing.expect(jd_alloc(0) == null);
+    jd_free(null, 0);
+
+    const phrases = "测试词\tb\n";
+    const cap = jd_user_dict_blob_bound(phrases.ptr, phrases.len);
+    const block = jd_alloc(cap) orelse return error.OutOfMemory;
+    defer jd_free(block, cap);
+    try std.testing.expect(std.mem.isAligned(@intFromPtr(block), 16));
+
+    var len: usize = 0;
+    var report: UserDictReport = undefined;
+    try std.testing.expectEqual(
+        @as(u32, 0),
+        jd_user_dict_build(phrases.ptr, phrases.len, 7, block, cap, &len, &report, null, 0),
+    );
+    try std.testing.expectEqual(@as(u32, 1), report.entries);
+    const handle = jd_init(block, len) orelse return error.InitFailed;
+    defer jd_deinit(handle);
+    jd_press_key(handle, 'b');
+    var out: [1]QueryOption = undefined;
+    try std.testing.expectEqual(@as(u32, 1), jd_read_range(handle, 0, 1, &out, 1));
+    try std.testing.expectEqualStrings("测试词", std.mem.sliceTo(out[0].value, 0));
 }
