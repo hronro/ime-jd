@@ -53,6 +53,33 @@ try {
 
 Committing a candidate the user clicked needs no engine call — insert `c.value` and then `engine.reset()`. For an append-only candidate strip, keep your own array and read `[loaded, loaded + PAGE)` as it scrolls.
 
+## User dictionary
+
+Phrases of the user's own are compiled into a `UserDict` once and merged into every candidate list, user phrases first on a code they share with a built-in word:
+
+```js
+// `value<TAB>keys` lines, the format of core/tables/*.txt. Build once, with a
+// tag of your choosing that identifies this version of the phrases …
+const { dict, report } = jd.buildUserDict("键道输入法\tjdefi\n", { sourceTag: phrasesRevision });
+console.log(`${report.entries} phrases, ${report.dropped} duplicates dropped`);
+for (const line of report.droppedLines) console.log(`line ${line} was dropped`);
+await cache.put("user-dict", dict.bytes()); // … cache the blob (IndexedDB, say) …
+
+// … and on later launches wrap the cached bytes instead of re-parsing text.
+let dict;
+try {
+  dict = jd.loadUserDict(await cache.get("user-dict"));
+  if (dict.sourceTag !== BigInt(phrasesRevision)) dict = rebuildFromPhrases(); // phrases changed
+} catch (e) {
+  dict = rebuildFromPhrases(); // UserDictError: stale after a library update, or corrupt
+}
+
+const engine = jd.createEngine({ userDict: dict });
+// … dispose the engine before the dictionary; the engine reads the blob in place.
+```
+
+The blob is one block of the module's linear memory that the `UserDict` owns (`jd_alloc` / `jd_free` in the C ABI); a JS host cannot allocate inside linear memory itself, so the wrapper does it for you. `dispose()` refuses while an engine created with the dictionary is alive.
+
 ## Getting the `jd.wasm`
 
 The wrapper does not embed the module — you provide it, exactly like `bindings/rust` links a prebuilt-or-zig-built libjd. Build it with
@@ -67,7 +94,7 @@ or download the `libjd-<ver>-wasm.wasm.tar.xz` release asset. `JdModule.instanti
 
 - **Everything returned is an owned JS value.** JS strings have to be decoded out of linear memory regardless, so `Engine` does it eagerly for the commit and for each candidate in the window you asked for. Ask for the window you draw: `readRange(start, count)` is a pure read that never changes what the engine's automatic commits resolve to, so a candidate strip can prefetch freely and call `setAnchor` when the user's view moves.
 - **Candidates are addressed by flat index**, not by page — there is no `pageSize`, and no remainder math to get wrong. `readRange` returns fewer than asked at the end of the list.
-- **The wasm plumbing is hidden.** No export returns a struct by value, so there is no sret shim; state lives at the fixed address `jd_state_ptr(ctx)` returns, and larger `readRange` windows are decoded in chunks through the context's own scratch buffer (a JS host cannot allocate inside linear memory). `JdModule.fromInstance` verifies the module's struct layout against this binding's hand-written offsets via `jd_abi_layout` and throws on a mismatch.
+- **The wasm plumbing is hidden.** No export returns a struct by value, so there is no sret shim; state lives at the fixed address `jd_state_ptr(ctx)` returns, and larger `readRange` windows are decoded in chunks through the context's own scratch buffer (a JS host cannot allocate inside linear memory). The user-dictionary calls need host buffers in linear memory, which the wrapper takes from the module's own allocator (`jd_alloc` / `jd_free`). `JdModule.fromInstance` verifies the module's struct layout against this binding's hand-written offsets via `jd_abi_layout` and throws on a mismatch.
 - **One module, many engines.** The embedded trie/punctuation tables are parsed once and shared read-only across every `Engine` of a `JdModule`; distinct engines have independent composition state. A single `Engine` must not be driven concurrently with itself.
 - **`dispose()` / `Symbol.dispose`** release the context (`jd_deinit`); idempotent, and poisons the engine so later calls throw. JS has no deterministic destructor, so release is explicit (a `using` binding works).
 
@@ -80,4 +107,4 @@ npm test              # pretest builds core to wasm, then `node --test`
 npm run typecheck     # tsc validates index.d.ts against the test (dev dep)
 ```
 
-`node --test` runs the plain-JS tests directly. They link the real dictionary and cover the FFI smoke contract, result ownership (retention across later calls), chunked reads larger than the scratch buffer, window clipping, the anchor's independence from reads, punctuation, context independence, and the dispose lifecycle. Set `JD_WASM` to a prebuilt module to skip the zig build.
+`node --test` runs the plain-JS tests directly. They link the real dictionary and cover the FFI smoke contract, result ownership (retention across later calls), chunked reads larger than the scratch buffer, window clipping, the anchor's independence from reads, punctuation, context independence, the dispose lifecycle, and the user dictionary (merge order, user-only codes, build errors, cached-blob round trips, the dictionary-outlives-engines rule). Set `JD_WASM` to a prebuilt module to skip the zig build.

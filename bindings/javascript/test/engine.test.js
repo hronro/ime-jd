@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { JdModule, EMPTY_SNAPSHOT } from "../src/index.js";
+import { JdModule, EMPTY_SNAPSHOT, UserDictError } from "../src/index.js";
 
 const wasmPath =
   process.env.JD_WASM ??
@@ -288,4 +288,138 @@ test("fromInstance rejects a module that isn't libjd", async () => {
     new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
   );
   await assert.rejects(() => JdModule.instantiate(empty), /not a libjd module/);
+});
+
+// ---- user dictionary ----------------------------------------------------
+
+test("a user dictionary's phrases lead the built-in candidates on a shared code", () => {
+  // 'b' → 不 in the built-in tables; the user adds a word on the same code
+  // and repeats a built-in one, which is dropped and reported by line.
+  const { dict, report } = mod.buildUserDict("测试词\tb\n不\tb\n", { sourceTag: 42n });
+  try {
+    assert.deepEqual(report, { entries: 1, dropped: 1, droppedLines: [2] });
+    assert.equal(dict.entries, 1);
+    assert.equal(dict.sourceTag, 42n);
+    assert.ok(dict.byteLength > 0);
+
+    const e = mod.createEngine({ userDict: dict });
+    try {
+      e.pressKey(byte("b"));
+      const window = e.readRange(0, 2);
+      assert.equal(window[0].value, "测试词");
+      assert.equal(window[1].value, "不");
+      assert.equal(e.pressKey(byte(" ")).commit, "测试词");
+    } finally {
+      e.dispose();
+    }
+
+    // A plain engine of the same module is unaffected.
+    const plain = mod.createEngine();
+    try {
+      plain.pressKey(byte("b"));
+      assert.equal(plain.readRange(0, 1)[0].value, "不");
+    } finally {
+      plain.dispose();
+    }
+  } finally {
+    dict.dispose();
+  }
+});
+
+test("a user-only code composes with hints and auto-commits", () => {
+  const { dict } = mod.buildUserDict("键道\tzzzzzz\n键道输入法\tzzzzza\n");
+  const e = mod.createEngine({ userDict: dict });
+  try {
+    const snap = pressKeys(e, "zzzzz");
+    assert.equal(snap.commit, null);
+    assert.deepEqual(e.readRange(0, 4), [
+      { value: "键道输入法", hint: "a" },
+      { value: "键道", hint: "z" },
+    ]);
+    const committed = e.pressKey(byte("z"));
+    assert.equal(committed.commit, "键道");
+    assert.equal(committed.optionsCount, 0);
+  } finally {
+    e.dispose();
+    dict.dispose();
+  }
+});
+
+test("build errors name the line", () => {
+  assert.throws(
+    () => mod.buildUserDict("好\thz\nno tab\n"),
+    (err) =>
+      err instanceof UserDictError &&
+      err.status === "malformedLine" &&
+      err.line === 2 &&
+      err.message === "line 2: expected `value<TAB>keys`",
+  );
+  assert.throws(() => mod.buildUserDict("好\tHZ\n"), { status: "badKeys", line: 1 });
+  assert.throws(() => mod.buildUserDict("\thz\n"), { status: "badValue", line: 1 });
+});
+
+test("cached bytes round-trip, and stale or corrupt bytes are refused", () => {
+  const { dict } = mod.buildUserDict("# comment\n键道\tzzzzzz\n", { sourceTag: 7 });
+  const bytes = dict.bytes();
+  dict.dispose();
+  assert.ok(bytes.length > 0);
+
+  const again = mod.loadUserDict(bytes);
+  try {
+    assert.equal(again.sourceTag, 7n);
+    assert.equal(again.entries, 1);
+    assert.deepEqual(again.bytes(), bytes);
+    // An ArrayBuffer works too.
+    const fromBuffer = mod.loadUserDict(bytes.slice().buffer);
+    assert.equal(fromBuffer.entries, 1);
+    fromBuffer.dispose();
+  } finally {
+    again.dispose();
+  }
+
+  // The built-in dictionary fingerprint lives in the header.
+  const stale = bytes.slice();
+  stale[12] ^= 0xff;
+  assert.throws(() => mod.loadUserDict(stale), { status: "stale", line: 0 });
+  assert.throws(() => mod.loadUserDict(bytes.subarray(0, bytes.length - 1)), { status: "corrupt" });
+  assert.throws(() => mod.loadUserDict(new Uint8Array(0)), { status: "corrupt" });
+});
+
+test("a dictionary outlives the engines that read it", () => {
+  const { dict } = mod.buildUserDict("键道\tzzzzzz\n");
+  const e = mod.createEngine({ userDict: dict });
+  assert.throws(() => dict.dispose(), /dispose them first/);
+  assert.equal(dict.disposed, false);
+  e.dispose();
+  dict.dispose();
+  assert.equal(dict.disposed, true);
+  dict.dispose(); // idempotent
+  assert.throws(() => dict.bytes(), /disposed/);
+  assert.throws(() => mod.createEngine({ userDict: dict }), /disposed/);
+  // @ts-expect-error — deliberately not a UserDict
+  assert.throws(() => mod.createEngine({ userDict: {} }), TypeError);
+});
+
+test("an empty dictionary is valid and inert", () => {
+  const { dict, report } = mod.buildUserDict("# nothing here\n");
+  try {
+    assert.deepEqual(report, { entries: 0, dropped: 0, droppedLines: [] });
+    const e = mod.createEngine({ userDict: dict });
+    const plain = mod.createEngine();
+    try {
+      assert.deepEqual(e.pressKey(byte("a")), plain.pressKey(byte("a")));
+      assert.deepEqual(e.readRange(0, 9), plain.readRange(0, 9));
+    } finally {
+      e.dispose();
+      plain.dispose();
+    }
+  } finally {
+    dict.dispose();
+  }
+});
+
+test("Symbol.dispose releases a dictionary (works with `using`)", () => {
+  const { dict } = mod.buildUserDict("键道\tzzzzzz\n");
+  dict[Symbol.dispose]();
+  assert.equal(dict.disposed, true);
 });
