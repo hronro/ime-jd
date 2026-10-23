@@ -34,6 +34,60 @@ export type WasmSource =
   | Response
   | PromiseLike<Response>;
 
+/** The `JD_USER_DICT_*` status codes, by name. */
+export type UserDictStatus =
+  | "bufferTooSmall"
+  | "tooManyEntries"
+  | "malformedLine"
+  | "badKeys"
+  | "badValue"
+  | "stale"
+  | "corrupt"
+  | "misaligned"
+  | "textTooLong"
+  | (string & {});
+
+/**
+ * A user dictionary could not be built or accepted. For the statuses that
+ * refer to a line of the input text (`malformedLine`, `badKeys`, `badValue`,
+ * `tooManyEntries`) `line` is the 1-based line; otherwise 0.
+ */
+export class UserDictError extends Error {
+  readonly status: UserDictStatus;
+  /** The raw `JD_USER_DICT_*` code. */
+  readonly code: number;
+  readonly line: number;
+}
+
+/** What {@link JdModule.buildUserDict} did with the input. */
+export interface UserDictReport {
+  /** Phrases that made it into the dictionary. */
+  readonly entries: number;
+  /**
+   * Phrases dropped as exact duplicates — of an earlier line with the same
+   * keys and value, or of a built-in word on the same code.
+   */
+  readonly dropped: number;
+  /** The 1-based input lines of every dropped phrase, ascending. */
+  readonly droppedLines: number[];
+}
+
+/** Options for {@link JdModule.buildUserDict}. */
+export interface BuildUserDictOptions {
+  /**
+   * 64 bits of yours, stored in the blob and never interpreted — a
+   * modification time, a content hash, a revision — so a cached blob can be
+   * told apart from the phrases it was built from. Defaults to 0.
+   */
+  sourceTag?: number | bigint;
+}
+
+/** Options for {@link JdModule.createEngine}. */
+export interface CreateEngineOptions {
+  /** A dictionary of this module whose phrases the engine merges in. */
+  userDict?: UserDict | null;
+}
+
 /**
  * A loaded libjd wasm module. Wraps one WebAssembly instance and mints
  * {@link Engine} contexts from it; the embedded trie and punctuation tables are
@@ -53,8 +107,62 @@ export class JdModule {
   /** Wrap an already-instantiated libjd instance. */
   static fromInstance(instance: WebAssembly.Instance): JdModule;
 
-  /** Create a new input context. Throws on allocation failure. */
-  createEngine(): Engine;
+  /**
+   * Create a new input context, over the built-in dictionary alone or merged
+   * with a {@link UserDict} of this module. Throws on allocation failure.
+   * Dispose engines before the dictionary they read.
+   */
+  createEngine(options?: CreateEngineOptions): Engine;
+
+  /**
+   * Compile `value<TAB>keys` text (the format of libjd's own table files)
+   * into a dictionary. Exact duplicates of an earlier line or of a built-in
+   * word on the same code are dropped and listed by line in the report.
+   * Throws a {@link UserDictError} naming the bad line otherwise.
+   */
+  buildUserDict(
+    text: string,
+    options?: BuildUserDictOptions,
+  ): { dict: UserDict; report: UserDictReport };
+
+  /**
+   * Wrap a blob cached from an earlier {@link UserDict.bytes}, validated
+   * exactly as `jd_init` would. A `stale` (another libjd) or `corrupt` error
+   * means "rebuild from the phrases".
+   */
+  loadUserDict(bytes: Uint8Array | ArrayBufferLike): UserDict;
+}
+
+/**
+ * Phrases of the user's own, compiled into the blob the engine reads in place
+ * — one block of linear memory this object owns until {@link UserDict.dispose}.
+ */
+export class UserDict {
+  private constructor();
+
+  /** How many phrases the dictionary holds. */
+  get entries(): number;
+
+  /** The tag it was built with, read back from the blob. */
+  get sourceTag(): bigint;
+
+  /** The blob's length in bytes. */
+  get byteLength(): number;
+
+  /** True once {@link UserDict.dispose} has run. */
+  get disposed(): boolean;
+
+  /** A copy of the blob — exactly the bytes to cache for {@link JdModule.loadUserDict}. */
+  bytes(): Uint8Array;
+
+  /**
+   * Release the blob's linear memory. Idempotent. Throws while an engine
+   * created with this dictionary is still alive: dispose the engines first.
+   */
+  dispose(): void;
+
+  /** Enables `using` bindings; equivalent to {@link UserDict.dispose}. */
+  [Symbol.dispose](): void;
 }
 
 /**
