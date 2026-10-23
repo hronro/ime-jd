@@ -22,10 +22,20 @@ const ALPHA: usize = 27;
 /// generator's `fast` build, where `std.debug.assert` would vanish).
 pub const MAX_KEYS_LEN: usize = 6;
 
-fn keyRank(c: u8) u8 {
+/// Position of a key byte in the alphabet: a-z → 0-25, ';' → 26, anything
+/// else → 27 (= ALPHA, "not a key"). The order children are stored in, and
+/// the byte encoding `user_dict.zig` keeps keys in so a plain byte compare
+/// is this order.
+pub fn keyRank(c: u8) u8 {
     if (c >= 'a' and c <= 'z') return c - 'a';
     if (c == ';') return 26;
     return 27;
+}
+
+/// Inverse of `keyRank` for ranks below ALPHA.
+pub fn keyOfRank(rank: u8) u8 {
+    std.debug.assert(rank < ALPHA);
+    return if (rank == 26) ';' else 'a' + rank;
 }
 
 /// The exact key alphabet: a-z plus ';' (the ALPHA = 27 ranks above).
@@ -684,6 +694,13 @@ test "entries with keys outside the a-z ';' alphabet are a hard error" {
             .{ .keys = keys, .value = "x" },
         }));
     }
+}
+
+test "keyOfRank inverts keyRank over the whole alphabet" {
+    var c: u8 = 'a';
+    while (c <= 'z') : (c += 1) try testing.expectEqual(c, keyOfRank(keyRank(c)));
+    try testing.expectEqual(@as(u8, ';'), keyOfRank(keyRank(';')));
+    try testing.expectEqual(@as(u8, 26), keyRank(keyOfRank(26)));
 }
 
 test "isValidKeyByte matches the a-z ';' alphabet exactly" {

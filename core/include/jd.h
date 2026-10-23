@@ -1,6 +1,8 @@
 #ifndef JD_H
 #define JD_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,10 +18,13 @@ extern "C" {
 /**
  * One candidate.
  *
- * Both fields are safe to keep indefinitely. `value` always points into the
- * library's embedded dictionary blob — read-only data that lives for the
- * whole process — and `hint` is inline bytes owned by whoever owns this
- * struct. There is no invalidation rule and nothing to copy defensively.
+ * `value` points into a dictionary blob: either the library's embedded
+ * dictionary — read-only data that lives for the whole process — or the
+ * user-dictionary blob the context was created with, which you own and
+ * keep alive (see jd_init). `hint` is inline bytes owned by whoever owns
+ * this struct. Nothing here is invalidated by later engine calls, so there
+ * is nothing to copy defensively; the only lifetime to respect is your own
+ * user-dictionary blob's.
  *
  * `hint[0] == 0` means the candidate needs no further keys.
  */
@@ -35,12 +40,12 @@ typedef struct {
  *
  *   commit_a ++ commit_b ++ commit_lit
  *
- * `commit_a` / `commit_b` are NUL-terminated pointers into the embedded blob
- * (immortal, exactly like `query_option.value`); `commit_lit` is a single
- * literal byte. Any of them may be absent — NULL for the pointers, 0 for the
- * byte. Nothing was committed when all three are absent. Splitting the
- * commit this way is what lets the library return it without owning a buffer,
- * so every pointer a caller ever receives is immortal.
+ * `commit_a` / `commit_b` are NUL-terminated pointers into a dictionary blob
+ * (valid exactly as long as `query_option.value` is); `commit_lit` is a
+ * single literal byte. Any of them may be absent — NULL for the pointers, 0
+ * for the byte. Nothing was committed when all three are absent. Splitting
+ * the commit this way is what lets the library return it without owning a
+ * buffer, so no pointer a caller receives is ever invalidated by the engine.
  *
  * `options_count` is the total number of candidates for the in-flight
  * composition, or 0 when none is in flight. Read them with jd_read_range.
@@ -70,7 +75,8 @@ typedef struct {
  * Opaque per-instance context handle. Create with jd_init, destroy with
  * jd_deinit. Multiple contexts may exist simultaneously; the embedded trie
  * and punctuation tables are parsed once on first use and shared read-only
- * across all of them.
+ * across all of them. A user dictionary, by contrast, is per context: each
+ * context reads the blob it was created with for its whole lifetime.
  *
  * Thread-safety: contexts are independent — different threads operating on
  * different contexts is safe. A single context must not be used concurrently
@@ -80,20 +86,173 @@ typedef struct {
 typedef struct jd_context jd_context;
 
 /**
- * Create a new context. Returns NULL on allocation failure. Each returned
- * handle is owned by the caller and must be released with jd_deinit.
+ * Create a new context. Each returned handle is owned by the caller and must
+ * be released with jd_deinit.
+ *
+ * `user_dict` is either NULL (with `user_dict_len` 0) for the built-in
+ * dictionary alone, or a user-dictionary blob produced by
+ * jd_user_dict_build. The blob is YOUR memory: it must be 4-byte aligned,
+ * and it must stay alive and unmoved until jd_deinit — and for as long as
+ * you still use any candidate `value` or commit segment that points into it.
+ * The engine validates the blob here in one linear pass (the same checks as
+ * jd_user_dict_check) and reads it in place afterwards; it never copies it.
+ * To change dictionaries, create a new context with the new blob, release
+ * the old context, and only then free the old blob.
+ *
+ * Returns NULL when the blob fails validation (call jd_user_dict_check to
+ * learn why — a stale or corrupt cached blob should simply be rebuilt) or
+ * on allocation failure.
  *
  * Exactly one heap allocation happens here and exactly one matching free
  * happens in jd_deinit; nothing in between touches an allocator.
  */
-jd_context *jd_init(void);
+jd_context *jd_init(const void *user_dict, size_t user_dict_len);
 
 /**
  * Release all memory held by ctx. After this call ctx is invalid. The shared
  * trie and punctuation tables remain alive for the rest of the process;
- * other contexts are unaffected.
+ * other contexts are unaffected. The user-dictionary blob the context was
+ * created with is not touched — it is yours to free once nothing uses it.
  */
 void jd_deinit(jd_context *ctx);
+
+/* ------------------------------------------------------------------------
+ * User dictionary
+ *
+ * A user dictionary is a blob you build once from phrases and keep: cache
+ * the bytes wherever you like and hand them to jd_init on every launch, so
+ * the engine never parses text on a hot path. The engine merges the
+ * phrases into every candidate list — same ordering rules as the built-in
+ * dictionary, shorter completions first, ties by key order — and puts a
+ * user phrase ahead of a built-in word on the same code.
+ *
+ * The blob carries a 64-bit `source_tag` you choose when building — a
+ * file's modification time, a content hash, a database revision — and
+ * jd_user_dict_check hands it back, so you can tell whether a cached blob
+ * still matches the phrases you have without keeping a sidecar record.
+ * The engine never interprets it.
+ *
+ * Input text is lines of `value<TAB>keys`, the format of the library's own
+ * table files: `#` starts a comment line, blank lines are ignored, spaces
+ * around either field are trimmed, CRLF is accepted. Keys are 1 to 6 bytes
+ * from a-z and `;`. Values are 1 to JD_USER_DICT_VALUE_MAX bytes of UTF-8
+ * with no control characters. Everything else is an error that names the
+ * line. A phrase that exactly repeats an earlier line, or a built-in word
+ * on the same code, is dropped and counted in `dropped`.
+ * ---------------------------------------------------------------------- */
+
+/** Hard limits. Also reported by jd_abi_layout so a binding can verify them. */
+#define JD_USER_DICT_MAX_ENTRIES 10000
+#define JD_USER_DICT_VALUE_MAX 255
+#define JD_USER_DICT_TEXT_MAX (8u * 1024u * 1024u)
+
+/** Status codes returned by jd_user_dict_build and jd_user_dict_check. */
+#define JD_USER_DICT_OK 0
+/** build: `blob_cap` is below what jd_user_dict_blob_bound asks for. */
+#define JD_USER_DICT_BUFFER_TOO_SMALL 1
+/** build: more than JD_USER_DICT_MAX_ENTRIES phrases (`line` is the first excess one). */
+#define JD_USER_DICT_TOO_MANY_ENTRIES 2
+/** build: a non-comment line without a TAB. */
+#define JD_USER_DICT_MALFORMED_LINE 3
+/** build: keys empty, longer than 6, or outside a-z `;`. */
+#define JD_USER_DICT_BAD_KEYS 4
+/** build: value empty, too long, not UTF-8, or containing control bytes. */
+#define JD_USER_DICT_BAD_VALUE 5
+/** check/init: built by a different libjd — format or built-in dictionary differ. Rebuild it. */
+#define JD_USER_DICT_STALE 6
+/** check/init: structurally invalid. Rebuild it. */
+#define JD_USER_DICT_CORRUPT 7
+/** check/init/build: the blob pointer is not 4-byte aligned. */
+#define JD_USER_DICT_MISALIGNED 8
+/** build: the text exceeds JD_USER_DICT_TEXT_MAX. */
+#define JD_USER_DICT_TEXT_TOO_LONG 9
+
+/**
+ * What jd_user_dict_build found. `status` is one of the JD_USER_DICT_*
+ * codes; `line` is the 1-based input line it refers to, or 0 when it refers
+ * to the call as a whole; `entries` and `dropped` are filled on success.
+ * `dropped` counts every dropped phrase, however many line numbers fit in
+ * the array you passed.
+ */
+typedef struct {
+  unsigned int status, line, entries, dropped;
+} jd_user_dict_report;
+
+/**
+ * What jd_user_dict_check reports about a valid blob: the `source_tag` it
+ * was built with and how many phrases it holds.
+ */
+typedef struct {
+  unsigned long long source_tag;
+  unsigned int entries;
+} jd_user_dict_info;
+
+/**
+ * An upper bound on the blob jd_user_dict_build can produce from
+ * `phrases_len` bytes of text at `phrases`: one entry and one NUL per line
+ * plus the text itself. Pure arithmetic over a newline count. Allocate at
+ * least this much, 4-byte aligned, for `blob`.
+ */
+size_t jd_user_dict_blob_bound(const char *phrases, size_t phrases_len);
+
+/**
+ * Build a user-dictionary blob from `phrases` into `blob`, your buffer of
+ * `blob_cap` bytes (at least the bound, 4-byte aligned). On success
+ * `*blob_len` receives the blob's length — that prefix of the buffer is the
+ * blob; cache exactly those bytes — and `report->entries` / `dropped` are
+ * filled. On failure `*blob_len` is 0 and `report->status` / `line` say
+ * why. The return value is `report->status`. The library allocates nothing
+ * here: sorting and the string pool are laid out inside your buffer.
+ *
+ * `source_tag` is stored in the blob for you (see jd_user_dict_check).
+ *
+ * The 1-based line numbers of dropped phrases are written to
+ * `dropped_lines`, up to `dropped_cap` of them, in ascending order when
+ * they all fit; `report->dropped` is the full count either way. Pass a
+ * capacity of at least the number of input lines to get every one — a GUI
+ * can then flag the rows it will not find in the dictionary.
+ *
+ * `blob_len`, `report` and `dropped_lines` may be NULL.
+ *
+ * The blob records which built-in dictionary it was deduplicated against,
+ * so it is valid for this build of the library only: after an update,
+ * jd_user_dict_check reports it as stale and you rebuild it from the
+ * phrases you persisted.
+ */
+unsigned int jd_user_dict_build(const char *phrases, size_t phrases_len,
+                                unsigned long long source_tag,
+                                void *blob, size_t blob_cap, size_t *blob_len,
+                                jd_user_dict_report *report,
+                                unsigned int *dropped_lines, unsigned int dropped_cap);
+
+/**
+ * Validate a cached blob exactly as jd_init would: JD_USER_DICT_OK, or
+ * JD_USER_DICT_STALE / _CORRUPT / _MISALIGNED. Any failure means "rebuild
+ * it"; the distinction is for your logs. On success `*info` (if not NULL)
+ * receives the blob's source tag and phrase count, which is how you decide
+ * whether the cache still matches your phrases. Bytes past the blob's own
+ * length are ignored, so passing a whole buffer is fine.
+ */
+unsigned int jd_user_dict_check(const void *blob, size_t blob_len,
+                                jd_user_dict_info *info);
+
+/* ------------------------------------------------------------------------
+ * Memory for hosts without an allocator of their own
+ *
+ * The user-dictionary calls take buffers you own. A host that cannot
+ * allocate memory the library can read — a WebAssembly host, which has no
+ * allocator inside the module's linear memory — gets it from here instead.
+ * Native hosts normally use their own allocator and never call these.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Allocate `size` bytes, aligned to 16, from the library's allocator.
+ * Returns NULL for a size of 0 or on failure. Release with jd_free, passing
+ * the same size. These are explicit host calls; the keystroke path still
+ * never allocates.
+ */
+void *jd_alloc(size_t size);
+void jd_free(void *ptr, size_t size);
 
 /**
  * Feed one keystroke to the engine. `key` is interpreted as a literal ASCII
@@ -182,6 +341,10 @@ query_option *jd_scratch_ptr(jd_context *ctx);
 #define JD_ABI_HINT_CAP 2
 #define JD_ABI_SCRATCH_OPTIONS 3
 #define JD_ABI_MAX_COMMIT_LEN 4
+#define JD_ABI_SIZEOF_USER_DICT_REPORT 5
+#define JD_ABI_USER_DICT_MAX_ENTRIES 6
+#define JD_ABI_USER_DICT_VALUE_MAX 7
+#define JD_ABI_SIZEOF_USER_DICT_INFO 8
 
 /**
  * Layout self-check. This header and the language bindings declare these
@@ -192,7 +355,8 @@ query_option *jd_scratch_ptr(jd_context *ctx);
  *
  * JD_ABI_MAX_COMMIT_LEN is the upper bound on a joined commit in bytes
  * (excluding a NUL) — size a buffer with it if you concatenate the segments
- * into fixed storage. Unknown queries return 0.
+ * into fixed storage; it already accounts for user-dictionary values, which
+ * are capped at JD_USER_DICT_VALUE_MAX. Unknown queries return 0.
  */
 unsigned int jd_abi_layout(unsigned int what);
 

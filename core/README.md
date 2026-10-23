@@ -1,6 +1,6 @@
 # libjd
 
-Core engine for the `jd` input method. Two build-time-generated data structures drive it: a trie mapping key sequences (a–z plus `;`) to candidate strings, and a punctuation lookup table mapping ASCII punctuation keys to Chinese punctuation (auto-committed singles, multi-candidate windows, and toggled paired quotes). Both feed an interactive query state machine exposed through a small C ABI. Zero runtime dependencies — does not link libc.
+Core engine for the `jd` input method. Two build-time-generated data structures drive it: a trie mapping key sequences (a–z plus `;`) to candidate strings, and a punctuation lookup table mapping ASCII punctuation keys to Chinese punctuation (auto-committed singles, multi-candidate windows, and toggled paired quotes). A third, optional one is built at runtime by the host: a user dictionary of the user's own phrases, merged into every candidate list. All of them feed an interactive query state machine exposed through a small C ABI. Zero runtime dependencies — does not link libc.
 
 ## Integration Guide
 
@@ -30,23 +30,31 @@ gen_punc  ──►  punc.bin                     │
                                             ▼
                                      Context (per-context state)
                                             │
-                                            ├── trie cursor + pressed-key history
+                                            ├── composed prefix (key bytes) + built-in node
+                                            ├── user dict view (host blob, optional)
                                             ├── pager: Pager union (trie | punc)
+                                            │     trie = built-in BFS ⨝ user cursor
                                             ├── anchor_index + 2 cached options
                                             └── pair_toggle_bits  (1 bit / ASCII key)
+
+Host (runtime, optional)
+────────────────────────
+phrases.txt / GUI ──► jd_user_dict_build ──► blob (host memory, cached) ──► jd_init(blob) ──► UserDict.fromBytes (O(n) validate, no copy)
 ```
 
 **Trie pipeline.** At build time, `scripts/gen_trie.zig` parses every `tables/*.txt` file, builds a trie via `trie.buildBlob`, and writes `trie.bin` plus a tiny wrapper module that does `@embedFile("trie.bin")`. The library imports that wrapper through the `trie_blob` module name and exposes it as a 4-byte-aligned `[]const u8` (see `src/tables.zig`).
 
 **Punctuation pipeline.** `scripts/gen_punc.zig` does the same for `punctuation-marks/normal.txt` (key + N candidate values) and `paired.txt` (key + open + close), producing `punc.bin` and a `punc_blob` wrapper. The runtime view (`punc.Punc`) is two inline 256-slot tables directly indexed by ASCII byte plus a shared NUL-separated strings pool — no prefix-sum, just one indexed load per lookup. Conflicts (same key in both files, reserved keys like space / `;` / digits, duplicate keys within a file) are caught at build time.
 
-**At runtime**, `jd_init` reinterprets each blob as a `Trie` / `Punc` view in O(1) — no parsing, no copying. On each `jd_press_key`, the engine first checks the punctuation tables (paired then normal) before falling back to the trie. Paired entries flip a per-context toggle bit so consecutive presses alternate halves; multi-candidate normals open a candidate window via `PuncPagination` (lives alongside `NodePagination` in `src/pagination.zig`).
+**User dictionary pipeline.** `src/user_dict.zig` is the one piece built at runtime, and it is built by the host, not at startup: `jd_user_dict_build` turns `value<TAB>keys` text (the table files' own format) into a blob inside a buffer the host supplies, validating every line, sorting, and dropping exact duplicates of earlier lines and of built-in words on the same code. The host caches those bytes however it likes — the blob carries a host-chosen 64-bit source tag, so the host can tell a current cache from a stale one without a sidecar record — and passes them to `jd_init`, which validates them in one linear pass — sizes, offsets, sort order, key alphabet, UTF-8 (one pass over the string pool), and a fingerprint of the built-in trie the blob was deduplicated against (`gen_trie` emits it as a CRC-32 next to `trie.bin`) — and then reads them in place. A memory-mapped cache file is the natural blob — aligned, fixed, uncopied, and shared between processes that map it — and hosts without an allocator of their own, such as a WebAssembly host, get their buffers from `jd_alloc`. The blob's entries are sorted by key length, then by key rank, which is exactly the BFS order `NodePagination` yields, so the entries below any prefix are one binary search per key length and the two sources merge with a plain two-way merge (`TriePagination`). Nothing about the user cursor is sized by the dictionary, which is why the per-context allocation is unchanged and any blob can be attached to any context. The blob is the host's memory for the context's lifetime: switching dictionaries means creating a context with the new blob and releasing the old one.
 
-**Candidates are enumerated by flat index**, not by page — `src/pagination.zig` exposes `readRange(start, count, out)` over a single forward-only BFS cursor, writing into caller memory. That cursor is purely internal: `Context` keeps a separate `anchor_index` (plus the two options at it, which is all the engine's automatic commits can need) so a frontend can prefetch a candidate strip arbitrarily far ahead without changing what space would commit. Reading forward is amortized O(1) per candidate; reading backward rewinds and replays.
+**At runtime**, `jd_init` reinterprets each embedded blob as a `Trie` / `Punc` view in O(1) — no parsing, no copying — and validates the user-dictionary blob, if any, in O(n). On each `jd_press_key`, the engine first checks the punctuation tables (paired then normal) before falling back to the trie. Paired entries flip a per-context toggle bit so consecutive presses alternate halves; multi-candidate normals open a candidate window via `PuncPagination` (lives alongside `NodePagination` in `src/pagination.zig`). "Does this key continue the composition" asks both the built-in trie and the user dictionary, so a prefix only the user dictionary knows composes exactly like a built-in one.
 
-Nothing the caller receives can dangle: a candidate's `value` and a commit's segments point into the embedded blobs, and a candidate's `hint` is inline bytes. Commits are returned as up to two immortal pointers plus one literal byte rather than being assembled, so the library owns no string buffer at all.
+**Candidates are enumerated by flat index**, not by page — `src/pagination.zig` exposes `readRange(start, count, out)` over a single forward-only cursor (a BFS over the built-in subtree, merged with the user cursor), writing into caller memory. That cursor is purely internal: `Context` keeps a separate `anchor_index` (plus the two options at it, which is all the engine's automatic commits can need) so a frontend can prefetch a candidate strip arbitrarily far ahead without changing what space would commit. Reading forward is amortized O(1) per candidate; reading backward rewinds and replays. A user phrase comes before a built-in word on the same code, so a user can override what a code commits by default.
 
-The trie blob's header carries worst-case sizes for the BFS frontier and path buffer — `gen_trie` computes them with one bottom-up pass. `jd_init` reads those caps and allocates one per-context buffer big enough to hold the `Context` struct plus both regions. After that one allocation, the library never touches the allocator again until `jd_deinit`.
+Nothing the caller receives is ever invalidated by the engine: a candidate's `value` and a commit's segments point into the embedded blobs — or into the user-dictionary blob the context was created with, which the host keeps alive — and a candidate's `hint` is inline bytes. Commits are returned as up to two such pointers plus one literal byte rather than being assembled, so the library owns no string buffer at all.
+
+The trie blob's header carries worst-case sizes for the BFS frontier and path buffer — `gen_trie` computes them with one bottom-up pass. `jd_init` reads those caps and allocates one per-context buffer big enough to hold the `Context` struct plus both regions. After that one allocation, the library never touches the allocator again until `jd_deinit` — `jd_user_dict_build` included, which sorts and lays out its string pool inside the host's output buffer.
 
 Multi-byte fields in both blobs are written in **target** endianness. Each generator detects a host/target mismatch at build time and byte-swaps the relevant fields (u32 for the trie blob; u32 + u16 for the punc blob), so the runtime can always read through `@ptrCast` in its native byte order — including when cross-compiling from LE to BE (or vice versa).
 

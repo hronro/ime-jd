@@ -8,6 +8,7 @@ test "jd" {
     testing.refAllDecls(@import("./pagination.zig"));
     testing.refAllDecls(@import("./punc.zig"));
     testing.refAllDecls(@import("./query.zig"));
+    testing.refAllDecls(@import("./user_dict.zig"));
     // End-to-end tests against the real embedded blobs (production carve
     // path in jd_init). Needs the trie_blob/punc_blob imports that
     // build.zig adds to the test module.

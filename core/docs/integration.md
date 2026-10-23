@@ -43,7 +43,7 @@ The blob's multi-byte fields are written in the target's endianness — the buil
 
 ## The C API
 
-Rust consumers should not hand-roll these declarations — depend on the shared bindings crate at `bindings/rust` (a Cargo path dependency; used by `cli/` and `windows/`). Swift consumers likewise share the wrapper at `bindings/swift` (compiled directly into the `macos/` and `ios/` targets via their project.yml source paths). JavaScript/TypeScript consumers use the `bindings/javascript` package, which wraps the WebAssembly build — see [WebAssembly](#webassembly).
+Ready-made wrappers for Rust, Swift and JavaScript live under `bindings/`; this guide describes the C ABI they are built on.
 
 From `include/jd.h`:
 
@@ -63,7 +63,7 @@ typedef struct {
 
 typedef struct jd_context jd_context;
 
-jd_context     *jd_init(void);
+jd_context     *jd_init(const void *user_dict, size_t user_dict_len);
 void            jd_deinit(jd_context *ctx);
 
 void            jd_press_key(jd_context *ctx, char key);
@@ -78,11 +78,33 @@ unsigned int    jd_read_range(jd_context *ctx, unsigned int start,
                               unsigned int out_cap);
 
 unsigned int    jd_abi_layout(unsigned int what);
+
+/* User dictionary — see the section below. */
+typedef struct {
+  unsigned int status, line, entries, dropped;
+} jd_user_dict_report;
+
+typedef struct {
+  unsigned long long source_tag;
+  unsigned int entries;
+} jd_user_dict_info;
+
+size_t          jd_user_dict_blob_bound(const char *phrases, size_t phrases_len);
+unsigned int    jd_user_dict_build(const char *phrases, size_t phrases_len,
+                                   unsigned long long source_tag,
+                                   void *blob, size_t blob_cap, size_t *blob_len,
+                                   jd_user_dict_report *report,
+                                   unsigned int *dropped_lines, unsigned int dropped_cap);
+unsigned int    jd_user_dict_check(const void *blob, size_t blob_len,
+                                   jd_user_dict_info *info);
+
+void           *jd_alloc(size_t size);
+void            jd_free(void *ptr, size_t size);
 ```
 
 The header is C89-compatible and includes an `extern "C"` block for C++ consumers.
 
-`jd_context` is opaque — the caller never inspects its layout. Multiple contexts may exist at once; the embedded trie is parsed once on first use and shared read-only across all of them.
+`jd_context` is opaque — the caller never inspects its layout. Multiple contexts may exist at once; the embedded trie is parsed once on first use and shared read-only across all of them. A user dictionary, by contrast, belongs to the context it was passed to — see [User dictionary](#user-dictionary).
 
 No function returns a struct by value, so there is no sret shim on any target.
 
@@ -90,8 +112,8 @@ No function returns a struct by value, so there is no sret shim on any target.
 
 | Function                      | Effect                                                                       |
 |-------------------------------|------------------------------------------------------------------------------|
-| `jd_init()`                   | Allocate a new context. Returns NULL on allocation failure.                  |
-| `jd_deinit(ctx)`              | Tear down this context. Other contexts and the shared tables are unaffected. |
+| `jd_init(blob, len)`          | Allocate a new context, over the built-in dictionary plus the user-dictionary blob (`NULL, 0` for none). Returns NULL on allocation failure or an invalid blob. |
+| `jd_deinit(ctx)`              | Tear down this context. Other contexts, the shared tables and your blob are unaffected. |
 | `jd_press_key(ctx, key)`      | Feed one keystroke. Read the outcome with `jd_state_ptr`.                    |
 | `jd_backspace(ctx)`           | Undo the most recent letter keypress; re-derive the candidates. Never commits. |
 | `jd_reset(ctx)`               | Drop the in-flight composition *and* any recorded commit.                    |
@@ -100,6 +122,10 @@ No function returns a struct by value, so there is no sret shim on any target.
 | `jd_read_range(...)`          | Copy a window of candidates into caller memory. Pure — see below.            |
 | `jd_scratch_ptr(ctx)`         | A context-owned buffer usable as `jd_read_range`'s `out`.                    |
 | `jd_abi_layout(what)`         | Struct sizes and limits, for checking hand-written declarations.             |
+| `jd_user_dict_blob_bound(...)`| How big a buffer `jd_user_dict_build` needs for this text.                   |
+| `jd_user_dict_build(...)`     | Compile `value<TAB>keys` text into a blob, in your buffer, stamped with your source tag. Reports the bad line on failure, the dropped lines on success. |
+| `jd_user_dict_check(blob, len, info)` | Validate a cached blob the way `jd_init` would; say why it fails, or hand back its source tag and phrase count. |
+| `jd_alloc(size)` / `jd_free(ptr, size)` | Memory from the library's allocator, for hosts that have none of their own. |
 
 ### Candidates are addressed by flat index
 
@@ -169,26 +195,26 @@ The third row happens when the user types a key that isn't a child of the curren
 
 ### Pointer lifetimes
 
-There is nothing to manage.
+The engine never invalidates anything it hands out.
 
-- **`query_option.value`** and the **commit segments** always point into the embedded dictionary blob — read-only data that lives for the whole process. They are valid forever.
+- **`query_option.value`** and the **commit segments** point into a dictionary blob: the embedded one — read-only data that lives for the whole process — or the user-dictionary blob you passed to `jd_init`, which is your memory (see [Lifetime](#lifetime) below). They stay valid across every later engine call; the only lifetime in play is the one you give your own blob.
 - **`query_option.hint`** is inline bytes, owned by whatever owns the struct.
 - **`jd_state_ptr`** returns an address that is valid for the context's whole lifetime. Read it once after `jd_init` and keep it. Its *contents* are replaced by the next `jd_press_key` / `jd_backspace` / `jd_reset` / `jd_set_anchor` on that context, but nothing reachable through it dangles.
 
-So a candidate list can be retained indefinitely, sent to another thread, or held across any number of later engine calls, with no copying. The bindings take advantage of this: `bindings/rust` hands out `&'static str`, and the Swift binding materializes a `String` only when something asks to render one.
+So a candidate list can be retained indefinitely, sent to another thread, or held across any number of later engine calls, with no copying.
 
 The one buffer you must not alias is `jd_scratch_ptr` — it's a convenience for hosts that can't hand the library memory of their own, and each `jd_read_range` into it overwrites the previous window. Pass your own buffer if you want to accumulate.
 
 ### Lifecycle contract
 
 ```
-ctx = jd_init()  ──►  (jd_press_key | jd_backspace | jd_reset |
-                       jd_set_anchor | jd_read_range)*  ──►  jd_deinit(ctx)
+ctx = jd_init(blob, len)  ──►  (jd_press_key | jd_backspace | jd_reset |
+                                jd_set_anchor | jd_read_range)*  ──►  jd_deinit(ctx)
 ```
 
-Each `jd_init` call returns an independent context owned by the caller. Contexts share the embedded trie (parsed lazily on the first call from any thread, then immutable for the rest of the process), but their query state is fully separate.
+Each `jd_init` call returns an independent context owned by the caller. Contexts share the embedded trie (parsed lazily on the first call from any thread, then immutable for the rest of the process), but their query state is fully separate, and each reads the user-dictionary blob it was created with, if any.
 
-`jd_init` performs exactly one heap allocation (sized from caps embedded in the trie blob — the worst-case BFS frontier and path buffer) and `jd_deinit` performs exactly one matching free; nothing in between calls the allocator. Per-context resident memory for the bundled dictionary is around 235 KB.
+`jd_init` performs exactly one heap allocation (sized from caps embedded in the trie blob — the worst-case BFS frontier and path buffer; a user dictionary adds nothing to it) and `jd_deinit` performs exactly one matching free; nothing in between calls the allocator. Per-context resident memory is set by the largest single-key subtree of the bundled dictionary, not by its total size; for the bundled tables it is around 200 KB to 300 KB.
 
 ### Thread-safety
 
@@ -197,21 +223,87 @@ Each `jd_init` call returns an independent context owned by the caller. Contexts
 | Different contexts called from different threads           | Yes — tables are read-only after init. |
 | A single context called from multiple threads concurrently | No — wrap calls in an external lock. |
 | Multiple threads racing the very first `jd_init`           | Yes — the one-time init is atomic.   |
-| Retaining candidates and reading them from another thread  | Yes — they point at immortal data.   |
+| Retaining candidates and reading them from another thread  | Yes — they point at read-only data that outlives the context (the embedded blob, or your own). |
+| Several contexts reading one user-dictionary blob          | Yes — the engine only ever reads it. |
 
 The library uses `std.heap.smp_allocator` internally (thread-safe, pure Zig, no libc dependency) — except on WebAssembly, which uses `std.heap.wasm_allocator` (see [WebAssembly](#webassembly)).
 
 ### Checking your declarations
 
-`jd.h` is hand-written, and some bindings (notably `bindings/rust`) declare the structs a second time. A silent drift between those declarations and the compiled library would corrupt memory, so the library reports its own layout:
+`jd.h` is hand-written, and a binding may declare the structs a second time. A silent drift between those declarations and the compiled library would corrupt memory, so the library reports its own layout:
 
 ```c
-assert(jd_abi_layout(JD_ABI_SIZEOF_STATE)  == sizeof(jd_state));
-assert(jd_abi_layout(JD_ABI_SIZEOF_OPTION) == sizeof(query_option));
-assert(jd_abi_layout(JD_ABI_HINT_CAP)      == JD_HINT_CAP);
+assert(jd_abi_layout(JD_ABI_SIZEOF_STATE)            == sizeof(jd_state));
+assert(jd_abi_layout(JD_ABI_SIZEOF_OPTION)           == sizeof(query_option));
+assert(jd_abi_layout(JD_ABI_HINT_CAP)                == JD_HINT_CAP);
+assert(jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_REPORT) == sizeof(jd_user_dict_report));
+assert(jd_abi_layout(JD_ABI_USER_DICT_MAX_ENTRIES)   == JD_USER_DICT_MAX_ENTRIES);
+assert(jd_abi_layout(JD_ABI_USER_DICT_VALUE_MAX)     == JD_USER_DICT_VALUE_MAX);
+assert(jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_INFO)   == sizeof(jd_user_dict_info));
 ```
 
-Every binding in this repo runs these once at init. Unknown queries return 0.
+Run them once at init. Unknown queries return 0.
+
+## User dictionary
+
+The built-in dictionary is fixed at build time. A **user dictionary** is the host's: phrases of the user's own, compiled once into a *blob* and handed to `jd_init`, which merges them into every candidate list. The engine never parses text on a hot path, never copies the blob, and never allocates for it.
+
+### Building a blob
+
+Input is `value<TAB>keys` text — the format of `core/tables/*.txt`, so an existing table file is a valid user dictionary. `#` starts a comment line, blank lines are ignored, spaces around either field are trimmed, CRLF is fine. Keys are one to six characters from `a`-`z` and `;`; values are one to `JD_USER_DICT_VALUE_MAX` (255) bytes of UTF-8 without control characters; at most `JD_USER_DICT_MAX_ENTRIES` (10 000) phrases. How the phrases are *stored* is the host's business — a text file the user edits, a table behind a GUI, a preferences store; the text is only the interchange format for this one call.
+
+```c
+size_t cap = jd_user_dict_blob_bound(text, text_len);
+void *buf = aligned_alloc(4, cap);              /* 4-byte aligned, at least the bound */
+unsigned int dropped[LINES];                    /* one slot per input line */
+size_t blob_len;
+jd_user_dict_report report;
+if (jd_user_dict_build(text, text_len, source_tag, buf, cap, &blob_len, &report,
+                       dropped, LINES) != JD_USER_DICT_OK) {
+  /* report.status says what (JD_USER_DICT_*), report.line where (1-based) */
+}
+/* buf[0..blob_len) is the dictionary: cache exactly those bytes. */
+```
+
+`report.entries` is how many phrases went in; `report.dropped` how many were exact duplicates — of an earlier line with the same keys and value, or of a built-in word on the same code — and were left out so nothing is listed twice. Their 1-based line numbers land in `dropped`, ascending, as many as fit; with one slot per input line you get all of them, which is what a phrase manager wants in order to flag the rows that will not show up. The build is linear with a sort and happens entirely inside your buffer.
+
+`source_tag` is 64 bits of yours, stored in the blob and never interpreted: whatever identifies the phrases this blob was built from — a file's modification time, a hash of the text, a database revision. `jd_user_dict_check` hands it back, so deciding whether a cached blob is current needs no record beside the blob itself.
+
+### Caching and loading
+
+Store the bytes wherever the platform likes and on each launch hand them straight to `jd_init`:
+
+```c
+jd_user_dict_info info;
+if (jd_user_dict_check(blob, blob_len, &info) == JD_USER_DICT_OK
+    && info.source_tag == current_tag) {
+  ctx = jd_init(blob, blob_len);                /* NULL only on allocation failure */
+} else {
+  /* STALE (another libjd), CORRUPT, or the phrases changed: rebuild from the
+     phrases, cache the new blob, then jd_init with it. */
+}
+/* jd_init(NULL, 0): no user dictionary. */
+```
+
+`jd_init` validates the blob in one linear pass — every offset, the sort order, the key alphabet, UTF-8, and a fingerprint of the built-in dictionary it was deduplicated against — so a truncated cache or a blob from an older release is refused rather than trusted (it returns NULL; `jd_user_dict_check` says why). The phrases are the host's and a rebuild is cheap, so `STALE` and `CORRUPT` both just mean "build it again"; the distinction is for your logs. After a library update every cached blob is stale once.
+
+**Performance tip: memory-map the cache file.** A file mapping satisfies every rule below by construction — it is page-aligned, sits at a fixed address, and is read without copying — and its pages are shared with every other process that maps the same file, which matters where each host process loads the dictionary separately. Map it read-only, check it, and keep the mapping for as long as the context lives. Map the text file too when rebuilding: `jd_user_dict_build` only reads it. Load and build then cost exactly what the table above measures and nothing more.
+
+### Lifetime
+
+The blob is your memory and the engine reads it in place:
+
+- It must be **4-byte aligned**, and it must **not move or be freed** until `jd_deinit` of every context created with it. Memory a garbage collector may relocate (a Java heap array) or a pointer that is only valid inside a closure (Swift `Data.withUnsafeBytes`) does not qualify; a memory map of the cached file, a direct `ByteBuffer`, an aligned allocation you copied into, or a `jd_alloc` block does.
+- Candidate `value`s and commit segments for user phrases point into it, so keep it alive for as long as you keep any of those — or copy them.
+- A context's dictionary is fixed for its lifetime. To switch: build the new blob, create a new context with it, release the old context (after committing or cancelling any composition in flight), then free the old blob. A host with several contexts swaps each and frees the old blob once the last old context is gone.
+- "Use my phrases" is a per-launch switch: `jd_init(blob, len)` versus `jd_init(NULL, 0)`. The engine has no notion of a saved-but-disabled dictionary.
+
+### What the engine does with it
+
+- A user phrase sits in the same flat candidate list as built-in words, in the same order — shorter completions first, ties by key order — with hints like any other candidate. On an exact tie, a user phrase on a built-in code, the **user phrase comes first**, so it is what space commits: adding a phrase on a code is how a user overrides that code's default.
+- A code only the user dictionary knows composes exactly like a built-in one, including the auto-commit when it is the sole completion, the `;` second-candidate rule, backspace, and the commit-and-jump when it starts a new composition.
+- A user phrase on a code that used to be unique therefore turns that code's auto-commit into a two-candidate window — that is what sharing a code means. A GUI can warn before saving: press the code on a scratch context and read the candidates whose hint is empty.
+- Per keystroke a user dictionary costs a handful of binary searches, whatever its size, and the per-context allocation is unchanged.
 
 ## WebAssembly
 
@@ -221,8 +313,7 @@ Two details matter for a JS host:
 
 - **State lives at a fixed address.** `jd_state_ptr(ctx)` is constant for the context's lifetime, so read it once and then read the fields straight out of `memory` after each call. On wasm32 `jd_state` is 20 bytes: two 4-byte pointers, one byte, three bytes of padding, then two u32s. `query_option` is 12 bytes: a 4-byte pointer then the 8-byte inline hint. Verify both with `jd_abi_layout` rather than trusting the arithmetic.
 - **A JS host cannot allocate inside linear memory**, so it has no buffer to give `jd_read_range`. Use `jd_scratch_ptr(ctx)` as the `out` argument and decode larger windows in chunks; `jd_abi_layout(JD_ABI_SCRATCH_OPTIONS)` reports its capacity.
-
-You rarely want to do that by hand. The **`bindings/javascript`** package wraps all of it behind an ergonomic JavaScript API (`JdModule` / `Engine`, with TypeScript types). Point it at the `jd.wasm` from `zig build` or the `libjd-<ver>-wasm.wasm.tar.xz` release asset.
+- **A user dictionary needs host buffers inside linear memory**, for the text handed to `jd_user_dict_build`, for the blob it writes, and for the blob handed to `jd_init`. Get them from `jd_alloc` / `jd_free`, which wrap the module's own allocator; a separate `WebAssembly.Memory` would be invisible to the module, and carving a region out of its memory by hand would collide with its heap. Copy the blob out of linear memory to cache it, copy a cached blob back into a `jd_alloc` block before `jd_init`, and keep that block alive until `jd_deinit`. Calling `jd_init` with no arguments passes zeros, which means no user dictionary.
 
 ## Key routing for IMEs
 
