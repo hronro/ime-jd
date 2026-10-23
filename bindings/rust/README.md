@@ -64,6 +64,50 @@ fn main() {
 
 Committing a candidate the user clicked needs no engine call at all — `c.value()` is `&'static str`, so insert it and then `ctx.reset()`.
 
+### User dictionary
+
+Phrases of the user's own are compiled into a `UserDict` once and merged into every candidate list, user phrases first on a code they share with a built-in word:
+
+```rust
+use jd::{JdContext, UserDict};
+
+// `value<TAB>keys` lines, the format of core/tables/*.txt. Build once, with a
+// tag of your choosing that identifies this version of the phrases …
+let (dict, report) = UserDict::build("键道输入法\tjdefi\n", phrases_mtime)?;
+eprintln!("{} phrases, {} duplicates dropped", report.entries, report.dropped);
+for line in &report.dropped_lines {
+    eprintln!("line {line} was dropped"); // flag it in a GUI, say
+}
+std::fs::write(cache_path, dict.as_bytes())?; // … cache the blob …
+
+// … and on later launches wrap the cached bytes instead of re-parsing text.
+let dict = match UserDict::from_blob(&std::fs::read(cache_path)?) {
+    Ok(dict) if dict.source_tag() == phrases_mtime => dict,
+    _ => rebuild_from_phrases()?, // phrases changed, Stale after a library update, or Corrupt
+};
+
+// The engine reads the blob in place for the context's lifetime and
+// candidates keep pointing into it, so the context takes `&'static UserDict`.
+let mut ctx = JdContext::with_user_dict(dict.leak())?;
+```
+
+**Performance tip: memory-map the cache.** A file mapping is page-aligned, sits at a fixed address, costs no copy, and its pages are shared with every other process that maps the same file — which is exactly what the engine wants. Peek at the tag first, and only leak the mapping once you know you will use it, so a rebuild can replace the file:
+
+```rust
+let file = std::fs::File::open(cache_path)?;
+let map = unsafe { memmap2::Mmap::map(&file)? }; // the file must not change while mapped
+let dict = match UserDict::check(&map) {
+    Ok(info) if info.source_tag == phrases_mtime => {
+        UserDict::from_static_blob(Box::leak(Box::new(map)))? // no copy; validated
+    }
+    _ => rebuild_from_phrases()?, // the mapping is dropped first
+};
+```
+
+Map the text file too when rebuilding — `build` only reads it, and `std::str::from_utf8(&map)` costs one validation pass and no copy.
+
+To change dictionaries, build the new one and create a new context with it; the old context goes away with the old dictionary.
+
 For an append-only candidate strip, use `extend_candidates` instead of `candidates`:
 
 ```rust
@@ -74,7 +118,8 @@ ctx.extend_candidates(strip.len() as u32, PAGE, &mut strip);
 
 ## Design
 
-- **Nothing is copied defensively, because nothing can dangle.** A candidate's `value` and a commit's segments point into libjd's embedded dictionary blob — read-only data that lives for the whole process — and a candidate's `hint` is inline bytes. That makes `Candidate` `Copy`, `Send`, and its text `&'static str`, so candidate lists can be kept, moved between threads, and rendered lazily with no allocation.
+- **Nothing is copied defensively, because nothing can dangle.** A candidate's `value` and a commit's segments point into a dictionary blob that lives for the rest of the process — libjd's embedded dictionary, or the `&'static UserDict` the context was created with — and a candidate's `hint` is inline bytes. That makes `Candidate` `Copy`, `Send`, and its text `&'static str`, so candidate lists can be kept, moved between threads, and rendered lazily with no allocation.
+- **A user dictionary is built once and cached as bytes.** `UserDict::build` runs the engine's builder (validation, sorting, deduplication against the built-in tables) into aligned storage and reports the dropped lines; `from_blob` copies cached bytes into aligned storage and `from_static_blob` takes process-lifetime memory such as a leaked memory map as is. Both validate exactly as `jd_init` would, reporting `Stale` after a library update so the host rebuilds from its persisted phrases; `check` reads a blob's `source_tag` and phrase count first so the host can tell whether the phrases changed before committing to it.
 - **Candidates are addressed by flat index.** `read_range` fills your own buffer and `extend_candidates` appends onto a `Vec` — the natural shape for a candidate strip. Reads are pure: they never change what the engine's automatic commits resolve to, so prefetch freely, and call `set_anchor` when the user's view moves.
 - **`&mut self` statically enforces the single-thread contract.** A single `JdContext` must not be called concurrently; distinct contexts are fully independent.
 - **`check_abi` runs once per process**, comparing this crate's hand-written `#[repr(C)]` declarations against `jd_abi_layout`. A silent drift would corrupt memory.
@@ -86,4 +131,4 @@ ctx.extend_candidates(strip.len() as u32, PAGE, &mut strip);
 cargo test
 ```
 
-The integration tests link the real dictionary and cover the FFI smoke contract, context independence, candidate retention across later engine calls, `Send`-ness, window clipping, and the anchor's independence from reads.
+The integration tests link the real dictionary and cover the FFI smoke contract, context independence, candidate retention across later engine calls, `Send`-ness, window clipping, the anchor's independence from reads, and the user dictionary (merge order, user-only codes, build errors, cached-blob round trips).
