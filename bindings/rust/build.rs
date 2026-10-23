@@ -6,6 +6,7 @@
 //! Two pieces of metadata are published for dependents' build scripts:
 //!   - `DEP_JD_LIBDIR`  — the directory the libraries were found in
 //!   - `DEP_JD_LINKAGE` — "static" or "dynamic"
+//!
 //! The only thing that can't propagate from here is a linker arg on the
 //! final binary, so a dependent that needs an rpath (the CLI's dynamic dev
 //! builds) emits it itself from those two values.

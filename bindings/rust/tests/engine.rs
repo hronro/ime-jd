@@ -3,7 +3,7 @@
 //! layout matches, the trie blob loads, contexts are independent, and reads
 //! never disturb the commit anchor.
 
-use jd::{Candidate, JdContext};
+use jd::{Candidate, JdContext, UserDict, UserDictStatus};
 
 #[test]
 fn loads_blob_and_returns_candidates() {
@@ -190,7 +190,10 @@ fn hints_are_inline_and_bounded() {
     for c in &window {
         if let Some(hint) = c.hint() {
             assert!(!hint.is_empty());
-            assert!(hint.len() < jd::HINT_CAP, "hint {hint:?} overflows the inline array");
+            assert!(
+                hint.len() < jd::HINT_CAP,
+                "hint {hint:?} overflows the inline array"
+            );
         }
     }
     // The first candidate of a fully-typed code needs no further keys.
@@ -206,7 +209,9 @@ fn candidates_are_send() {
     let expected: Vec<String> = held.iter().map(|c| c.value().to_owned()).collect();
 
     let joined = std::thread::spawn(move || {
-        held.iter().map(|c| c.value().to_owned()).collect::<Vec<_>>()
+        held.iter()
+            .map(|c| c.value().to_owned())
+            .collect::<Vec<_>>()
     })
     .join()
     .unwrap();
@@ -220,4 +225,181 @@ fn backspace_after_press_does_not_crash() {
     ctx.press_key(b'a');
     ctx.backspace();
     assert!(ctx.commit().is_none());
+}
+
+// ---- user dictionary --------------------------------------------------------
+
+fn phrase_dict(text: &str) -> (&'static UserDict, jd::UserDictReport) {
+    let (dict, report) = UserDict::build(text, 0).expect("build user dict");
+    (dict.leak(), report)
+}
+
+#[test]
+fn user_phrases_lead_the_built_in_candidates_on_a_shared_code() {
+    // 'b' → 不 in the built-in tables; the user adds a word on the same code
+    // and repeats a built-in one, which is dropped.
+    let (dict, report) = phrase_dict("测试词\tb\n不\tb\n");
+    assert_eq!(report.entries, 1);
+    assert_eq!(report.dropped, 1);
+    assert_eq!(report.dropped_lines, vec![2]);
+    assert_eq!(dict.entries(), 1);
+
+    let mut ctx = JdContext::with_user_dict(dict).expect("jd_init failed");
+    ctx.press_key(b'b');
+    let window = ctx.candidates(0, 2);
+    assert_eq!(window[0].value(), "测试词");
+    assert_eq!(window[1].value(), "不");
+
+    // The user word is what space commits, and the pointer it hands back
+    // stays valid across later calls (the dictionary is 'static).
+    ctx.press_key(b' ');
+    let commit = ctx.commit().unwrap();
+    ctx.press_key(b'z');
+    ctx.reset();
+    assert_eq!(commit.to_string(), "测试词");
+
+    // A plain context is unaffected.
+    let mut plain = JdContext::new().expect("jd_init failed");
+    plain.press_key(b'b');
+    assert_eq!(plain.candidates(0, 1)[0].value(), "不");
+}
+
+#[test]
+fn a_user_only_code_composes_with_hints_and_auto_commits() {
+    let (dict, _) = phrase_dict("键道\tzzzzzz\n键道输入法\tzzzzza\n");
+    let mut ctx = JdContext::with_user_dict(dict).expect("jd_init failed");
+
+    for byte in *b"zzzzz" {
+        ctx.press_key(byte);
+    }
+    assert!(ctx.commit().is_none());
+    let window = ctx.candidates(0, 4);
+    assert_eq!(window.len(), 2);
+    assert_eq!(
+        (window[0].value(), window[0].hint()),
+        ("键道输入法", Some("a"))
+    );
+    assert_eq!((window[1].value(), window[1].hint()), ("键道", Some("z")));
+
+    ctx.press_key(b'z');
+    assert_eq!(ctx.commit().unwrap().to_string(), "键道");
+    assert_eq!(ctx.state().options_count, 0);
+}
+
+#[test]
+fn build_errors_name_the_line() {
+    let err = UserDict::build("好\thz\nno tab\n", 0).unwrap_err();
+    assert_eq!(err.status, UserDictStatus::MalformedLine);
+    assert_eq!(err.line, 2);
+    assert_eq!(err.to_string(), "line 2: expected `value<TAB>keys`");
+
+    let err = UserDict::build("好\tHZ\n", 0).unwrap_err();
+    assert_eq!(err.status, UserDictStatus::BadKeys);
+    assert_eq!(err.line, 1);
+
+    let err = UserDict::build("\thz\n", 0).unwrap_err();
+    assert_eq!(err.status, UserDictStatus::BadValue);
+}
+
+#[test]
+fn dropped_lines_are_listed_in_order() {
+    // Lines 1 and 5 repeat built-in words; line 4 repeats line 3 exactly.
+    let (_, report) = UserDict::build(
+        "不\tb\n# comment\n测试词\tb\n测试词\tb\n好\thz\n键道\tzzzzzz\n",
+        0,
+    )
+    .expect("build");
+    assert_eq!(report.entries, 2);
+    assert_eq!(report.dropped, 3);
+    assert_eq!(report.dropped_lines, vec![1, 4, 5]);
+}
+
+#[test]
+fn cached_blobs_round_trip_and_corruption_is_caught() {
+    // "zzzzzz" is free in the built-in tables, so the phrase is kept.
+    let tag = 0x0123_4567_89ab_cdef_u64;
+    let (dict, report) = UserDict::build("# comment\n键道\tzzzzzz\n", tag).expect("build");
+    assert_eq!(report.entries, 1);
+    assert_eq!(dict.entries(), 1);
+    assert_eq!(dict.source_tag(), tag);
+    let bytes = dict.as_bytes().to_vec();
+    assert!(!bytes.is_empty());
+
+    // The tag and the count survive the trip through the cache.
+    let again = UserDict::from_blob(&bytes).expect("from_blob");
+    assert_eq!(again.as_bytes(), &bytes[..]);
+    assert_eq!(again.source_tag(), tag);
+    assert_eq!(again.entries(), 1);
+
+    // The ABI copies into aligned storage, so an unaligned source is fine.
+    let mut shifted = vec![0u8];
+    shifted.extend_from_slice(&bytes);
+    assert!(UserDict::from_blob(&shifted[1..]).is_ok());
+
+    let err = UserDict::from_blob(&bytes[..bytes.len() - 1]).unwrap_err();
+    assert_eq!(err.status, UserDictStatus::Corrupt);
+    assert!(!err.status.is_line_error());
+
+    // The built-in dictionary fingerprint lives in the header.
+    let mut stale = bytes.clone();
+    stale[12] ^= 0xFF;
+    let err = UserDict::from_blob(&stale).unwrap_err();
+    assert_eq!(err.status, UserDictStatus::Stale);
+
+    assert_eq!(
+        UserDict::from_blob(b"").unwrap_err().status,
+        UserDictStatus::Corrupt
+    );
+}
+
+#[test]
+fn an_empty_dictionary_is_valid_and_inert() {
+    let (dict, report) = phrase_dict("");
+    assert_eq!(report.entries, 0);
+    let mut ctx = JdContext::with_user_dict(dict).expect("jd_init failed");
+    let mut plain = JdContext::new().expect("jd_init failed");
+    ctx.press_key(b'a');
+    plain.press_key(b'a');
+    assert_eq!(ctx.state(), plain.state());
+    assert_eq!(ctx.candidates(0, 9), plain.candidates(0, 9));
+}
+
+#[test]
+fn a_static_blob_is_used_in_place_and_check_peeks_without_taking_over() {
+    let tag = 0xfeed_u64;
+    let (dict, _) = UserDict::build("键道\tzzzzzz\n", tag).expect("build");
+    let cached = dict.as_bytes().to_vec();
+
+    // Peek: the tag and count come back from any slice, aligned or not.
+    let info = UserDict::check(&cached).expect("check");
+    assert_eq!((info.source_tag, info.entries), (tag, 1));
+    let mut shifted = vec![0u8];
+    shifted.extend_from_slice(&cached);
+    assert_eq!(
+        UserDict::check(&shifted[1..]).expect("check unaligned"),
+        info
+    );
+
+    // Host-owned, aligned, process-lifetime memory — what a leaked memory
+    // map of the cache file is — is handed to the engine without a copy.
+    let storage: &'static mut [u32] =
+        Box::leak(vec![0u32; cached.len().div_ceil(4)].into_boxed_slice());
+    let bytes: &'static mut [u8] =
+        unsafe { std::slice::from_raw_parts_mut(storage.as_mut_ptr().cast::<u8>(), cached.len()) };
+    bytes.copy_from_slice(&cached);
+    let bytes: &'static [u8] = bytes;
+    let dict = UserDict::from_static_blob(bytes).expect("from_static_blob");
+    assert_eq!(dict.as_bytes().as_ptr(), bytes.as_ptr(), "no copy");
+    assert_eq!(dict.source_tag(), tag);
+
+    let mut ctx = JdContext::with_user_dict(dict.leak()).expect("jd_init failed");
+    for byte in *b"zzzzzz" {
+        ctx.press_key(byte);
+    }
+    assert_eq!(ctx.commit().unwrap().to_string(), "键道");
+
+    // A misaligned static slice is refused rather than read in place.
+    let leaked: &'static [u8] = Box::leak(shifted.into_boxed_slice());
+    let err = UserDict::from_static_blob(&leaked[1..]).unwrap_err();
+    assert_eq!(err.status, UserDictStatus::Misaligned);
 }
