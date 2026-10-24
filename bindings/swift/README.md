@@ -56,10 +56,28 @@ print(typed)                              // 南柯梦
 
 Committing a candidate the user tapped needs no engine call — insert `c.value` and then `engine.reset()`. For an append-only candidate strip, keep your own array and read `[loaded, loaded + window)` as it scrolls; `ios/Keyboard/Engine/InputSession.swift` does exactly this.
 
+### User dictionary
+
+The user's own phrases are compiled once into a blob the engine reads in place, and merged into every candidate list — same ordering as the built-in words, with a user phrase first on a code it shares with one. The text is the source of truth; a rebuild is a couple of milliseconds for thousands of phrases.
+
+```swift
+let text = "键道\tzzzzzz\n不\tb\n"            // value<TAB>keys, the table files' format
+let (dict, report) = try UserDict.build(text, sourceTag: contentHash)
+print(report.entries, report.dropped, report.shared, report.invalid) // 1 1 1 0
+for note in report.notes {                                  // line 1: 键道 is alone on zzzzzz — no note
+    print(note.line, note.flags, note.other, note.builtIn, note.peers)
+}                                                           // 2 [.repeatsBuiltIn] 0 N 0 — 不/b repeats a built-in word
+
+let engine = Engine(userDict: dict)         // nil (the default) = built-in dictionary alone
+```
+
+A line that does not parse never fails the build: the engine skips it, counts it in `invalid`, and notes it. A `UserDictError` is for the call as a whole — too many phrases (`line` names the first one past the cap, `status.isLineError`) or too much text. The report's `notes` are the engine's own: one per line it skipped (`malformed` / `badKeys` / `badValue`), one per line it dropped (`repeatsLine` / `repeatsBuiltIn`, with the line repeated in `other`) and one per kept phrase whose code is already taken (`codeInBuiltIn` / `codeInLine`, with the counts in `builtIn` and `peers`) — the phrase works, listed first, but the code is shared (重码). A context's dictionary is fixed for its lifetime: to adopt an edited dictionary, create a new `Engine` and drop the candidates read from the old one first. `dict.blob` / `UserDict(blob:)` / `UserDict.check` round-trip the bytes for a frontend that caches them; a blob from another build of libjd comes back as `.stale`, which just means "rebuild".
+
 ## Contents
 
-- **`Engine.swift`** — RAII wrapper around `jd_context` (`deinit` calls `jd_deinit`). Mutating calls return an `EngineState`; candidates come from `readRange(from:count:)`, which fills a Swift array directly. It also verifies `jd.h`'s struct layout against the compiled library once per process.
-- **`Candidate.swift`** — `Candidate` and `EngineState`. A `Candidate` wraps the C `query_option` and materializes its `String`s **on access**: values point into libjd's embedded blob and hints are inline bytes, so nothing has to be copied and a long candidate strip pays no String cost for rows nobody scrolls to.
+- **`Engine.swift`** — RAII wrapper around `jd_context` (`deinit` calls `jd_deinit`), created over the built-in dictionary alone or with a `UserDict`. Mutating calls return an `EngineState`; candidates come from `readRange(from:count:)`, which fills a Swift array directly. It also verifies `jd.h`'s struct layout and limits against the compiled library once per process.
+- **`Candidate.swift`** — `Candidate` and `EngineState`. A `Candidate` wraps the C `query_option` and materializes its `String`s **on access**: values point into a dictionary blob (libjd's embedded one, or the user dictionary the engine retains) and hints are inline bytes, so nothing has to be copied and a long candidate strip pays no String cost for rows nobody scrolls to. The one lifetime rule is documented there: a candidate read from an engine with a user dictionary must not outlive that engine.
+- **`UserDict.swift`** — the runtime user dictionary: `UserDict.build` compiles `value<TAB>keys` text into the blob and returns the engine's notes (skipped lines, dropped duplicates, shared codes), `Engine(userDict:)` reads it in place, and `blob` / `init(blob:)` / `check` wrap cached bytes. The `UserDict` owns its aligned storage; the `Engine` retains it.
 - **`KeyAction.swift`** — the semantic key-action enum shared by each frontend's key gate / dispatch layer.
 
 Candidates are addressed by flat index — there is no page concept in the engine. `readRange` is a pure read that never moves what the engine's automatic commits resolve to; call `setAnchor` when the user's view moves.
@@ -72,4 +90,4 @@ The platform-specific parts deliberately live elsewhere: macOS's `KeyGate` / `Co
 
 ## Tests
 
-Engine-semantics tests live in each frontend's test target: `macos/JdIMETests/EngineSmokeTests.swift` and `ios/KeyboardTests/InputSessionTests.swift` — both drive the real engine through the shared wrapper in this directory.
+Engine-semantics tests live in each frontend's test target: `macos/JdIMETests/EngineSmokeTests.swift` and `ios/KeyboardTests/InputSessionTests.swift` — both drive the real engine through the shared wrapper in this directory. `macos/JdIMETests/UserDictTests.swift` covers `UserDict` (mirroring `bindings/rust/tests/engine.rs`).

@@ -1,12 +1,23 @@
 // Value types over libjd's C ABI. Shared source, compiled into both the macOS
 // and iOS frontends — see bindings/swift/README.md.
 //
-// Nothing here copies defensively, because the ABI has no borrowed data:
-// a candidate's `value` and a commit's segments point into libjd's embedded
-// dictionary blob (read-only, alive for the whole process), and a candidate's
-// `hint` is inline bytes. A `Candidate` is therefore free to keep, and its
-// `String`s are built only when something actually asks for them — so a long
-// candidate strip costs no String work for the rows nobody scrolls to.
+// Nothing here copies defensively, because the engine never invalidates what
+// it hands out: a candidate's `value` and a commit's segments point into a
+// dictionary blob — libjd's embedded one (read-only, alive for the whole
+// process) or the user dictionary the engine was created with, which the
+// `Engine` retains for its lifetime — and a candidate's `hint` is inline
+// bytes. A `Candidate` is therefore free to keep across any number of later
+// engine calls, and its `String`s are built only when something actually asks
+// for them — so a long candidate strip costs no String work for the rows
+// nobody scrolls to.
+//
+// The one rule, and only for engines created with a user dictionary: a
+// `Candidate` must not outlive the `Engine` that read it. Replacing an engine
+// (how a frontend adopts an edited user dictionary) can free the old blob, so
+// a frontend drops its candidate lists before it drops the engine. A
+// `Candidate` deliberately does not retain the dictionary itself — that would
+// cost a retain per candidate on every keystroke to guard against an event as
+// rare as a dictionary edit.
 
 import Foundation
 import Libjd
@@ -38,8 +49,12 @@ struct Candidate: Equatable {
     }
 
     static func == (lhs: Candidate, rhs: Candidate) -> Bool {
-        // Values are interned in the blob, so identical candidates share a
-        // pointer — no string comparison needed.
+        // Values are interned in their blob, so identical candidates share a
+        // pointer — no string comparison needed. A user phrase and a built-in
+        // word with the same text live in different blobs, but they can only
+        // meet in one candidate list under different codes, where the hints
+        // differ: the builder drops a user phrase that repeats a built-in
+        // word on its own code.
         lhs.raw.value == rhs.raw.value && lhs.hint == rhs.hint
     }
 }

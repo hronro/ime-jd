@@ -9,10 +9,28 @@ final class Engine {
     private let ctx: OpaquePointer
     /// `jd_state_ptr` is fixed for the context's lifetime, so it's read once.
     private let statePtr: UnsafePointer<jd_state>
+    /// The user dictionary this context reads in place, if any. Retained for
+    /// the context's whole lifetime: the engine never copies the blob, and
+    /// every candidate `value` read from a user phrase points into it.
+    let userDict: UserDict?
 
-    init() {
+    /// `userDict` is merged into every candidate list — same ordering as the
+    /// built-in words, a user phrase first on a code it shares with one — or
+    /// nil for the built-in dictionary alone. A context's dictionary is fixed
+    /// for its lifetime; to switch, create a new `Engine` (and drop the
+    /// candidates read from the old one first — see `Candidate`).
+    init(userDict: UserDict? = nil) {
         Engine.checkABI()
-        guard let raw = jd_init() else {
+        self.userDict = userDict
+        let raw: OpaquePointer?
+        if let dict = userDict {
+            raw = jd_init(dict.bytes.baseAddress, dict.bytes.count)
+        } else {
+            raw = jd_init(nil, 0)
+        }
+        // A UserDict is validated when it is created, so NULL here is an
+        // allocation failure, not a rejected blob.
+        guard let raw else {
             fatalError("jd_init failed (allocation failure)")
         }
         guard let sp = jd_state_ptr(raw) else {
@@ -87,7 +105,8 @@ final class Engine {
     ///
     /// Compared against `stride`, not `size`: Swift's `size` excludes tail
     /// padding, while the library reports C's `sizeof`, which includes it.
-    /// `jd_state` has 4 such bytes on a 64-bit target (28 used, 32 total).
+    /// `jd_state` has 4 such bytes on a 64-bit target (28 used, 32 total), and
+    /// `jd_user_dict_info` has 4 (12 used, 16 total).
     private static let abiChecked: Void = {
         precondition(
             Int(jd_abi_layout(UInt32(JD_ABI_SIZEOF_STATE))) == MemoryLayout<jd_state>.stride,
@@ -101,9 +120,31 @@ final class Engine {
             Int(jd_abi_layout(UInt32(JD_ABI_HINT_CAP))) == Int(JD_HINT_CAP),
             "libjd hint capacity mismatch — core/include/jd.h is out of sync with the library"
         )
+        precondition(
+            Int(jd_abi_layout(UInt32(JD_ABI_SIZEOF_USER_DICT_REPORT))) == MemoryLayout<jd_user_dict_report>.stride,
+            "libjd jd_user_dict_report layout mismatch — core/include/jd.h is out of sync with the library"
+        )
+        precondition(
+            Int(jd_abi_layout(UInt32(JD_ABI_SIZEOF_USER_DICT_INFO))) == MemoryLayout<jd_user_dict_info>.stride,
+            "libjd jd_user_dict_info layout mismatch — core/include/jd.h is out of sync with the library"
+        )
+        precondition(
+            Int(jd_abi_layout(UInt32(JD_ABI_SIZEOF_USER_DICT_NOTE))) == MemoryLayout<jd_user_dict_note>.stride,
+            "libjd jd_user_dict_note layout mismatch — core/include/jd.h is out of sync with the library"
+        )
+        precondition(
+            Int(jd_abi_layout(UInt32(JD_ABI_USER_DICT_MAX_ENTRIES))) == UserDict.maxEntries,
+            "libjd user dictionary entry cap mismatch — core/include/jd.h is out of sync with the library"
+        )
+        precondition(
+            Int(jd_abi_layout(UInt32(JD_ABI_USER_DICT_VALUE_MAX))) == UserDict.maxValueBytes,
+            "libjd user dictionary value cap mismatch — core/include/jd.h is out of sync with the library"
+        )
     }()
 
-    private static func checkABI() {
+    /// Run the one-time layout check. `UserDict` calls it too, since a
+    /// dictionary can be built before any engine exists.
+    static func checkABI() {
         _ = abiChecked
     }
 }
