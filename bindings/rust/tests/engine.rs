@@ -3,7 +3,7 @@
 //! layout matches, the trie blob loads, contexts are independent, and reads
 //! never disturb the commit anchor.
 
-use jd::{Candidate, JdContext, UserDict, UserDictStatus};
+use jd::{Candidate, JdContext, UserDict, UserDictNote, UserDictStatus};
 
 #[test]
 fn loads_blob_and_returns_candidates() {
@@ -241,7 +241,7 @@ fn user_phrases_lead_the_built_in_candidates_on_a_shared_code() {
     let (dict, report) = phrase_dict("测试词\tb\n不\tb\n");
     assert_eq!(report.entries, 1);
     assert_eq!(report.dropped, 1);
-    assert_eq!(report.dropped_lines, vec![2]);
+    assert_eq!(report.dropped_lines(), vec![2]);
     assert_eq!(dict.entries(), 1);
 
     let mut ctx = JdContext::with_user_dict(dict).expect("jd_init failed");
@@ -287,18 +287,69 @@ fn a_user_only_code_composes_with_hints_and_auto_commits() {
 }
 
 #[test]
-fn build_errors_name_the_line() {
-    let err = UserDict::build("好\thz\nno tab\n", 0).unwrap_err();
-    assert_eq!(err.status, UserDictStatus::MalformedLine);
-    assert_eq!(err.line, 2);
-    assert_eq!(err.to_string(), "line 2: expected `value<TAB>keys`");
+fn bad_lines_are_skipped_and_noted_never_fatal() {
+    // "zzzzzz" and "zzzzza" are free in the built-in tables, so the only
+    // notes are the skipped lines'.
+    let (dict, report) = UserDict::build("键道\tzzzzzz\nno tab\n好\tZZZZZA\n\tzzzzza\n", 0)
+        .expect("a bad line never fails the build");
+    assert_eq!(dict.entries(), 1);
+    assert_eq!(
+        (
+            report.entries,
+            report.dropped,
+            report.shared,
+            report.invalid
+        ),
+        (1, 0, 0, 3)
+    );
+    assert_eq!(report.invalid_lines(), vec![2, 3, 4]);
+    assert!(report.dropped_lines().is_empty());
+    assert_eq!(
+        report
+            .notes
+            .iter()
+            .map(|n| (n.line, n.flags))
+            .collect::<Vec<_>>(),
+        vec![
+            (2, UserDictNote::MALFORMED),
+            (3, UserDictNote::BAD_KEYS),
+            (4, UserDictNote::BAD_VALUE),
+        ]
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .all(|n| n.is_invalid() && !n.is_dropped() && !n.is_shared())
+    );
+    assert_eq!(
+        report.notes[0].to_string(),
+        "line 2: skipped, expected `value<TAB>keys`"
+    );
+    assert_eq!(
+        report.notes[1].to_string(),
+        "line 3: skipped, keys must be 1 to 6 characters from a-z and `;`"
+    );
+    assert_eq!(
+        report.notes[2].to_string(),
+        "line 4: skipped, value must be 1 to 255 bytes of text without control characters"
+    );
 
-    let err = UserDict::build("好\tHZ\n", 0).unwrap_err();
-    assert_eq!(err.status, UserDictStatus::BadKeys);
-    assert_eq!(err.line, 1);
-
-    let err = UserDict::build("\thz\n", 0).unwrap_err();
-    assert_eq!(err.status, UserDictStatus::BadValue);
+    // Only a problem with the call as a whole fails: too many phrases.
+    use std::fmt::Write;
+    let mut text = String::new();
+    for i in 0..=UserDict::MAX_ENTRIES {
+        let code: String = format!("{i:05}")
+            .bytes()
+            .map(|d| (b'a' + (d - b'0')) as char)
+            .collect();
+        writeln!(text, "w{i}\t{code}").unwrap();
+    }
+    let err = UserDict::build(&text, 0).unwrap_err();
+    assert_eq!(err.status, UserDictStatus::TooManyEntries);
+    assert!(err.status.is_line_error());
+    assert_eq!(err.line, UserDict::MAX_ENTRIES + 1);
+    assert_eq!(err.to_string(), "line 10001: more than 10000 phrases");
 }
 
 #[test]
@@ -311,7 +362,69 @@ fn dropped_lines_are_listed_in_order() {
     .expect("build");
     assert_eq!(report.entries, 2);
     assert_eq!(report.dropped, 3);
-    assert_eq!(report.dropped_lines, vec![1, 4, 5]);
+    assert_eq!(report.dropped_lines(), vec![1, 4, 5]);
+}
+
+#[test]
+fn notes_say_what_a_line_repeats_and_which_codes_are_shared() {
+    // 'b' carries built-in words; "zzzzzz" and "zzzzza" are free.
+    let (_, report) = UserDict::build(
+        "测试词\tb\n一\tzzzzzz\n二\tzzzzzz\n键道\tzzzzza\n不\tb\n",
+        0,
+    )
+    .expect("build");
+    assert_eq!((report.entries, report.dropped, report.shared), (4, 1, 3));
+    let words_on_b = report.notes[0].builtin;
+    assert!(words_on_b >= 1);
+    assert_eq!(
+        report.notes,
+        vec![
+            UserDictNote {
+                line: 1,
+                flags: UserDictNote::CODE_IN_BUILTIN,
+                other: 0,
+                builtin: words_on_b,
+                peers: 0,
+            },
+            UserDictNote {
+                line: 2,
+                flags: UserDictNote::CODE_IN_LINE,
+                other: 3,
+                builtin: 0,
+                peers: 1,
+            },
+            UserDictNote {
+                line: 3,
+                flags: UserDictNote::CODE_IN_LINE,
+                other: 2,
+                builtin: 0,
+                peers: 1,
+            },
+            UserDictNote {
+                line: 5,
+                flags: UserDictNote::REPEATS_BUILTIN,
+                other: 0,
+                builtin: words_on_b,
+                peers: 0,
+            },
+        ]
+    );
+    assert_eq!(report.dropped_lines(), vec![5]);
+    assert!(report.notes[0].is_shared() && !report.notes[0].is_dropped());
+    assert!(report.notes[3].is_dropped() && !report.notes[3].is_shared());
+    assert_eq!(
+        report.notes[1].to_string(),
+        "line 2: shares its code with 1 other line (line 3)"
+    );
+    assert_eq!(
+        report.notes[3].to_string(),
+        "line 5: dropped, repeats a built-in word"
+    );
+
+    // Nothing to say about a clean file.
+    let (_, clean) = UserDict::build("键道\tzzzzzz\n", 0).expect("build");
+    assert_eq!(clean.shared, 0);
+    assert!(clean.notes.is_empty());
 }
 
 #[test]

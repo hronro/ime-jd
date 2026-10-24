@@ -74,9 +74,9 @@ use jd::{JdContext, UserDict};
 // `value<TAB>keys` lines, the format of core/tables/*.txt. Build once, with a
 // tag of your choosing that identifies this version of the phrases …
 let (dict, report) = UserDict::build("键道输入法\tjdefi\n", phrases_mtime)?;
-eprintln!("{} phrases, {} duplicates dropped", report.entries, report.dropped);
-for line in &report.dropped_lines {
-    eprintln!("line {line} was dropped"); // flag it in a GUI, say
+eprintln!("{} phrases, {} bad lines skipped, {} duplicates dropped, {} on shared codes", report.entries, report.invalid, report.dropped, report.shared);
+for note in &report.notes {
+    eprintln!("{note}"); // "line 7: dropped, repeats line 3", "line 9: skipped, expected `value<TAB>keys`" — flag the row in a GUI, say
 }
 std::fs::write(cache_path, dict.as_bytes())?; // … cache the blob …
 
@@ -119,7 +119,7 @@ ctx.extend_candidates(strip.len() as u32, PAGE, &mut strip);
 ## Design
 
 - **Nothing is copied defensively, because nothing can dangle.** A candidate's `value` and a commit's segments point into a dictionary blob that lives for the rest of the process — libjd's embedded dictionary, or the `&'static UserDict` the context was created with — and a candidate's `hint` is inline bytes. That makes `Candidate` `Copy`, `Send`, and its text `&'static str`, so candidate lists can be kept, moved between threads, and rendered lazily with no allocation.
-- **A user dictionary is built once and cached as bytes.** `UserDict::build` runs the engine's builder (validation, sorting, deduplication against the built-in tables) into aligned storage and reports the dropped lines; `from_blob` copies cached bytes into aligned storage and `from_static_blob` takes process-lifetime memory such as a leaked memory map as is. Both validate exactly as `jd_init` would, reporting `Stale` after a library update so the host rebuilds from its persisted phrases; `check` reads a blob's `source_tag` and phrase count first so the host can tell whether the phrases changed before committing to it.
+- **A user dictionary is built once and cached as bytes.** `UserDict::build` runs the engine's builder (validation, sorting, deduplication against the built-in tables) into aligned storage and returns the engine's notes — which lines were skipped because they do not parse (one typo never fails the build), which were dropped and what they repeat, and which kept phrases sit on a code a built-in word or another phrase already uses (重码); `from_blob` copies cached bytes into aligned storage and `from_static_blob` takes process-lifetime memory such as a leaked memory map as is. Both validate exactly as `jd_init` would, reporting `Stale` after a library update so the host rebuilds from its persisted phrases; `check` reads a blob's `source_tag` and phrase count first so the host can tell whether the phrases changed before committing to it.
 - **Candidates are addressed by flat index.** `read_range` fills your own buffer and `extend_candidates` appends onto a `Vec` — the natural shape for a candidate strip. Reads are pure: they never change what the engine's automatic commits resolve to, so prefetch freely, and call `set_anchor` when the user's view moves.
 - **`&mut self` statically enforces the single-thread contract.** A single `JdContext` must not be called concurrently; distinct contexts are fully independent.
 - **`check_abi` runs once per process**, comparing this crate's hand-written `#[repr(C)]` declarations against `jd_abi_layout`. A silent drift would corrupt memory.

@@ -184,20 +184,15 @@ impl fmt::Display for InitError {
 impl std::error::Error for InitError {}
 
 /// Why a user dictionary could not be built or accepted. Mirrors the
-/// `JD_USER_DICT_*` codes in `core/include/jd.h`.
+/// `JD_USER_DICT_*` codes in `core/include/jd.h`. These are failures of a
+/// call as a whole; a line that does not parse is not one — the build skips
+/// it and says so in a [`UserDictNote`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserDictStatus {
     /// The output buffer was smaller than the bound (a bug in this crate).
     BufferTooSmall,
     /// More than [`UserDict::MAX_ENTRIES`] phrases.
     TooManyEntries,
-    /// A non-comment line without a TAB.
-    MalformedLine,
-    /// Keys empty, longer than six, or outside `a`-`z` and `;`.
-    BadKeys,
-    /// Value empty, longer than [`UserDict::VALUE_MAX`] bytes, or containing
-    /// control characters.
-    BadValue,
     /// The blob was built by another libjd (format or built-in dictionary
     /// differ): rebuild it from the phrases.
     Stale,
@@ -216,24 +211,19 @@ impl UserDictStatus {
         match code {
             1 => Self::BufferTooSmall,
             2 => Self::TooManyEntries,
-            3 => Self::MalformedLine,
-            4 => Self::BadKeys,
-            5 => Self::BadValue,
-            6 => Self::Stale,
-            7 => Self::Corrupt,
-            8 => Self::Misaligned,
-            9 => Self::TextTooLong,
+            3 => Self::Stale,
+            4 => Self::Corrupt,
+            5 => Self::Misaligned,
+            6 => Self::TextTooLong,
             other => Self::Unknown(other),
         }
     }
 
-    /// Whether the problem is in the input text (and `line` points at it)
-    /// rather than in a cached blob or the call itself.
+    /// Whether `line` points at an input line — the first phrase past the
+    /// cap — rather than the status describing a cached blob or the call
+    /// itself.
     pub fn is_line_error(self) -> bool {
-        matches!(
-            self,
-            Self::TooManyEntries | Self::MalformedLine | Self::BadKeys | Self::BadValue
-        )
+        matches!(self, Self::TooManyEntries)
     }
 }
 
@@ -242,13 +232,6 @@ impl fmt::Display for UserDictStatus {
         match self {
             Self::BufferTooSmall => f.write_str("output buffer too small"),
             Self::TooManyEntries => write!(f, "more than {} phrases", UserDict::MAX_ENTRIES),
-            Self::MalformedLine => f.write_str("expected `value<TAB>keys`"),
-            Self::BadKeys => f.write_str("keys must be 1 to 6 characters from a-z and `;`"),
-            Self::BadValue => write!(
-                f,
-                "value must be 1 to {} bytes of text without control characters",
-                UserDict::VALUE_MAX
-            ),
             Self::Stale => {
                 f.write_str("blob was built against a different dictionary (rebuild it)")
             }
@@ -290,6 +273,113 @@ pub struct UserDictInfo {
     pub entries: u32,
 }
 
+/// One thing [`UserDict::build`] has to say about an input line. Mirrors
+/// `jd_user_dict_note` in `core/include/jd.h`.
+///
+/// A skipped line (it does not parse) carries exactly one of
+/// [`Self::MALFORMED`], [`Self::BAD_KEYS`] and [`Self::BAD_VALUE`], and
+/// nothing else. A dropped line (parsed, but not in the dictionary) carries
+/// [`Self::REPEATS_LINE`] or [`Self::REPEATS_BUILTIN`]. A kept line whose
+/// code is already taken carries [`Self::CODE_IN_BUILTIN`] and/or
+/// [`Self::CODE_IN_LINE`]: the phrase works, listed ahead of the built-in
+/// word, but the code is shared (重码), which is what a user wants to know
+/// before relying on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserDictNote {
+    /// 1-based input line.
+    pub line: u32,
+    /// `MALFORMED` / `BAD_*` / `REPEATS_*` / `CODE_IN_*` bits.
+    pub flags: u32,
+    /// A kept line this one relates to: for a repeat, the line it repeats (0
+    /// for a built-in word); for a shared code, the first kept line on that
+    /// code — and for that first line, the second. 0 otherwise.
+    pub other: u32,
+    /// Built-in words on exactly this code; 0 on a skipped line.
+    pub builtin: u32,
+    /// Other kept lines on exactly this code; 0 on a dropped or skipped line.
+    pub peers: u32,
+}
+
+impl UserDictNote {
+    /// Dropped: same keys and value as the kept line `other`.
+    pub const REPEATS_LINE: u32 = 0x1;
+    /// Dropped: same keys and value as a built-in word.
+    pub const REPEATS_BUILTIN: u32 = 0x2;
+    /// Kept: a built-in word sits on exactly this code (`builtin` says how many).
+    pub const CODE_IN_BUILTIN: u32 = 0x4;
+    /// Kept: kept line `other` sits on this code too (`peers` says how many do).
+    pub const CODE_IN_LINE: u32 = 0x8;
+    /// Skipped: neither blank nor a comment, and no TAB.
+    pub const MALFORMED: u32 = 0x10;
+    /// Skipped: keys empty, longer than six, or outside `a`-`z` and `;`.
+    pub const BAD_KEYS: u32 = 0x20;
+    /// Skipped: value empty, longer than [`UserDict::VALUE_MAX`] bytes, not
+    /// UTF-8, or containing control characters.
+    pub const BAD_VALUE: u32 = 0x40;
+
+    /// Whether the line was skipped because it does not parse.
+    pub fn is_invalid(&self) -> bool {
+        self.flags & (Self::MALFORMED | Self::BAD_KEYS | Self::BAD_VALUE) != 0
+    }
+
+    /// Whether the line parsed but was left out of the dictionary as a
+    /// duplicate.
+    pub fn is_dropped(&self) -> bool {
+        self.flags & (Self::REPEATS_LINE | Self::REPEATS_BUILTIN) != 0
+    }
+
+    /// Whether the line is in the dictionary on a code something else uses.
+    pub fn is_shared(&self) -> bool {
+        self.flags & (Self::CODE_IN_BUILTIN | Self::CODE_IN_LINE) != 0
+    }
+}
+
+impl fmt::Display for UserDictNote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line {}: ", self.line)?;
+        if self.flags & Self::MALFORMED != 0 {
+            return f.write_str("skipped, expected `value<TAB>keys`");
+        }
+        if self.flags & Self::BAD_KEYS != 0 {
+            return f.write_str("skipped, keys must be 1 to 6 characters from a-z and `;`");
+        }
+        if self.flags & Self::BAD_VALUE != 0 {
+            return write!(
+                f,
+                "skipped, value must be 1 to {} bytes of text without control characters",
+                UserDict::VALUE_MAX
+            );
+        }
+        if self.flags & Self::REPEATS_LINE != 0 {
+            return write!(f, "dropped, repeats line {}", self.other);
+        }
+        if self.flags & Self::REPEATS_BUILTIN != 0 {
+            return f.write_str("dropped, repeats a built-in word");
+        }
+        f.write_str("shares its code with")?;
+        if self.flags & Self::CODE_IN_BUILTIN != 0 {
+            write!(f, " {} built-in word{}", self.builtin, plural(self.builtin))?;
+            if self.flags & Self::CODE_IN_LINE != 0 {
+                f.write_str(" and")?;
+            }
+        }
+        if self.flags & Self::CODE_IN_LINE != 0 {
+            write!(
+                f,
+                " {} other line{} (line {})",
+                self.peers,
+                plural(self.peers),
+                self.other
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn plural(n: u32) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
 /// What [`UserDict::build`] did with the input.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UserDictReport {
@@ -298,8 +388,35 @@ pub struct UserDictReport {
     /// Phrases dropped as exact duplicates — of an earlier line with the same
     /// keys and value, or of a built-in word on the same code.
     pub dropped: u32,
+    /// Kept phrases on a shared code: a built-in word, another kept phrase,
+    /// or both already sit on it.
+    pub shared: u32,
+    /// Lines skipped because they do not parse: no TAB, bad keys, or a bad
+    /// value.
+    pub invalid: u32,
+    /// One note per skipped, dropped or shared line — `invalid + dropped +
+    /// shared` of them — ascending by line.
+    pub notes: Vec<UserDictNote>,
+}
+
+impl UserDictReport {
     /// The 1-based input lines of every dropped phrase, ascending.
-    pub dropped_lines: Vec<u32>,
+    pub fn dropped_lines(&self) -> Vec<u32> {
+        self.lines_where(UserDictNote::is_dropped)
+    }
+
+    /// The 1-based input lines of every skipped line, ascending.
+    pub fn invalid_lines(&self) -> Vec<u32> {
+        self.lines_where(UserDictNote::is_invalid)
+    }
+
+    fn lines_where(&self, pick: fn(&UserDictNote) -> bool) -> Vec<u32> {
+        self.notes
+            .iter()
+            .filter(|n| pick(n))
+            .map(|n| n.line)
+            .collect()
+    }
 }
 
 /// A user dictionary: phrases compiled into the blob the engine reads in
@@ -401,8 +518,9 @@ impl UserDict {
     /// spaces around either field are trimmed, CRLF is accepted. Keys are
     /// one to six characters from `a`-`z` and `;`; values are UTF-8 without
     /// control characters. Exact duplicates, of an earlier line or of a
-    /// built-in word on the same code, are dropped, counted, and listed by
-    /// line in the report.
+    /// built-in word on the same code, are dropped and counted; the report's
+    /// notes say which lines, and which kept phrases sit on a code that a
+    /// built-in word or another phrase already uses.
     ///
     /// `source_tag` is stored in the blob, uninterpreted: a modification
     /// time, a content hash, a revision — whatever identifies the phrases
@@ -414,9 +532,6 @@ impl UserDict {
         let mut storage = vec![0u32; bound.div_ceil(4)];
         let mut len: usize = 0;
         let mut report = ffi::JdUserDictReport::default();
-        // One slot per input line is enough to receive every dropped line.
-        let line_count = text.iter().filter(|&&b| b == b'\n').count() + 1;
-        let mut dropped_lines = vec![0u32; line_count];
         // SAFETY: every pointer is to live memory of the stated length, and
         // the output buffer is 4-byte aligned (a Vec<u32>) and at least the
         // bound long.
@@ -429,8 +544,6 @@ impl UserDict {
                 storage.len() * 4,
                 &mut len,
                 &mut report,
-                dropped_lines.as_mut_ptr(),
-                dropped_lines.len().try_into().unwrap_or(u32::MAX),
             )
         };
         if status != 0 {
@@ -439,8 +552,39 @@ impl UserDict {
                 line: report.line,
             });
         }
+        // The notes sit past the blob in the same buffer; copy them out
+        // before it is trimmed to the blob.
+        let notes = {
+            let start = report.notes_offset as usize;
+            let count = report.notes as usize;
+            let end = start + count * size_of::<ffi::JdUserDictNote>();
+            assert!(
+                start.is_multiple_of(4) && end <= storage.len() * 4,
+                "libjd placed the notes outside the buffer it was given"
+            );
+            // SAFETY: the library wrote `count` notes at a 4-aligned offset
+            // inside the buffer, which the assertion above re-checks.
+            let raw = unsafe {
+                std::slice::from_raw_parts(
+                    storage
+                        .as_ptr()
+                        .cast::<u8>()
+                        .add(start)
+                        .cast::<ffi::JdUserDictNote>(),
+                    count,
+                )
+            };
+            raw.iter()
+                .map(|n| UserDictNote {
+                    line: n.line,
+                    flags: n.flags,
+                    other: n.other,
+                    builtin: n.builtin,
+                    peers: n.peers,
+                })
+                .collect()
+        };
         storage.truncate(len.div_ceil(4));
-        dropped_lines.truncate(report.dropped as usize);
         Ok((
             Self {
                 blob: Blob::Owned { storage, len },
@@ -450,7 +594,9 @@ impl UserDict {
             UserDictReport {
                 entries: report.entries,
                 dropped: report.dropped,
-                dropped_lines,
+                shared: report.shared,
+                invalid: report.invalid,
+                notes,
             },
         ))
     }
@@ -565,6 +711,20 @@ mod ffi {
         pub line: u32,
         pub entries: u32,
         pub dropped: u32,
+        pub shared: u32,
+        pub invalid: u32,
+        pub notes: u32,
+        pub notes_offset: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct JdUserDictNote {
+        pub line: u32,
+        pub flags: u32,
+        pub other: u32,
+        pub builtin: u32,
+        pub peers: u32,
     }
 
     #[repr(C)]
@@ -595,12 +755,10 @@ mod ffi {
             phrases: *const c_char,
             phrases_len: usize,
             source_tag: u64,
-            blob: *mut c_void,
-            blob_cap: usize,
+            buf: *mut c_void,
+            buf_cap: usize,
             blob_len: *mut usize,
             report: *mut JdUserDictReport,
-            dropped_lines: *mut u32,
-            dropped_cap: u32,
         ) -> u32;
         pub fn jd_user_dict_check(
             blob: *const c_void,
@@ -617,6 +775,7 @@ const JD_ABI_SIZEOF_USER_DICT_REPORT: u32 = 5;
 const JD_ABI_USER_DICT_MAX_ENTRIES: u32 = 6;
 const JD_ABI_USER_DICT_VALUE_MAX: u32 = 7;
 const JD_ABI_SIZEOF_USER_DICT_INFO: u32 = 8;
+const JD_ABI_SIZEOF_USER_DICT_NOTE: u32 = 9;
 
 static ABI_CHECK: Once = Once::new();
 
@@ -625,7 +784,7 @@ static ABI_CHECK: Once = Once::new();
 /// is worth one comparison per process.
 fn check_abi() {
     ABI_CHECK.call_once(|| {
-        let (state, option, hint, report, max_entries, value_max, info) = unsafe {
+        let (state, option, hint, report, max_entries, value_max, info, note) = unsafe {
             (
                 ffi::jd_abi_layout(JD_ABI_SIZEOF_STATE) as usize,
                 ffi::jd_abi_layout(JD_ABI_SIZEOF_OPTION) as usize,
@@ -634,8 +793,14 @@ fn check_abi() {
                 ffi::jd_abi_layout(JD_ABI_USER_DICT_MAX_ENTRIES),
                 ffi::jd_abi_layout(JD_ABI_USER_DICT_VALUE_MAX),
                 ffi::jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_INFO) as usize,
+                ffi::jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_NOTE) as usize,
             )
         };
+        assert_eq!(
+            note,
+            size_of::<ffi::JdUserDictNote>(),
+            "libjd jd_user_dict_note layout mismatch — bindings/rust is out of sync with core"
+        );
         assert_eq!(
             state,
             size_of::<ffi::JdState>(),
