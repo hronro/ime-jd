@@ -18,5 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // process that is never re-activated.
         UpdateManager.shared.installNotificationDelegate()
         UpdateManager.shared.checkIfDue()
+
+        // Load the user dictionary and start watching its file now, so an
+        // edit made before any client connects is picked up too.
+        _ = UserDictStore.shared
     }
 }

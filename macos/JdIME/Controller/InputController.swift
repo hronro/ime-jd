@@ -9,7 +9,9 @@ final class InputController: IMKInputController {
     /// panel's 1-9 number labels (see Candidates.swift).
     private static let pageSize: UInt32 = 9
 
-    private let engine = Engine()
+    /// Re-created when the user dictionary changes; see syncEngine().
+    private var engine = Engine(userDict: UserDictStore.shared.activeDictionary)
+    private var engineGeneration = UserDictStore.shared.generation
     private let composition = Composition()
     private var candidatePanel: Candidates?
 
@@ -30,6 +32,7 @@ final class InputController: IMKInputController {
         guard let event = event, event.type == .keyDown else { return false }
         guard let client = sender as? IMKTextInput else { return false }
 
+        syncEngine()
         let action = keyAction(event: event, isComposing: composition.isActive)
         return dispatch(action: action, client: client)
     }
@@ -39,10 +42,11 @@ final class InputController: IMKInputController {
     }
 
     override func activateServer(_ sender: Any!) {
-        // Engine is per-controller; nothing to do for it on activation. The
-        // daily update check piggybacks here because activation is the one
-        // moment we know the IME is actually in use — and it is a single
-        // defaults read when nothing is due.
+        // Activation is the one moment we know the IME is actually in use,
+        // and nothing is composing yet: adopt an edited user dictionary, and
+        // run the daily update check (a single defaults read when nothing is
+        // due).
+        syncEngine()
         UpdateManager.shared.checkIfDue()
     }
 
@@ -77,8 +81,9 @@ final class InputController: IMKInputController {
     /// The IME's section of the Input menu (the menu-bar input-source
     /// dropdown). IMK asks for this every time the menu opens, so the items
     /// can reflect live state: the version, an update the daily check found,
-    /// a check or download in flight, and the auto-check toggle. Items with a
-    /// nil action are the disabled status lines.
+    /// a check or download in flight, the auto-check toggle, and the user
+    /// dictionary's toggle and status. Items with a nil action are the
+    /// disabled status lines.
     override func menu() -> NSMenu! {
         let updates = UpdateManager.shared
         let menu = NSMenu(title: "键道")
@@ -102,6 +107,14 @@ final class InputController: IMKInputController {
         let autoCheck = menuItem("自动检查更新", #selector(toggleAutoCheck(_:)))
         autoCheck.state = updates.isAutoCheckEnabled ? .on : .off
         menu.addItem(autoCheck)
+
+        menu.addItem(.separator())
+        let store = UserDictStore.shared
+        menu.addItem(menuItem("用户自造词…", #selector(openUserDictWindow(_:))))
+        let userDict = menuItem("启用用户自造词", #selector(toggleUserDict(_:)))
+        userDict.state = store.isEnabled ? .on : .off
+        menu.addItem(userDict)
+        menu.addItem(menuItem(store.statusText, nil))
         return menu
     }
 
@@ -126,6 +139,31 @@ final class InputController: IMKInputController {
 
     @objc private func toggleAutoCheck(_ sender: Any?) {
         UpdateManager.shared.isAutoCheckEnabled.toggle()
+    }
+
+    @objc private func toggleUserDict(_ sender: Any?) {
+        UserDictStore.shared.isEnabled.toggle()
+    }
+
+    @objc private func openUserDictWindow(_ sender: Any?) {
+        UserDictWindowController.shared.show()
+    }
+
+    // MARK: - User dictionary
+
+    /// Adopt the store's dictionary when it changed since this engine was
+    /// created. A context's dictionary is fixed for its lifetime, and the
+    /// candidates on screen point into the old blob, so the swap waits for a
+    /// moment when nothing is composing: activation, or the next key after a
+    /// composition ended. Until then the old engine keeps the old dictionary
+    /// alive, and the IME keeps working on it.
+    private func syncEngine() {
+        let store = UserDictStore.shared
+        guard engineGeneration != store.generation,
+              !composition.isActive, visible.isEmpty
+        else { return }
+        engine = Engine(userDict: store.activeDictionary)
+        engineGeneration = store.generation
     }
 
     // MARK: - IMKCandidates callbacks

@@ -268,12 +268,15 @@ final class UpdateManager: NSObject {
     /// Route notification clicks to the install. Call once at launch, before
     /// any notification can be delivered.
     func installNotificationDelegate() {
-        // Not under XCTest: the test host runs straight out of DerivedData,
-        // where UNUserNotificationCenter finds no Launch Services record for
-        // the process and aborts it.
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        guard !UpdateManager.isUnderXCTest else { return }
         UNUserNotificationCenter.current().delegate = self
     }
+
+    /// Whether this process is the XCTest host. It runs straight out of
+    /// DerivedData, where UNUserNotificationCenter finds no Launch Services
+    /// record for the process and aborts it, so nothing may touch the
+    /// notification center under test.
+    static let isUnderXCTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
     private func notifyUpdateAvailable(_ tag: String) {
         let center = UNUserNotificationCenter.current()
@@ -386,7 +389,10 @@ extension UpdateManager: UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+        // Only the update notifications install; the user-dictionary
+        // notification (UserDictStore) just goes away when clicked.
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+           response.notification.request.identifier.hasPrefix("update-") {
             downloadAndInstall()
         }
         completionHandler()
