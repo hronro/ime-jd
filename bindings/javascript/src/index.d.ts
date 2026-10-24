@@ -38,9 +38,6 @@ export type WasmSource =
 export type UserDictStatus =
   | "bufferTooSmall"
   | "tooManyEntries"
-  | "malformedLine"
-  | "badKeys"
-  | "badValue"
   | "stale"
   | "corrupt"
   | "misaligned"
@@ -48,9 +45,10 @@ export type UserDictStatus =
   | (string & {});
 
 /**
- * A user dictionary could not be built or accepted. For the statuses that
- * refer to a line of the input text (`malformedLine`, `badKeys`, `badValue`,
- * `tooManyEntries`) `line` is the 1-based line; otherwise 0.
+ * A user dictionary could not be built or accepted: a problem with the call
+ * as a whole, never with one line (a line that does not parse is skipped and
+ * noted). For `tooManyEntries` `line` is the 1-based line of the first phrase
+ * past the cap; otherwise 0.
  */
 export class UserDictError extends Error {
   readonly status: UserDictStatus;
@@ -58,6 +56,51 @@ export class UserDictError extends Error {
   readonly code: number;
   readonly line: number;
 }
+
+/**
+ * One thing {@link JdModule.buildUserDict} has to say about an input line.
+ * A skipped line (it does not parse) carries exactly one of `MALFORMED`,
+ * `BAD_KEYS` and `BAD_VALUE`, and nothing else. A dropped line (parsed, but
+ * not in the dictionary) carries `REPEATS_LINE` or `REPEATS_BUILTIN`. A kept
+ * line whose code is already taken carries `CODE_IN_BUILTIN` and/or
+ * `CODE_IN_LINE`: the phrase works, listed ahead of the built-in word, but
+ * the code is shared (重码), which is what a user wants to know before
+ * relying on it.
+ */
+export interface UserDictNote {
+  /** 1-based input line. */
+  readonly line: number;
+  /** {@link UserDictNoteFlags} bits. */
+  readonly flags: number;
+  /**
+   * A kept line this one relates to: for a repeat, the line it repeats (0 for
+   * a built-in word); for a shared code, the first kept line on that code —
+   * and for that first line, the second. 0 otherwise.
+   */
+  readonly other: number;
+  /** Built-in words on exactly this code; 0 on a skipped line. */
+  readonly builtin: number;
+  /** Other kept lines on exactly this code; 0 on a dropped or skipped line. */
+  readonly peers: number;
+}
+
+/** The `JD_USER_DICT_LINE_*` flags a {@link UserDictNote} carries. */
+export const UserDictNoteFlags: {
+  /** Dropped: same keys and value as the kept line `other`. */
+  readonly REPEATS_LINE: 1;
+  /** Dropped: same keys and value as a built-in word. */
+  readonly REPEATS_BUILTIN: 2;
+  /** Kept: a built-in word sits on exactly this code (`builtin` says how many). */
+  readonly CODE_IN_BUILTIN: 4;
+  /** Kept: kept line `other` sits on this code too (`peers` says how many do). */
+  readonly CODE_IN_LINE: 8;
+  /** Skipped: neither blank nor a comment, and no TAB. */
+  readonly MALFORMED: 16;
+  /** Skipped: keys empty, longer than 6, or outside a-z and `;`. */
+  readonly BAD_KEYS: 32;
+  /** Skipped: value empty, too long, not UTF-8, or containing control characters. */
+  readonly BAD_VALUE: 64;
+};
 
 /** What {@link JdModule.buildUserDict} did with the input. */
 export interface UserDictReport {
@@ -68,8 +111,15 @@ export interface UserDictReport {
    * keys and value, or of a built-in word on the same code.
    */
   readonly dropped: number;
-  /** The 1-based input lines of every dropped phrase, ascending. */
-  readonly droppedLines: number[];
+  /**
+   * Kept phrases on a shared code: a built-in word, another kept phrase, or
+   * both already sit on it.
+   */
+  readonly shared: number;
+  /** Lines skipped because they do not parse: no TAB, bad keys, or a bad value. */
+  readonly invalid: number;
+  /** One note per skipped, dropped or shared line — `invalid + dropped + shared` of them — ascending by line. */
+  readonly notes: UserDictNote[];
 }
 
 /** Options for {@link JdModule.buildUserDict}. */
@@ -116,9 +166,13 @@ export class JdModule {
 
   /**
    * Compile `value<TAB>keys` text (the format of libjd's own table files)
-   * into a dictionary. Exact duplicates of an earlier line or of a built-in
-   * word on the same code are dropped and listed by line in the report.
-   * Throws a {@link UserDictError} naming the bad line otherwise.
+   * into a dictionary. A line that does not parse is skipped and counted,
+   * never fatal; exact duplicates of an earlier line or of a built-in word
+   * on the same code are dropped and counted; the report's notes say which
+   * lines were skipped and why, which were dropped, and which kept phrases
+   * sit on a code a built-in word or another phrase already uses. Throws a
+   * {@link UserDictError} only for a problem with the call as a whole: too
+   * much text, too many phrases.
    */
   buildUserDict(
     text: string,

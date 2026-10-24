@@ -61,8 +61,13 @@ Phrases of the user's own are compiled into a `UserDict` once and merged into ev
 // `value<TAB>keys` lines, the format of core/tables/*.txt. Build once, with a
 // tag of your choosing that identifies this version of the phrases …
 const { dict, report } = jd.buildUserDict("键道输入法\tjdefi\n", { sourceTag: phrasesRevision });
-console.log(`${report.entries} phrases, ${report.dropped} duplicates dropped`);
-for (const line of report.droppedLines) console.log(`line ${line} was dropped`);
+console.log(`${report.entries} phrases, ${report.invalid} bad lines skipped, ${report.dropped} duplicates dropped, ${report.shared} on shared codes`);
+for (const note of report.notes) {
+  // note.flags: UserDictNoteFlags.MALFORMED / BAD_KEYS / BAD_VALUE (skipped — a
+  // bad line never fails the build), REPEATS_LINE / REPEATS_BUILTIN (dropped),
+  // CODE_IN_BUILTIN / CODE_IN_LINE (kept, but the code is shared — 重码)
+  console.log(`line ${note.line}: flags ${note.flags}, ${note.builtin} built-in words, ${note.peers} other lines`);
+}
 await cache.put("user-dict", dict.bytes()); // … cache the blob (IndexedDB, say) …
 
 // … and on later launches wrap the cached bytes instead of re-parsing text.

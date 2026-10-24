@@ -72,6 +72,7 @@ const ABI_SIZEOF_USER_DICT_REPORT = 5;
 const ABI_USER_DICT_MAX_ENTRIES = 6;
 const ABI_USER_DICT_VALUE_MAX = 7;
 const ABI_SIZEOF_USER_DICT_INFO = 8;
+const ABI_SIZEOF_USER_DICT_NOTE = 9;
 
 // wasm32 layout of `jd_state`: two 4-byte pointers, a byte, 3 bytes of
 // padding, then two u32s. Checked against jd_abi_layout at instantiation.
@@ -88,37 +89,63 @@ const OPTION_HINT_OFF = 4;
 const HINT_CAP = 8;
 
 // wasm32 layouts of the user-dictionary structs, also checked at
-// instantiation. `jd_user_dict_report` is four u32s; `jd_user_dict_info` is
-// a u64 then a u32 (padded to 16); `size_t` is 4 bytes.
-const REPORT_SIZE = 16;
+// instantiation. `jd_user_dict_report` is eight u32s; `jd_user_dict_info` is
+// a u64 then a u32 (padded to 16); `size_t` is 4 bytes. jd_user_dict_note:
+// five u32s, laid out by the build past the blob, inside the buffer the host
+// gave it.
+const REPORT_SIZE = 32;
 const REPORT_LINE_OFF = 4;
 const REPORT_ENTRIES_OFF = 8;
 const REPORT_DROPPED_OFF = 12;
+const REPORT_SHARED_OFF = 16;
+const REPORT_INVALID_OFF = 20;
+const REPORT_NOTES_OFF = 24;
+const REPORT_NOTES_OFFSET_OFF = 28;
+const NOTE_SIZE = 20;
 const INFO_SIZE = 16;
 const INFO_ENTRIES_OFF = 8;
 const SIZE_T = 4;
 
-/** JD_USER_DICT_* codes, by value. */
+/**
+ * JD_USER_DICT_* codes, by value. These are failures of a call as a whole; a
+ * line that does not parse is skipped and noted instead.
+ */
 const USER_DICT_STATUS = [
   "ok",
   "bufferTooSmall",
   "tooManyEntries",
-  "malformedLine",
-  "badKeys",
-  "badValue",
   "stale",
   "corrupt",
   "misaligned",
   "textTooLong",
 ];
-const USER_DICT_STATUS_CORRUPT = 7;
+const USER_DICT_STATUS_CORRUPT = 4;
 /** Statuses that refer to a line of the input text. */
-const LINE_STATUSES = new Set(["tooManyEntries", "malformedLine", "badKeys", "badValue"]);
+const LINE_STATUSES = new Set(["tooManyEntries"]);
+
+/** The `JD_USER_DICT_LINE_*` flags a report note carries. */
+export const UserDictNoteFlags = Object.freeze({
+  /** Dropped: same keys and value as the kept line `other`. */
+  REPEATS_LINE: 1,
+  /** Dropped: same keys and value as a built-in word. */
+  REPEATS_BUILTIN: 2,
+  /** Kept: a built-in word sits on exactly this code (`builtin` says how many). */
+  CODE_IN_BUILTIN: 4,
+  /** Kept: kept line `other` sits on this code too (`peers` says how many do). */
+  CODE_IN_LINE: 8,
+  /** Skipped: neither blank nor a comment, and no TAB. */
+  MALFORMED: 16,
+  /** Skipped: keys empty, longer than 6, or outside a-z and `;`. */
+  BAD_KEYS: 32,
+  /** Skipped: value empty, too long, not UTF-8, or containing control characters. */
+  BAD_VALUE: 64,
+});
 
 /**
- * A user dictionary could not be built or accepted. `status` names the
- * `JD_USER_DICT_*` code (`"malformedLine"`, `"stale"`, …) and `line` is the
- * 1-based input line for the statuses that refer to one, else 0.
+ * A user dictionary could not be built or accepted: a problem with the call
+ * as a whole, never with one line. `status` names the `JD_USER_DICT_*` code
+ * (`"tooManyEntries"`, `"stale"`, …) and `line` is the 1-based input line for
+ * the statuses that refer to one, else 0.
  */
 export class UserDictError extends Error {
   /**
@@ -132,9 +159,6 @@ export class UserDictError extends Error {
       {
         bufferTooSmall: "output buffer too small",
         tooManyEntries: `more than ${limits.maxEntries} phrases`,
-        malformedLine: "expected `value<TAB>keys`",
-        badKeys: "keys must be 1 to 6 characters from a-z and `;`",
-        badValue: `value must be 1 to ${limits.valueMax} bytes of text without control characters`,
         stale: "blob was built against a different dictionary (rebuild it)",
         corrupt: "blob is corrupt (rebuild it)",
         misaligned: "blob is not 4-byte aligned",
@@ -174,11 +198,6 @@ function readHint(buffer, ptr) {
   return end === 0 ? null : decoder.decode(bytes.subarray(0, end));
 }
 
-function countLines(bytes) {
-  let lines = 1;
-  for (const b of bytes) if (b === 0x0a) lines++;
-  return lines;
-}
 
 async function instantiateResponse(source, imports) {
   const response = await source;
@@ -270,6 +289,7 @@ export class JdModule {
     expect(ABI_HINT_CAP, HINT_CAP, "JD_HINT_CAP");
     expect(ABI_SIZEOF_USER_DICT_REPORT, REPORT_SIZE, "sizeof(jd_user_dict_report)");
     expect(ABI_SIZEOF_USER_DICT_INFO, INFO_SIZE, "sizeof(jd_user_dict_info)");
+    expect(ABI_SIZEOF_USER_DICT_NOTE, NOTE_SIZE, "sizeof(jd_user_dict_note)");
 
     const limits = {
       maxEntries: exports.jd_abi_layout(ABI_USER_DICT_MAX_ENTRIES),
@@ -312,9 +332,13 @@ export class JdModule {
    * into a {@link UserDict}. `#` starts a comment line, blank lines are
    * skipped, spaces around either field are trimmed, CRLF is accepted. Keys
    * are one to six characters from `a`-`z` and `;`; values are text without
-   * control characters. Exact duplicates, of an earlier line or of a built-in
-   * word on the same code, are dropped, counted, and listed by line in the
-   * report. Throws a {@link UserDictError} naming the bad line otherwise.
+   * control characters. A line that breaks these rules is skipped and
+   * counted, never fatal. Exact duplicates, of an earlier line or of a
+   * built-in word on the same code, are dropped and counted; the report's
+   * notes say which lines were skipped and why, which were dropped, and
+   * which kept phrases sit on a code a built-in word or another phrase
+   * already uses. Throws a {@link UserDictError} only for a problem with the
+   * call as a whole: too much text, too many phrases.
    *
    * `sourceTag` is 64 bits of yours, stored in the blob and never
    * interpreted — a modification time, a content hash, a revision — so a
@@ -322,20 +346,19 @@ export class JdModule {
    *
    * @param {string} text
    * @param {{sourceTag?: number | bigint}} [options]
-   * @returns {{dict: UserDict, report: {entries: number, dropped: number, droppedLines: number[]}}}
+   * @returns {{dict: UserDict, report: import("./index.d.ts").UserDictReport}}
    */
   buildUserDict(text, options = {}) {
     const sourceTag = BigInt(options.sourceTag ?? 0);
     const textBytes = encoder.encode(text);
-    const lines = countLines(textBytes);
 
     // Everything the call reads or writes must sit inside linear memory. One
-    // scratch block holds the report, the blob length and the dropped-line
-    // array; the text and the blob get blocks of their own.
-    const scratchSize = REPORT_SIZE + SIZE_T + lines * 4;
+    // scratch block holds the report and the blob length; the text and the
+    // blob get blocks of their own. The notes land in the blob's block, past
+    // the blob — the bound covers them.
+    const scratchSize = REPORT_SIZE + SIZE_T;
     const reportPtr = this.#alloc(scratchSize);
     const blobLenPtr = reportPtr + REPORT_SIZE;
-    const droppedPtr = blobLenPtr + SIZE_T;
     const textPtr = textBytes.length === 0 ? 0 : this.#alloc(textBytes.length);
     let blobPtr = 0;
     let bound = 0;
@@ -352,8 +375,6 @@ export class JdModule {
         bound,
         blobLenPtr,
         reportPtr,
-        droppedPtr,
-        lines,
       );
       const view = new DataView(this.#memory());
       if (status !== 0) {
@@ -361,10 +382,25 @@ export class JdModule {
       }
       const entries = view.getUint32(reportPtr + REPORT_ENTRIES_OFF, true);
       const dropped = view.getUint32(reportPtr + REPORT_DROPPED_OFF, true);
+      const shared = view.getUint32(reportPtr + REPORT_SHARED_OFF, true);
+      const invalid = view.getUint32(reportPtr + REPORT_INVALID_OFF, true);
+      const noteCount = view.getUint32(reportPtr + REPORT_NOTES_OFF, true);
+      const notesOffset = view.getUint32(reportPtr + REPORT_NOTES_OFFSET_OFF, true);
       const blobLen = view.getUint32(blobLenPtr, true);
-      const droppedLines = Array.from(
-        new Uint32Array(this.#memory(), droppedPtr, Math.min(dropped, lines)),
-      );
+      if (notesOffset % 4 !== 0 || notesOffset + noteCount * NOTE_SIZE > bound) {
+        throw new Error("libjd placed the notes outside the buffer it was given");
+      }
+      const notes = [];
+      for (let i = 0; i < noteCount; i++) {
+        const at = blobPtr + notesOffset + i * NOTE_SIZE;
+        notes.push({
+          line: view.getUint32(at, true),
+          flags: view.getUint32(at + 4, true),
+          other: view.getUint32(at + 8, true),
+          builtin: view.getUint32(at + 12, true),
+          peers: view.getUint32(at + 16, true),
+        });
+      }
 
       const dict = new UserDict(entries, sourceTag);
       dictInternals.set(dict, {
@@ -376,7 +412,7 @@ export class JdModule {
         engines: 0,
       });
       blobPtr = 0; // now owned by the dict
-      return { dict, report: { entries, dropped, droppedLines } };
+      return { dict, report: { entries, dropped, shared, invalid, notes } };
     } finally {
       if (blobPtr !== 0) this.#exports.jd_free(blobPtr, bound);
       if (textPtr !== 0) this.#exports.jd_free(textPtr, textBytes.length);

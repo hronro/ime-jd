@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { JdModule, EMPTY_SNAPSHOT, UserDictError } from "../src/index.js";
+import { JdModule, EMPTY_SNAPSHOT, UserDictError, UserDictNoteFlags } from "../src/index.js";
 
 const wasmPath =
   process.env.JD_WASM ??
@@ -297,7 +297,17 @@ test("a user dictionary's phrases lead the built-in candidates on a shared code"
   // and repeats a built-in one, which is dropped and reported by line.
   const { dict, report } = mod.buildUserDict("测试词\tb\n不\tb\n", { sourceTag: 42n });
   try {
-    assert.deepEqual(report, { entries: 1, dropped: 1, droppedLines: [2] });
+    assert.equal(report.entries, 1);
+    assert.equal(report.dropped, 1);
+    assert.equal(report.shared, 1);
+    // 测试词 shares b with the built-in words; 不 repeats one of them.
+    assert.equal(report.notes.length, 2);
+    const wordsOnB = report.notes[0].builtin;
+    assert.ok(wordsOnB >= 1);
+    assert.deepEqual(report.notes, [
+      { line: 1, flags: UserDictNoteFlags.CODE_IN_BUILTIN, other: 0, builtin: wordsOnB, peers: 0 },
+      { line: 2, flags: UserDictNoteFlags.REPEATS_BUILTIN, other: 0, builtin: wordsOnB, peers: 0 },
+    ]);
     assert.equal(dict.entries, 1);
     assert.equal(dict.sourceTag, 42n);
     assert.ok(dict.byteLength > 0);
@@ -345,17 +355,40 @@ test("a user-only code composes with hints and auto-commits", () => {
   }
 });
 
-test("build errors name the line", () => {
+test("bad lines are skipped and noted, never fatal", () => {
+  // "zzzzzz" and "zzzzza" are free in the built-in tables, so the only
+  // notes are the skipped lines'.
+  const { dict, report } = mod.buildUserDict("键道\tzzzzzz\nno tab\n好\tZZZZZA\n\tzzzzza\n");
+  try {
+    assert.deepEqual(report, {
+      entries: 1,
+      dropped: 0,
+      shared: 0,
+      invalid: 3,
+      notes: [
+        { line: 2, flags: UserDictNoteFlags.MALFORMED, other: 0, builtin: 0, peers: 0 },
+        { line: 3, flags: UserDictNoteFlags.BAD_KEYS, other: 0, builtin: 0, peers: 0 },
+        { line: 4, flags: UserDictNoteFlags.BAD_VALUE, other: 0, builtin: 0, peers: 0 },
+      ],
+    });
+  } finally {
+    dict.dispose();
+  }
+
+  // Only a problem with the call as a whole throws: too many phrases.
+  let text = "";
+  for (let i = 0; i <= 10000; i++) {
+    const code = [...String(i).padStart(5, "0")].map((d) => String.fromCharCode(97 + Number(d))).join("");
+    text += `w${i}\t${code}\n`;
+  }
   assert.throws(
-    () => mod.buildUserDict("好\thz\nno tab\n"),
+    () => mod.buildUserDict(text),
     (err) =>
       err instanceof UserDictError &&
-      err.status === "malformedLine" &&
-      err.line === 2 &&
-      err.message === "line 2: expected `value<TAB>keys`",
+      err.status === "tooManyEntries" &&
+      err.line === 10001 &&
+      err.message === "line 10001: more than 10000 phrases",
   );
-  assert.throws(() => mod.buildUserDict("好\tHZ\n"), { status: "badKeys", line: 1 });
-  assert.throws(() => mod.buildUserDict("\thz\n"), { status: "badValue", line: 1 });
 });
 
 test("cached bytes round-trip, and stale or corrupt bytes are refused", () => {
@@ -403,7 +436,7 @@ test("a dictionary outlives the engines that read it", () => {
 test("an empty dictionary is valid and inert", () => {
   const { dict, report } = mod.buildUserDict("# nothing here\n");
   try {
-    assert.deepEqual(report, { entries: 0, dropped: 0, droppedLines: [] });
+    assert.deepEqual(report, { entries: 0, dropped: 0, shared: 0, invalid: 0, notes: [] });
     const e = mod.createEngine({ userDict: dict });
     const plain = mod.createEngine();
     try {
