@@ -13,6 +13,7 @@ const QueryOption = pagination.QueryOption;
 const JdState = query.JdState;
 const UserDict = user_dict.UserDict;
 const UserDictReport = user_dict.Report;
+const UserDictNote = user_dict.Note;
 const UserDictInfo = user_dict.Info;
 const UserDictStatus = user_dict.Status;
 
@@ -162,19 +163,17 @@ export fn jd_user_dict_build(
     phrases: ?[*]const u8,
     phrases_len: usize,
     source_tag: u64,
-    blob: ?*anyopaque,
-    blob_cap: usize,
+    buf: ?*anyopaque,
+    buf_cap: usize,
     blob_len: ?*usize,
     report: ?*UserDictReport,
-    dropped_lines: ?[*]u32,
-    dropped_cap: u32,
 ) u32 {
     var local: UserDictReport = undefined;
     const rep = report orelse &local;
-    rep.* = .{ .status = 0, .line = 0, .entries = 0, .dropped = 0 };
+    rep.* = UserDictReport.empty;
     if (blob_len) |l| l.* = 0;
 
-    const out_ptr = blob orelse {
+    const out_ptr = buf orelse {
         rep.status = @backingInt(UserDictStatus.buffer_too_small);
         return rep.status;
     };
@@ -182,8 +181,7 @@ export fn jd_user_dict_build(
         rep.status = @backingInt(UserDictStatus.misaligned);
         return rep.status;
     }
-    const out: []align(4) u8 = @as([*]align(4) u8, @ptrCast(@alignCast(out_ptr)))[0..blob_cap];
-    const lines: []u32 = if (dropped_lines) |p| p[0..dropped_cap] else &.{};
+    const out: []align(4) u8 = @as([*]align(4) u8, @ptrCast(@alignCast(out_ptr)))[0..buf_cap];
 
     const len = user_dict.build(
         textSlice(phrases, phrases_len),
@@ -192,7 +190,6 @@ export fn jd_user_dict_build(
         tables.blob_fingerprint,
         source_tag,
         rep,
-        lines,
     );
     if (blob_len) |l| l.* = len;
     return rep.status;
@@ -295,6 +292,7 @@ const AbiQuery = enum(u32) {
     user_dict_max_entries = 6,
     user_dict_value_max = 7,
     sizeof_user_dict_info = 8,
+    sizeof_user_dict_note = 9,
 };
 
 export fn jd_abi_layout(what: u32) u32 {
@@ -309,6 +307,7 @@ export fn jd_abi_layout(what: u32) u32 {
         @backingInt(AbiQuery.user_dict_max_entries) => user_dict.MAX_ENTRIES,
         @backingInt(AbiQuery.user_dict_value_max) => user_dict.VALUE_MAX,
         @backingInt(AbiQuery.sizeof_user_dict_info) => @sizeOf(UserDictInfo),
+        @backingInt(AbiQuery.sizeof_user_dict_note) => @sizeOf(UserDictNote),
         // Unknown queries are a benign 0 rather than a trap.
         else => 0,
     };
@@ -494,6 +493,10 @@ test "jd_abi_layout reports the real struct sizes" {
         @as(u32, @sizeOf(UserDictInfo)),
         jd_abi_layout(@backingInt(AbiQuery.sizeof_user_dict_info)),
     );
+    try std.testing.expectEqual(
+        @as(u32, @sizeOf(UserDictNote)),
+        jd_abi_layout(@backingInt(AbiQuery.sizeof_user_dict_note)),
+    );
     // Unknown queries are a benign 0 rather than a trap.
     try std.testing.expectEqual(@as(u32, 0), jd_abi_layout(9999));
 }
@@ -508,7 +511,6 @@ const HostBlob = struct {
     buf: []align(4) u8,
     len: usize,
     report: UserDictReport,
-    dropped_lines: [8]u32,
 
     const TAG: u64 = 0xFEED_FACE_CAFE_BEEF;
 
@@ -518,10 +520,20 @@ const HostBlob = struct {
         errdefer std.testing.allocator.free(buf);
         var len: usize = 0;
         var report: UserDictReport = undefined;
-        var lines: [8]u32 = @splat(0);
-        const status = jd_user_dict_build(phrases.ptr, phrases.len, TAG, buf.ptr, cap, &len, &report, &lines, lines.len);
+        const status = jd_user_dict_build(phrases.ptr, phrases.len, TAG, buf.ptr, cap, &len, &report);
         try std.testing.expectEqual(status, report.status);
-        return .{ .buf = buf, .len = len, .report = report, .dropped_lines = lines };
+        return .{ .buf = buf, .len = len, .report = report };
+    }
+
+    /// The notes, read where the report says they are — in the same
+    /// buffer, past the blob.
+    fn notes(self: *const HostBlob) []const UserDictNote {
+        const r = self.report;
+        if (r.notes == 0) return &.{};
+        return std.mem.bytesAsSlice(
+            UserDictNote,
+            @as([]align(4) const u8, @alignCast(self.buf[r.notes_offset..][0 .. r.notes * @sizeOf(UserDictNote)])),
+        );
     }
 
     fn deinit(self: *HostBlob) void {
@@ -540,6 +552,14 @@ fn baseHasPath(keys: []const u8) bool {
     return true;
 }
 
+/// Built-in words on exactly this code.
+fn baseWordCount(keys: []const u8) u32 {
+    const t = TrieCell.get();
+    var node = t.root();
+    for (keys) |k| node = node.getChild(t, k) orelse return 0;
+    return @intCast(node.values(t).len());
+}
+
 test "a user dictionary built through the ABI merges into the real dictionary" {
     // "zzzzzz" must be free in the built-in tables for this test to mean
     // anything; "b" carries 不 as its first candidate.
@@ -555,7 +575,18 @@ test "a user dictionary built through the ABI merges into the real dictionary" {
     try std.testing.expectEqual(@as(u32, 0), blob.report.status);
     try std.testing.expectEqual(@as(u32, 2), blob.report.entries);
     try std.testing.expectEqual(@as(u32, 1), blob.report.dropped);
-    try std.testing.expectEqual(@as(u32, 3), blob.dropped_lines[0]);
+    // Two notes, ascending: 测试词 shares b with the built-in words (重码),
+    // 不 repeats one of them. The context from the same buffer below is
+    // created while the notes are still readable — jd_init reads only the
+    // blob prefix.
+    try std.testing.expectEqual(@as(u32, 1), blob.report.shared);
+    const words_on_b = baseWordCount("b");
+    try std.testing.expect(words_on_b >= 1);
+    const want_notes = [_]UserDictNote{
+        .{ .line = 2, .flags = user_dict.NoteFlag.code_in_builtin, .other = 0, .builtin = words_on_b, .peers = 0 },
+        .{ .line = 3, .flags = user_dict.NoteFlag.repeats_builtin, .other = 0, .builtin = words_on_b, .peers = 0 },
+    };
+    try std.testing.expectEqualDeep(@as([]const UserDictNote, &want_notes), blob.notes());
 
     var info: UserDictInfo = undefined;
     try std.testing.expectEqual(@as(u32, 0), jd_user_dict_check(blob.buf.ptr, blob.len, &info));
@@ -582,10 +613,12 @@ test "a user dictionary built through the ABI merges into the real dictionary" {
     try std.testing.expectEqualStrings("键道", joined(handle, &buf) orelse return error.NoCommit);
     try std.testing.expectEqual(@as(u32, 0), jd_state_ptr(handle).options_count);
 
-    // The commit pointed into the host's blob, which is still alive.
+    // The commit pointed into the host's blob, which is still alive — and
+    // the notes past it are untouched by the context.
     const held = jd_state_ptr(handle).commit_a orelse return error.NoCommit;
     try std.testing.expect(@intFromPtr(held) >= @intFromPtr(blob.buf.ptr));
     try std.testing.expect(@intFromPtr(held) < @intFromPtr(blob.buf.ptr) + blob.len);
+    try std.testing.expectEqualDeep(@as([]const UserDictNote, &want_notes), blob.notes());
 }
 
 test "the same context without a user dictionary is unchanged" {
@@ -623,43 +656,54 @@ test "jd_init refuses a stale, corrupt or misaligned user dictionary" {
     jd_deinit(handle);
 }
 
-test "jd_user_dict_build reports line errors and buffer problems" {
+test "jd_user_dict_build notes bad lines and reports buffer problems" {
     var report: UserDictReport = undefined;
     var len: usize = 1;
     var buf: [256]u8 align(4) = undefined;
 
-    const bad = "好\thz\noops\n";
+    // A line that does not parse is skipped and noted, not fatal. "zzzzzz"
+    // is free in the built-in tables, so the only note is the bad line's.
+    const bad = "键道\tzzzzzz\noops\n";
     try std.testing.expectEqual(
-        @backingInt(UserDictStatus.malformed_line),
-        jd_user_dict_build(bad.ptr, bad.len, 0, &buf, buf.len, &len, &report, null, 0),
+        @as(u32, 0),
+        jd_user_dict_build(bad.ptr, bad.len, 0, &buf, buf.len, &len, &report),
     );
-    try std.testing.expectEqual(@as(u32, 2), report.line);
-    try std.testing.expectEqual(@as(usize, 0), len);
+    try std.testing.expect(len > 0);
+    try std.testing.expectEqual(@as(u32, 1), report.entries);
+    try std.testing.expectEqual(@as(u32, 1), report.invalid);
+    try std.testing.expectEqual(@as(u32, 1), report.notes);
+    const note: *const UserDictNote = @ptrCast(@alignCast(&buf[report.notes_offset]));
+    try std.testing.expectEqualDeep(
+        UserDictNote{ .line = 2, .flags = user_dict.NoteFlag.malformed, .other = 0, .builtin = 0, .peers = 0 },
+        note.*,
+    );
+    try std.testing.expectEqual(@as(u32, 0), jd_user_dict_check(&buf, len, null));
 
     const ok = "好\thz\n";
     try std.testing.expectEqual(
         @backingInt(UserDictStatus.buffer_too_small),
-        jd_user_dict_build(ok.ptr, ok.len, 0, &buf, 8, &len, &report, null, 0),
+        jd_user_dict_build(ok.ptr, ok.len, 0, &buf, 8, &len, &report),
     );
     try std.testing.expectEqual(
         @backingInt(UserDictStatus.buffer_too_small),
-        jd_user_dict_build(ok.ptr, ok.len, 0, null, 0, &len, &report, null, 0),
+        jd_user_dict_build(ok.ptr, ok.len, 0, null, 0, &len, &report),
     );
     try std.testing.expectEqual(
         @backingInt(UserDictStatus.misaligned),
-        jd_user_dict_build(ok.ptr, ok.len, 0, @as([*]u8, &buf) + 2, buf.len - 2, &len, &report, null, 0),
+        jd_user_dict_build(ok.ptr, ok.len, 0, @as([*]u8, &buf) + 2, buf.len - 2, &len, &report),
     );
 
     // The report is optional; the status still comes back.
     try std.testing.expectEqual(
         @as(u32, 0),
-        jd_user_dict_build(ok.ptr, ok.len, 0, &buf, buf.len, &len, null, null, 0),
+        jd_user_dict_build(ok.ptr, ok.len, 0, &buf, buf.len, &len, null),
     );
     try std.testing.expect(len > 0);
     try std.testing.expectEqual(@as(u32, 0), jd_user_dict_check(&buf, len, null));
 
     // An empty text is a valid, empty dictionary.
-    try std.testing.expectEqual(@as(u32, 0), jd_user_dict_build(null, 0, 0, &buf, buf.len, &len, &report, null, 0));
+    try std.testing.expectEqual(@as(u32, 0), jd_user_dict_build(null, 0, 0, &buf, buf.len, &len, &report));
+    try std.testing.expectEqual(@as(u32, 0), report.notes);
     try std.testing.expectEqual(@as(u32, 0), report.entries);
     const handle = jd_init(&buf, len) orelse return error.InitFailed;
     jd_deinit(handle);
@@ -679,7 +723,7 @@ test "jd_alloc hands out aligned blocks a host can build into and free" {
     var report: UserDictReport = undefined;
     try std.testing.expectEqual(
         @as(u32, 0),
-        jd_user_dict_build(phrases.ptr, phrases.len, 7, block, cap, &len, &report, null, 0),
+        jd_user_dict_build(phrases.ptr, phrases.len, 7, block, cap, &len, &report),
     );
     try std.testing.expectEqual(@as(u32, 1), report.entries);
     const handle = jd_init(block, len) orelse return error.InitFailed;

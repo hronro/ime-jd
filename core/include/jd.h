@@ -136,9 +136,15 @@ void jd_deinit(jd_context *ctx);
  * table files: `#` starts a comment line, blank lines are ignored, spaces
  * around either field are trimmed, CRLF is accepted. Keys are 1 to 6 bytes
  * from a-z and `;`. Values are 1 to JD_USER_DICT_VALUE_MAX bytes of UTF-8
- * with no control characters. Everything else is an error that names the
- * line. A phrase that exactly repeats an earlier line, or a built-in word
- * on the same code, is dropped and counted in `dropped`.
+ * with no control characters. A line that breaks these rules is skipped —
+ * it never fails the build — and counted in `invalid`. A phrase that
+ * exactly repeats an earlier line, or a built-in word on the same code, is
+ * dropped and counted in `dropped`. Everything the build has to say about
+ * individual lines — why a line was skipped, what a dropped line repeats,
+ * and which kept phrases sit on a code that a built-in word or another
+ * phrase already uses (重码) — comes back as jd_user_dict_notes, written
+ * into your buffer past the blob. The status codes are for the call as a
+ * whole: a buffer below the bound, too many phrases, too much text.
  * ---------------------------------------------------------------------- */
 
 /** Hard limits. Also reported by jd_abi_layout so a binding can verify them. */
@@ -152,30 +158,67 @@ void jd_deinit(jd_context *ctx);
 #define JD_USER_DICT_BUFFER_TOO_SMALL 1
 /** build: more than JD_USER_DICT_MAX_ENTRIES phrases (`line` is the first excess one). */
 #define JD_USER_DICT_TOO_MANY_ENTRIES 2
-/** build: a non-comment line without a TAB. */
-#define JD_USER_DICT_MALFORMED_LINE 3
-/** build: keys empty, longer than 6, or outside a-z `;`. */
-#define JD_USER_DICT_BAD_KEYS 4
-/** build: value empty, too long, not UTF-8, or containing control bytes. */
-#define JD_USER_DICT_BAD_VALUE 5
 /** check/init: built by a different libjd — format or built-in dictionary differ. Rebuild it. */
-#define JD_USER_DICT_STALE 6
+#define JD_USER_DICT_STALE 3
 /** check/init: structurally invalid. Rebuild it. */
-#define JD_USER_DICT_CORRUPT 7
+#define JD_USER_DICT_CORRUPT 4
 /** check/init/build: the blob pointer is not 4-byte aligned. */
-#define JD_USER_DICT_MISALIGNED 8
+#define JD_USER_DICT_MISALIGNED 5
 /** build: the text exceeds JD_USER_DICT_TEXT_MAX. */
-#define JD_USER_DICT_TEXT_TOO_LONG 9
+#define JD_USER_DICT_TEXT_TOO_LONG 6
+
+/**
+ * One thing jd_user_dict_build has to say about an input line. A skipped
+ * line (it does not parse) carries exactly one of JD_USER_DICT_LINE_MALFORMED,
+ * _BAD_KEYS and _BAD_VALUE, and nothing else. A dropped line (parsed, but
+ * not in the blob) carries a JD_USER_DICT_LINE_REPEATS_* flag. A kept line
+ * whose code is already taken carries JD_USER_DICT_LINE_CODE_IN_* flags:
+ * the phrase works, listed ahead of the built-in word, but the code is
+ * shared (重码), which is what a user wants to know before relying on it.
+ */
+typedef struct {
+  /** 1-based input line. */
+  unsigned int line;
+  /** JD_USER_DICT_LINE_* bits. */
+  unsigned int flags;
+  /**
+   * A kept line this one relates to: for a repeat, the line it repeats (0
+   * for a built-in word); for a shared code, the first kept line on that
+   * code — and for that first line, the second. 0 otherwise.
+   */
+  unsigned int other;
+  /** Built-in words on exactly this code; 0 on a skipped line. */
+  unsigned int builtin;
+  /** Other kept lines on exactly this code; 0 on a dropped or skipped line. */
+  unsigned int peers;
+} jd_user_dict_note;
+
+/** Dropped: same keys and value as the kept line `other`. */
+#define JD_USER_DICT_LINE_REPEATS_LINE 0x1u
+/** Dropped: same keys and value as a built-in word. */
+#define JD_USER_DICT_LINE_REPEATS_BUILTIN 0x2u
+/** Kept: a built-in word sits on exactly this code (`builtin` says how many). */
+#define JD_USER_DICT_LINE_CODE_IN_BUILTIN 0x4u
+/** Kept: kept line `other` sits on this code too (`peers` says how many do). */
+#define JD_USER_DICT_LINE_CODE_IN_LINE 0x8u
+/** Skipped: neither blank nor a comment, and no TAB. */
+#define JD_USER_DICT_LINE_MALFORMED 0x10u
+/** Skipped: keys empty, longer than 6, or outside a-z `;`. */
+#define JD_USER_DICT_LINE_BAD_KEYS 0x20u
+/** Skipped: value empty, longer than JD_USER_DICT_VALUE_MAX, not UTF-8, or containing control bytes. */
+#define JD_USER_DICT_LINE_BAD_VALUE 0x40u
 
 /**
  * What jd_user_dict_build found. `status` is one of the JD_USER_DICT_*
- * codes; `line` is the 1-based input line it refers to, or 0 when it refers
- * to the call as a whole; `entries` and `dropped` are filled on success.
- * `dropped` counts every dropped phrase, however many line numbers fit in
- * the array you passed.
+ * codes; `line` is the 1-based input line it refers to (the first phrase
+ * past the cap), or 0 when it refers to the call as a whole. The rest is
+ * filled on success: `entries` went in, `dropped` were duplicates, `shared`
+ * are kept phrases on a shared code, `invalid` lines were skipped because
+ * they do not parse, and the notes — `dropped + shared + invalid` of them,
+ * ascending by line — start `notes_offset` bytes into your buffer.
  */
 typedef struct {
-  unsigned int status, line, entries, dropped;
+  unsigned int status, line, entries, dropped, shared, invalid, notes, notes_offset;
 } jd_user_dict_report;
 
 /**
@@ -188,31 +231,37 @@ typedef struct {
 } jd_user_dict_info;
 
 /**
- * An upper bound on the blob jd_user_dict_build can produce from
- * `phrases_len` bytes of text at `phrases`: one entry and one NUL per line
- * plus the text itself. Pure arithmetic over a newline count. Allocate at
- * least this much, 4-byte aligned, for `blob`.
+ * An upper bound on what jd_user_dict_build writes into your buffer from
+ * `phrases_len` bytes of text at `phrases`: the blob (one entry and one NUL
+ * per line plus the text itself) and, past it, one jd_user_dict_note per
+ * line. Pure arithmetic over a newline count. Allocate at least this much,
+ * 4-byte aligned, for `buf`.
  */
 size_t jd_user_dict_blob_bound(const char *phrases, size_t phrases_len);
 
 /**
- * Build a user-dictionary blob from `phrases` into `blob`, your buffer of
- * `blob_cap` bytes (at least the bound, 4-byte aligned). On success
+ * Build a user-dictionary blob from `phrases` into `buf`, your buffer of
+ * `buf_cap` bytes (at least the bound, 4-byte aligned). On success
  * `*blob_len` receives the blob's length — that prefix of the buffer is the
- * blob; cache exactly those bytes — and `report->entries` / `dropped` are
- * filled. On failure `*blob_len` is 0 and `report->status` / `line` say
- * why. The return value is `report->status`. The library allocates nothing
- * here: sorting and the string pool are laid out inside your buffer.
+ * blob: cache exactly those bytes, or hand them to jd_init — and `report`
+ * says what went in, what was skipped, what was dropped and what shares a
+ * code. On failure — a problem with the call as a whole, never with one
+ * line — `*blob_len` is 0 and `report->status` / `line` say why. The
+ * return value is `report->status`. The library allocates nothing here:
+ * sorting, the string pool and the notes are all laid out inside your
+ * buffer.
  *
  * `source_tag` is stored in the blob for you (see jd_user_dict_check).
  *
- * The 1-based line numbers of dropped phrases are written to
- * `dropped_lines`, up to `dropped_cap` of them, in ascending order when
- * they all fit; `report->dropped` is the full count either way. Pass a
- * capacity of at least the number of input lines to get every one — a GUI
- * can then flag the rows it will not find in the dictionary.
+ * The notes sit past the blob, at `(char *)buf + report->notes_offset`,
+ * `report->notes` of them, ascending by line: one for every line skipped
+ * because it does not parse, one for every line dropped as a duplicate and
+ * one for every kept phrase whose code is shared. They are plain data in
+ * your buffer, valid for as long as you keep it; jd_init only ever reads
+ * the blob prefix, so a context can be created from the same buffer while
+ * you still read them. A GUI maps them onto its rows; a CLI prints them.
  *
- * `blob_len`, `report` and `dropped_lines` may be NULL.
+ * `blob_len` and `report` may be NULL.
  *
  * The blob records which built-in dictionary it was deduplicated against,
  * so it is valid for this build of the library only: after an update,
@@ -221,9 +270,8 @@ size_t jd_user_dict_blob_bound(const char *phrases, size_t phrases_len);
  */
 unsigned int jd_user_dict_build(const char *phrases, size_t phrases_len,
                                 unsigned long long source_tag,
-                                void *blob, size_t blob_cap, size_t *blob_len,
-                                jd_user_dict_report *report,
-                                unsigned int *dropped_lines, unsigned int dropped_cap);
+                                void *buf, size_t buf_cap, size_t *blob_len,
+                                jd_user_dict_report *report);
 
 /**
  * Validate a cached blob exactly as jd_init would: JD_USER_DICT_OK, or
@@ -345,6 +393,7 @@ query_option *jd_scratch_ptr(jd_context *ctx);
 #define JD_ABI_USER_DICT_MAX_ENTRIES 6
 #define JD_ABI_USER_DICT_VALUE_MAX 7
 #define JD_ABI_SIZEOF_USER_DICT_INFO 8
+#define JD_ABI_SIZEOF_USER_DICT_NOTE 9
 
 /**
  * Layout self-check. This header and the language bindings declare these

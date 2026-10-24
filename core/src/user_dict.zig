@@ -68,29 +68,24 @@ const MAGIC: [4]u8 = "JDUD".*;
 const ENDIAN_TAG: u32 = 0x0102_0304;
 const ALPHA: u8 = 27;
 
-/// Mirrors the `JD_USER_DICT_*` status codes in `include/jd.h`.
+/// Mirrors the `JD_USER_DICT_*` status codes in `include/jd.h`. These are
+/// failures of a call as a whole; a line that does not parse is not one —
+/// `build` skips it and leaves a `Note` saying why.
 pub const Status = enum(u32) {
     ok = 0,
     /// `build`: the output buffer is smaller than `blobBound` requires.
     buffer_too_small = 1,
     /// `build`: more than `MAX_ENTRIES` phrases.
     too_many_entries = 2,
-    /// `build`: a non-comment line has no TAB.
-    malformed_line = 3,
-    /// `build`: keys empty, longer than `MAX_KEYS_LEN`, or outside a-z ';'.
-    bad_keys = 4,
-    /// `build`: value empty, longer than `VALUE_MAX`, not UTF-8, or
-    /// containing control bytes.
-    bad_value = 5,
     /// `check`/`jd_init`: built by a different libjd (format version,
     /// endianness, or built-in dictionary differ). Rebuild it.
-    stale = 6,
+    stale = 3,
     /// `check`/`jd_init`: structurally invalid. Rebuild it.
-    corrupt = 7,
+    corrupt = 4,
     /// `check`/`jd_init`/`build`: the blob pointer is not 4-byte aligned.
-    misaligned = 8,
+    misaligned = 5,
     /// `build`: the input text exceeds `TEXT_MAX`.
-    text_too_long = 9,
+    text_too_long = 6,
 };
 
 /// Mirrors `jd_user_dict_report` in `include/jd.h`.
@@ -103,9 +98,72 @@ pub const Report = extern struct {
     /// Phrases that made it into the blob.
     entries: u32,
     /// Phrases dropped as exact duplicates — of an earlier line with the
-    /// same keys and value, or of a built-in word on the same code. Their
-    /// line numbers go to `build`'s `dropped_lines`.
+    /// same keys and value, or of a built-in word on the same code.
     dropped: u32,
+    /// Kept phrases on a shared code (重码): a built-in word, another kept
+    /// phrase, or both already sit on it.
+    shared: u32,
+    /// Lines skipped because they do not parse: no TAB, bad keys, or a bad
+    /// value.
+    invalid: u32,
+    /// Notes `build` left past the blob — one per dropped, shared or
+    /// skipped line, so `dropped + shared + invalid` — ascending by line.
+    notes: u32,
+    /// Byte offset of the notes in the host's buffer, 4-byte aligned.
+    notes_offset: u32,
+
+    pub const empty: Report = .{
+        .status = 0,
+        .line = 0,
+        .entries = 0,
+        .dropped = 0,
+        .shared = 0,
+        .invalid = 0,
+        .notes = 0,
+        .notes_offset = 0,
+    };
+};
+
+/// Mirrors `jd_user_dict_note` in `include/jd.h`: one thing `build` has
+/// to say about an input line. A skipped line — it does not parse —
+/// carries exactly one of `malformed`, `bad_keys` and `bad_value`, and
+/// nothing else; a dropped line carries a `repeats_*` flag; a kept line
+/// whose code is already taken carries `code_in_*` flags.
+pub const Note = extern struct {
+    /// 1-based input line.
+    line: u32,
+    /// `NoteFlag` bits.
+    flags: u32,
+    /// A kept line this one relates to: for a repeat, the line it repeats
+    /// (0 for a built-in word); for a shared code, the first kept line on
+    /// that code — and for that first line, the second. 0 otherwise.
+    other: u32,
+    /// Built-in words on exactly this code; 0 on a skipped line.
+    builtin: u32,
+    /// Other kept lines on exactly this code; 0 on a dropped or skipped
+    /// line.
+    peers: u32,
+};
+
+/// Mirrors the `JD_USER_DICT_LINE_*` flags.
+pub const NoteFlag = struct {
+    /// Dropped: same keys and value as the kept line `other`.
+    pub const repeats_line: u32 = 0x1;
+    /// Dropped: same keys and value as a built-in word.
+    pub const repeats_builtin: u32 = 0x2;
+    /// Kept: a built-in word sits on exactly this code; the phrase is
+    /// listed ahead of it.
+    pub const code_in_builtin: u32 = 0x4;
+    /// Kept: the kept line `other` sits on this code too; file order
+    /// decides between them.
+    pub const code_in_line: u32 = 0x8;
+    /// Skipped: neither blank nor a comment, and no TAB.
+    pub const malformed: u32 = 0x10;
+    /// Skipped: keys empty, longer than `MAX_KEYS_LEN`, or outside a-z ';'.
+    pub const bad_keys: u32 = 0x20;
+    /// Skipped: value empty, longer than `VALUE_MAX`, not UTF-8, or
+    /// containing control bytes.
+    pub const bad_value: u32 = 0x40;
 };
 
 /// Mirrors `jd_user_dict_info` in `include/jd.h`: what `check` can tell
@@ -182,6 +240,9 @@ comptime {
     std.debug.assert(@sizeOf(Header) % @alignOf(Entry) == 0);
     std.debug.assert(@alignOf(Header) == 4);
     std.debug.assert(@sizeOf(Entry) == 16);
+    // Notes are part of the ABI too, and are laid out 4-aligned past the blob.
+    std.debug.assert(@sizeOf(Note) == 20);
+    std.debug.assert(@alignOf(Note) == 4);
     std.debug.assert(MAX_KEYS_LEN <= 255);
     // The build-time packing in `Entry.value_len`.
     std.debug.assert(VALUE_MAX <= 0xFF);
@@ -402,12 +463,23 @@ fn isCleanValue(v: []const u8) bool {
 // Builder
 // =========================================================================
 
-/// Upper bound on the blob `build` can produce from `phrases`: one entry
-/// and one NUL per line, plus the text itself for the values. Pure
-/// arithmetic over a newline count — size the output buffer with it.
+fn lineCount(phrases: []const u8) usize {
+    return std.mem.count(u8, phrases, "\n") + 1;
+}
+
+/// Where `build` leaves its notes: just past the largest blob the text can
+/// produce — one entry and one NUL per line, plus the text itself for the
+/// values — rounded up to 4.
+fn notesOffset(phrases: []const u8) usize {
+    const lines = lineCount(phrases);
+    return std.mem.alignForward(usize, @sizeOf(Header) + lines * @sizeOf(Entry) + phrases.len + lines, 4);
+}
+
+/// Upper bound on what `build` writes into the host's buffer from
+/// `phrases`: the blob, and past it one `Note` per line. Pure arithmetic
+/// over a newline count — size the output buffer with it.
 pub fn blobBound(phrases: []const u8) usize {
-    const lines = std.mem.count(u8, phrases, "\n") + 1;
-    return @sizeOf(Header) + lines * @sizeOf(Entry) + phrases.len + lines;
+    return notesOffset(phrases) + lineCount(phrases) * @sizeOf(Note);
 }
 
 const Line = struct {
@@ -460,27 +532,39 @@ fn baseHas(base: *const Trie, entry: Entry, value: []const u8) bool {
     return false;
 }
 
+/// How many words the built-in trie carries on exactly this code — 0 when
+/// it does not even have the path.
+fn baseWordCount(base: *const Trie, entry: Entry) u32 {
+    var node = base.root();
+    for (entry.ranks()) |r| {
+        node = node.getChild(base, trie_mod.keyOfRank(r)) orelse return 0;
+    }
+    return @intCast(node.values(base).len());
+}
+
 fn fail(report: *Report, status: Status, line: u32) usize {
     report.status = @backingInt(status);
     report.line = line;
     return 0;
 }
 
-fn u32LessThan(_: void, a: u32, b: u32) bool {
-    return a < b;
+fn noteLineLessThan(_: void, a: Note, b: Note) bool {
+    return a.line < b.line;
 }
 
 /// Build a blob from `phrases` into `out`, which must hold at least
 /// `blobBound(phrases)` bytes. Returns the blob's length, or 0 with
-/// `report.status` set. Drops exact duplicates — of an earlier line with
-/// the same keys and value, and of a built-in word on the same code in
-/// `base` — and records `fingerprint` so `fromBytes` can tell the blob was
-/// deduplicated against that trie. `source_tag` is stored for the host
-/// and never interpreted. The 1-based line numbers of dropped phrases are
-/// written to `dropped_lines`, as many as fit, in ascending order when
-/// they all fit (`report.dropped` is the full count either way).
-/// Allocates nothing: the sort and the strings pool are laid out inside
-/// `out`.
+/// `report.status` set — for a problem with the call as a whole only: a
+/// line that does not parse is skipped, never fatal. Drops exact
+/// duplicates — of an earlier line with the same keys and value, and of a
+/// built-in word on the same code in `base` — and records `fingerprint` so
+/// `fromBytes` can tell the blob was deduplicated against that trie.
+/// `source_tag` is stored for the host and never interpreted.
+///
+/// Past the blob, at `report.notes_offset`, it leaves one `Note` per line
+/// that was skipped or dropped and per kept phrase whose code is shared,
+/// ascending by line; `report.notes` counts them. Allocates nothing: the
+/// sort, the strings pool and the notes are all laid out inside `out`.
 pub fn build(
     phrases: []const u8,
     out: []align(4) u8,
@@ -488,58 +572,63 @@ pub fn build(
     fingerprint: u32,
     source_tag: u64,
     report: *Report,
-    dropped_lines: []u32,
 ) usize {
-    report.* = .{ .status = 0, .line = 0, .entries = 0, .dropped = 0 };
+    report.* = Report.empty;
     if (phrases.len > TEXT_MAX) return fail(report, .text_too_long, 0);
+    // The bound is the contract: room for every entry, the whole text as
+    // values, and one note per line past the largest possible blob.
+    if (out.len < blobBound(phrases)) return fail(report, .buffer_too_small, 0);
+    const lines = lineCount(phrases);
+    const notes_off = notesOffset(phrases);
+    const notes: []Note = std.mem.bytesAsSlice(
+        Note,
+        @as([]align(4) u8, @alignCast(out[notes_off..][0 .. lines * @sizeOf(Note)])),
+    );
+    var note_count: u32 = 0;
 
-    // ---- Pass 1: validate every line, count entries and value bytes ----
+    // ---- Pass 1: one entry per line that parses, values still referenced
+    // by their offset in the source text and their line number (see
+    // `Entry`). A line that does not parse is skipped with a note saying
+    // why. The entry region is sized for every line; the bound covers it. ----
+    const slots: []Entry = std.mem.bytesAsSlice(
+        Entry,
+        @as([]align(4) u8, @alignCast(out[@sizeOf(Header)..][0 .. lines * @sizeOf(Entry)])),
+    );
     var n: u32 = 0;
-    var pool_bytes: usize = 0;
+    var invalid: u32 = 0;
     var line_no: u32 = 0;
     var it = std.mem.splitScalar(u8, phrases, '\n');
     while (it.next()) |raw| {
         line_no += 1;
         const line = (parseLine(raw) catch |err| {
-            return fail(report, switch (err) {
-                error.MalformedLine => .malformed_line,
-                error.BadKeys => .bad_keys,
-                error.BadValue => .bad_value,
-            }, line_no);
+            notes[note_count] = .{
+                .line = line_no,
+                .flags = switch (err) {
+                    error.MalformedLine => NoteFlag.malformed,
+                    error.BadKeys => NoteFlag.bad_keys,
+                    error.BadValue => NoteFlag.bad_value,
+                },
+                .other = 0,
+                .builtin = 0,
+                .peers = 0,
+            };
+            note_count += 1;
+            invalid += 1;
+            continue;
         }) orelse continue;
         if (n == MAX_ENTRIES) return fail(report, .too_many_entries, line_no);
+        var e: Entry = .{
+            .keys = @splat(0),
+            .keys_len = @intCast(line.keys.len),
+            ._pad = 0,
+            .value_off = @intCast(@intFromPtr(line.value.ptr) - @intFromPtr(phrases.ptr)),
+            .value_len = (line_no << 8) | @as(u32, @intCast(line.value.len)),
+        };
+        for (line.keys, 0..) |k, j| e.keys[j] = trie_mod.keyRank(k);
+        slots[n] = e;
         n += 1;
-        pool_bytes += line.value.len + 1;
     }
-    if (out.len < @sizeOf(Header) + @as(usize, n) * @sizeOf(Entry) + pool_bytes) {
-        return fail(report, .buffer_too_small, 0);
-    }
-
-    // ---- Pass 2: one entry per line, values still referenced by their
-    // offset in the source text and their line number (see `Entry`) ----
-    const entries: []Entry = std.mem.bytesAsSlice(
-        Entry,
-        @as([]align(4) u8, @alignCast(out[@sizeOf(Header)..][0 .. @as(usize, n) * @sizeOf(Entry)])),
-    );
-    {
-        var i: usize = 0;
-        line_no = 0;
-        it = std.mem.splitScalar(u8, phrases, '\n');
-        while (it.next()) |raw| {
-            line_no += 1;
-            const line = (parseLine(raw) catch unreachable) orelse continue;
-            var e: Entry = .{
-                .keys = @splat(0),
-                .keys_len = @intCast(line.keys.len),
-                ._pad = 0,
-                .value_off = @intCast(@intFromPtr(line.value.ptr) - @intFromPtr(phrases.ptr)),
-                .value_len = (line_no << 8) | @as(u32, @intCast(line.value.len)),
-            };
-            for (line.keys, 0..) |k, j| e.keys[j] = trie_mod.keyRank(k);
-            entries[i] = e;
-            i += 1;
-        }
-    }
+    const entries = slots[0..n];
 
     // ---- Sort into enumeration order, then drop duplicates. The order is
     // total (source offset breaks ties), so the result is deterministic. ----
@@ -548,28 +637,69 @@ pub fn build(
     var dropped: u32 = 0;
     for (entries) |e| {
         const value = phrases[e.value_off..][0..e.srcLen()];
-        var dup = false;
         // Entries on the same code are adjacent; scan back over the ones
-        // already kept.
+        // already kept for an exact repeat.
+        var repeats_line: u32 = 0;
         var j = kept;
         while (j > 0) : (j -= 1) {
             const k = entries[j - 1];
             if (!sameKeys(k, e)) break;
             if (std.mem.eql(u8, phrases[k.value_off..][0..k.srcLen()], value)) {
-                dup = true;
+                repeats_line = k.srcLine();
                 break;
             }
         }
-        if (!dup) dup = baseHas(base, e, value);
-        if (dup) {
-            if (dropped < dropped_lines.len) dropped_lines[dropped] = e.srcLine();
-            dropped += 1;
+        if (repeats_line == 0 and !baseHas(base, e, value)) {
+            entries[kept] = e;
+            kept += 1;
             continue;
         }
-        entries[kept] = e;
-        kept += 1;
+        notes[note_count] = .{
+            .line = e.srcLine(),
+            .flags = if (repeats_line != 0) NoteFlag.repeats_line else NoteFlag.repeats_builtin,
+            .other = repeats_line,
+            .builtin = baseWordCount(base, e),
+            .peers = 0,
+        };
+        note_count += 1;
+        dropped += 1;
     }
-    std.sort.pdq(u32, dropped_lines[0..@min(dropped, dropped_lines.len)], {}, u32LessThan);
+
+    // ---- Notes for the kept phrases whose code is already taken — by a
+    // built-in word, by another kept phrase, or both. Same-code phrases are
+    // adjacent, so this is one walk over the groups, one trie walk each. ----
+    var shared: u32 = 0;
+    var g: usize = 0;
+    while (g < kept) {
+        var end = g + 1;
+        while (end < kept and sameKeys(entries[g], entries[end])) end += 1;
+        const builtin = baseWordCount(base, entries[g]);
+        const peers: u32 = @intCast(end - g - 1);
+        if (builtin != 0 or peers != 0) {
+            var flags: u32 = 0;
+            if (builtin != 0) flags |= NoteFlag.code_in_builtin;
+            if (peers != 0) flags |= NoteFlag.code_in_line;
+            for (g..end) |m| {
+                const other: u32 = if (peers == 0)
+                    0
+                else if (m == g)
+                    entries[g + 1].srcLine()
+                else
+                    entries[g].srcLine();
+                notes[note_count] = .{
+                    .line = entries[m].srcLine(),
+                    .flags = flags,
+                    .other = other,
+                    .builtin = builtin,
+                    .peers = peers,
+                };
+                note_count += 1;
+            }
+            shared += @intCast(end - g);
+        }
+        g = end;
+    }
+    std.sort.pdq(Note, notes[0..note_count], {}, noteLineLessThan);
 
     // ---- Pass 3: strings pool right after the surviving entries, values
     // now addressed by pool offset ----
@@ -609,7 +739,16 @@ pub fn build(
         .source_tag_hi = @truncate(source_tag >> 32),
         .length_starts = starts,
     };
-    report.* = .{ .status = 0, .line = 0, .entries = kept, .dropped = dropped };
+    report.* = .{
+        .status = 0,
+        .line = 0,
+        .entries = kept,
+        .dropped = dropped,
+        .shared = shared,
+        .invalid = invalid,
+        .notes = note_count,
+        .notes_offset = @intCast(notes_off),
+    };
     return pos;
 }
 
@@ -630,15 +769,24 @@ pub const Blob = struct {
         return UserDict.fromBytes(self.bytes(), fingerprint);
     }
 
+    /// The notes `build` left past the blob.
+    pub fn notes(self: *const Blob) []const Note {
+        const r = self.report;
+        if (r.notes == 0) return &.{};
+        return std.mem.bytesAsSlice(
+            Note,
+            @as([]align(4) const u8, @alignCast(self.buf[r.notes_offset..][0 .. r.notes * @sizeOf(Note)])),
+        );
+    }
+
     pub fn deinit(self: *Blob, allocator: std.mem.Allocator) void {
         allocator.free(self.buf);
     }
 };
 
-/// `build` into an allocation sized by `blobBound`, with a zero source tag
-/// and no dropped-line output. Fails with `error.BuildFailed` when the
-/// report carries a non-ok status; the report is still returned through
-/// `err_report` when given.
+/// `build` into an allocation sized by `blobBound`, with a zero source tag.
+/// Fails with `error.BuildFailed` when the report carries a non-ok status;
+/// the report is still returned through `err_report` when given.
 pub fn buildAlloc(
     allocator: std.mem.Allocator,
     phrases: []const u8,
@@ -649,7 +797,7 @@ pub fn buildAlloc(
     const buf = try allocator.alignedAlloc(u8, .@"4", blobBound(phrases));
     errdefer allocator.free(buf);
     var report: Report = undefined;
-    const len = build(phrases, buf, base, fingerprint, 0, &report, &.{});
+    const len = build(phrases, buf, base, fingerprint, 0, &report);
     if (report.status != 0) {
         if (err_report) |r| r.* = report;
         return error.BuildFailed;
@@ -769,32 +917,97 @@ test "duplicates are dropped: within the text and against the built-in trie" {
         "泥2\tnk\n" ++ // 6
         "泥\tnk\n" ++ // 7: repeat, not adjacent to the first → still dropped
         "好\thz\n"; // 8: built-in → dropped
-    const buf = try testing.allocator.alignedAlloc(u8, .@"4", blobBound(text));
-    defer testing.allocator.free(buf);
-    var report: Report = undefined;
+    var blob = try buildAlloc(testing.allocator, text, &base.trie, FP, null);
+    defer blob.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 3), blob.report.entries);
+    try testing.expectEqual(@as(u32, 4), blob.report.dropped);
+    // Lines 2 and 6 share nk with each other and with two built-in words;
+    // nkh is nobody else's.
+    try testing.expectEqual(@as(u32, 2), blob.report.shared);
+    try testing.expectEqual(@as(u32, 6), blob.report.notes);
 
-    // Room for every dropped line: all of them, ascending.
-    var lines: [8]u32 = undefined;
-    const len = build(text, buf, &base.trie, FP, 0, &report, &lines);
-    try testing.expect(len > 0);
-    try testing.expectEqual(@as(u32, 3), report.entries);
-    try testing.expectEqual(@as(u32, 4), report.dropped);
-    try testing.expectEqualSlices(u32, &.{ 1, 4, 7, 8 }, lines[0..4]);
-
-    const d = try UserDict.fromBytes(buf[0..len], FP);
+    const d = try blob.dict(FP);
     try testing.expectEqualStrings("泥", valueOf(&d, 0));
     try testing.expectEqualStrings("泥2", valueOf(&d, 1));
     try testing.expectEqualStrings("你", valueOf(&d, 2));
 
-    // A short array still gets the full count and a sorted prefix of what
-    // fit; no array at all is fine too.
-    var two: [2]u32 = undefined;
-    _ = build(text, buf, &base.trie, FP, 0, &report, &two);
-    try testing.expectEqual(@as(u32, 4), report.dropped);
-    try testing.expect(two[0] < two[1]);
-    for (two) |l| try testing.expect(l == 1 or l == 4 or l == 7 or l == 8);
-    _ = build(text, buf, &base.trie, FP, 0, &report, &.{});
-    try testing.expectEqual(@as(u32, 4), report.dropped);
+    // Every dropped line gets a note saying what it repeats; the notes come
+    // ascending by line, dropped and shared interleaved.
+    const want = [_]Note{
+        .{ .line = 1, .flags = NoteFlag.repeats_builtin, .other = 0, .builtin = 2, .peers = 0 },
+        .{ .line = 2, .flags = NoteFlag.code_in_builtin | NoteFlag.code_in_line, .other = 6, .builtin = 2, .peers = 1 },
+        .{ .line = 4, .flags = NoteFlag.repeats_line, .other = 2, .builtin = 2, .peers = 0 },
+        .{ .line = 6, .flags = NoteFlag.code_in_builtin | NoteFlag.code_in_line, .other = 2, .builtin = 2, .peers = 1 },
+        .{ .line = 7, .flags = NoteFlag.repeats_line, .other = 2, .builtin = 2, .peers = 0 },
+        .{ .line = 8, .flags = NoteFlag.repeats_builtin, .other = 0, .builtin = 1, .peers = 0 },
+    };
+    try testing.expectEqualDeep(@as([]const Note, &want), blob.notes());
+}
+
+test "notes name the shared codes of kept phrases" {
+    var base = try trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = "nk", .value = "你" },
+        .{ .keys = "nk", .value = "拟" },
+        .{ .keys = "hz", .value = "好" },
+    });
+    defer base.deinit(testing.allocator);
+
+    const text =
+        "泥\tnk\n" ++ // 1: kept; nk carries two built-in words, and line 3
+        "你\tnkh\n" ++ // 2: kept; nkh is nobody else's
+        "泥2\tnk\n" ++ // 3: kept; as line 1
+        "甲\ta\n" ++ // 4: kept; shares a with line 5 only
+        "乙\ta\n" ++ // 5: kept; shares a with line 4 only
+        "好\thz\n" ++ // 6: dropped: repeats the built-in 好
+        "甲\ta\n"; // 7: dropped: repeats line 4
+    var blob = try buildAlloc(testing.allocator, text, &base.trie, FP, null);
+    defer blob.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 5), blob.report.entries);
+    try testing.expectEqual(@as(u32, 2), blob.report.dropped);
+    try testing.expectEqual(@as(u32, 4), blob.report.shared);
+    try testing.expectEqual(@as(u32, 6), blob.report.notes);
+    try testing.expectEqual(@as(u32, 0), blob.report.notes_offset % 4);
+    try testing.expect(blob.report.notes_offset >= blob.len);
+    try testing.expect(blob.report.notes_offset + blob.report.notes * @sizeOf(Note) <= blob.buf.len);
+
+    const want = [_]Note{
+        .{ .line = 1, .flags = NoteFlag.code_in_builtin | NoteFlag.code_in_line, .other = 3, .builtin = 2, .peers = 1 },
+        .{ .line = 3, .flags = NoteFlag.code_in_builtin | NoteFlag.code_in_line, .other = 1, .builtin = 2, .peers = 1 },
+        .{ .line = 4, .flags = NoteFlag.code_in_line, .other = 5, .builtin = 0, .peers = 1 },
+        .{ .line = 5, .flags = NoteFlag.code_in_line, .other = 4, .builtin = 0, .peers = 1 },
+        .{ .line = 6, .flags = NoteFlag.repeats_builtin, .other = 0, .builtin = 1, .peers = 0 },
+        .{ .line = 7, .flags = NoteFlag.repeats_line, .other = 4, .builtin = 0, .peers = 0 },
+    };
+    try testing.expectEqualDeep(@as([]const Note, &want), blob.notes());
+
+    // A phrase alone on a built-in code: one note, no peers, and `other`
+    // stays 0.
+    var alone = try buildAlloc(testing.allocator, "泥\tnk\n", &base.trie, FP, null);
+    defer alone.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 1), alone.report.shared);
+    const alone_want = [_]Note{
+        .{ .line = 1, .flags = NoteFlag.code_in_builtin, .other = 0, .builtin = 2, .peers = 0 },
+    };
+    try testing.expectEqualDeep(@as([]const Note, &alone_want), alone.notes());
+
+    // Three phrases on one free code: everyone names the first, the first
+    // names the second.
+    var three = try buildAlloc(testing.allocator, "甲\tq\n乙\tq\n\n丙\tq\n", &base.trie, FP, null);
+    defer three.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 3), three.report.shared);
+    const three_want = [_]Note{
+        .{ .line = 1, .flags = NoteFlag.code_in_line, .other = 2, .builtin = 0, .peers = 2 },
+        .{ .line = 2, .flags = NoteFlag.code_in_line, .other = 1, .builtin = 0, .peers = 2 },
+        .{ .line = 4, .flags = NoteFlag.code_in_line, .other = 1, .builtin = 0, .peers = 2 },
+    };
+    try testing.expectEqualDeep(@as([]const Note, &three_want), three.notes());
+
+    // Nothing shared, nothing dropped: no notes at all.
+    var clean = try buildAlloc(testing.allocator, "甲\ta\n乙\tb\n", &base.trie, FP, null);
+    defer clean.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 0), clean.report.shared);
+    try testing.expectEqual(@as(u32, 0), clean.report.notes);
+    try testing.expectEqual(@as(usize, 0), clean.notes().len);
 }
 
 test "the source tag round-trips through the header and check reports it" {
@@ -806,7 +1019,7 @@ test "the source tag round-trips through the header and check reports it" {
     var report: Report = undefined;
 
     const tag: u64 = 0x0123_4567_89AB_CDEF;
-    const len = build(text, buf, &base.trie, FP, tag, &report, &.{});
+    const len = build(text, buf, &base.trie, FP, tag, &report);
     const d = try UserDict.fromBytes(buf[0..len], FP);
     try testing.expectEqual(tag, d.source_tag);
 
@@ -821,25 +1034,31 @@ test "the source tag round-trips through the header and check reports it" {
     try testing.expectEqual(@as(u32, 99), info.entries);
 }
 
-test "build reports the offending line" {
+test "lines that do not parse are skipped and noted" {
     var base = try emptyBase(testing.allocator);
     defer base.deinit(testing.allocator);
-    const cases = [_]struct { text: []const u8, status: Status, line: u32 }{
-        .{ .text = "甲\ta\nno tab here\n", .status = .malformed_line, .line = 2 },
-        .{ .text = "甲\ta\n乙\tA\n", .status = .bad_keys, .line = 2 },
-        .{ .text = "甲\ta\n乙\t\n", .status = .bad_keys, .line = 2 },
-        .{ .text = "乙\tabcdefg\n", .status = .bad_keys, .line = 1 },
-        .{ .text = "甲\ta\n\n\n\tb\n", .status = .bad_value, .line = 4 },
-        .{ .text = "a\tb\tc\n", .status = .bad_keys, .line = 1 },
-        .{ .text = "\xff\xfe\ta\n", .status = .bad_value, .line = 1 },
-        .{ .text = "x\x01y\ta\n", .status = .bad_value, .line = 1 },
-        .{ .text = "x\x7fy\ta\n", .status = .bad_value, .line = 1 },
+    const cases = [_]struct { text: []const u8, flag: u32, line: u32, entries: u32 }{
+        .{ .text = "甲\ta\nno tab here\n", .flag = NoteFlag.malformed, .line = 2, .entries = 1 },
+        .{ .text = "甲\ta\n乙\tA\n", .flag = NoteFlag.bad_keys, .line = 2, .entries = 1 },
+        .{ .text = "甲\ta\n乙\t\n", .flag = NoteFlag.bad_keys, .line = 2, .entries = 1 },
+        .{ .text = "乙\tabcdefg\n", .flag = NoteFlag.bad_keys, .line = 1, .entries = 0 },
+        .{ .text = "甲\ta\n\n\n\tb\n", .flag = NoteFlag.bad_value, .line = 4, .entries = 1 },
+        .{ .text = "a\tb\tc\n", .flag = NoteFlag.bad_keys, .line = 1, .entries = 0 },
+        .{ .text = "\xff\xfe\ta\n", .flag = NoteFlag.bad_value, .line = 1, .entries = 0 },
+        .{ .text = "x\x01y\ta\n", .flag = NoteFlag.bad_value, .line = 1, .entries = 0 },
+        .{ .text = "x\x7fy\ta\n", .flag = NoteFlag.bad_value, .line = 1, .entries = 0 },
     };
     for (cases) |c| {
-        var report: Report = undefined;
-        try testing.expectError(error.BuildFailed, buildAlloc(testing.allocator, c.text, &base.trie, FP, &report));
-        try testing.expectEqual(@backingInt(c.status), report.status);
-        try testing.expectEqual(c.line, report.line);
+        var blob = try buildAlloc(testing.allocator, c.text, &base.trie, FP, null);
+        defer blob.deinit(testing.allocator);
+        try testing.expectEqual(@as(u32, 0), blob.report.status);
+        try testing.expectEqual(c.entries, blob.report.entries);
+        try testing.expectEqual(@as(u32, 1), blob.report.invalid);
+        try testing.expectEqual(@as(u32, 0), blob.report.dropped);
+        const want = [_]Note{.{ .line = c.line, .flags = c.flag, .other = 0, .builtin = 0, .peers = 0 }};
+        try testing.expectEqualDeep(@as([]const Note, &want), blob.notes());
+        const d = try blob.dict(FP);
+        try testing.expectEqual(c.entries, d.count());
     }
 
     // A value of exactly VALUE_MAX bytes is fine; one more is not.
@@ -847,14 +1066,58 @@ test "build reports the offending line" {
     @memset(long_ok[0..VALUE_MAX], 'x');
     long_ok[VALUE_MAX..][0..3].* = "\ta\n".*;
     var ok = try buildAlloc(testing.allocator, &long_ok, &base.trie, FP, null);
-    ok.deinit(testing.allocator);
+    defer ok.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 1), ok.report.entries);
+    try testing.expectEqual(@as(u32, 0), ok.report.invalid);
 
     var long_bad: [VALUE_MAX + 4]u8 = undefined;
     @memset(long_bad[0 .. VALUE_MAX + 1], 'x');
     long_bad[VALUE_MAX + 1 ..][0..3].* = "\ta\n".*;
-    var report: Report = undefined;
-    try testing.expectError(error.BuildFailed, buildAlloc(testing.allocator, &long_bad, &base.trie, FP, &report));
-    try testing.expectEqual(@backingInt(Status.bad_value), report.status);
+    var bad = try buildAlloc(testing.allocator, &long_bad, &base.trie, FP, null);
+    defer bad.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 0), bad.report.entries);
+    try testing.expectEqual(@as(u32, 1), bad.report.invalid);
+    try testing.expectEqual(NoteFlag.bad_value, bad.notes()[0].flags);
+}
+
+test "skipped lines are noted alongside dropped and shared ones" {
+    var base = try trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = "nk", .value = "你" },
+        .{ .keys = "nk", .value = "拟" },
+    });
+    defer base.deinit(testing.allocator);
+
+    const text =
+        "泥\tnk\n" ++ // 1: kept; nk carries two built-in words
+        "oops\n" ++ // 2: skipped: no TAB
+        "你\tnk\n" ++ // 3: dropped: repeats a built-in word
+        "乙\tA\n" ++ // 4: skipped: bad keys
+        "泥\tnk\n" ++ // 5: dropped: repeats line 1
+        "\tq\n" ++ // 6: skipped: empty value
+        "甲\tq\n"; // 7: kept; alone on q
+    var blob = try buildAlloc(testing.allocator, text, &base.trie, FP, null);
+    defer blob.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 2), blob.report.entries);
+    try testing.expectEqual(@as(u32, 2), blob.report.dropped);
+    try testing.expectEqual(@as(u32, 1), blob.report.shared);
+    try testing.expectEqual(@as(u32, 3), blob.report.invalid);
+    try testing.expectEqual(@as(u32, 6), blob.report.notes);
+
+    // A skipped line is nobody's peer or repeat, and the notes still come
+    // ascending by line.
+    const want = [_]Note{
+        .{ .line = 1, .flags = NoteFlag.code_in_builtin, .other = 0, .builtin = 2, .peers = 0 },
+        .{ .line = 2, .flags = NoteFlag.malformed, .other = 0, .builtin = 0, .peers = 0 },
+        .{ .line = 3, .flags = NoteFlag.repeats_builtin, .other = 0, .builtin = 2, .peers = 0 },
+        .{ .line = 4, .flags = NoteFlag.bad_keys, .other = 0, .builtin = 0, .peers = 0 },
+        .{ .line = 5, .flags = NoteFlag.repeats_line, .other = 1, .builtin = 2, .peers = 0 },
+        .{ .line = 6, .flags = NoteFlag.bad_value, .other = 0, .builtin = 0, .peers = 0 },
+    };
+    try testing.expectEqualDeep(@as([]const Note, &want), blob.notes());
+
+    const d = try blob.dict(FP);
+    try testing.expectEqualStrings("甲", valueOf(&d, 0));
+    try testing.expectEqualStrings("泥", valueOf(&d, 1));
 }
 
 test "isCleanValue agrees with std's UTF-8 validation plus the control-byte rule" {
@@ -924,7 +1187,7 @@ test "build enforces the entry cap and the buffer size" {
 
     // A buffer below the bound is refused up front.
     var small: [@sizeOf(Header) + 4]u8 align(4) = undefined;
-    try testing.expectEqual(@as(usize, 0), build("甲\ta\n", &small, &base.trie, FP, 0, &report, &.{}));
+    try testing.expectEqual(@as(usize, 0), build("甲\ta\n", &small, &base.trie, FP, 0, &report));
     try testing.expectEqual(@backingInt(Status.buffer_too_small), report.status);
 }
 
@@ -1001,8 +1264,13 @@ test "blobBound covers the worst case" {
     var report: Report = undefined;
     const buf = try testing.allocator.alignedAlloc(u8, .@"4", blobBound(text));
     defer testing.allocator.free(buf);
-    const len = build(text, buf, &base.trie, FP, 0, &report, &.{});
+    const len = build(text, buf, &base.trie, FP, 0, &report);
     try testing.expect(len > 0);
     try testing.expect(len <= buf.len);
     try testing.expectEqual(@as(u32, 3), report.entries);
+    // The notes region starts past any blob the text can produce and ends
+    // within the bound even when every line gets a note.
+    try testing.expect(report.notes_offset >= len);
+    try testing.expectEqual(@as(u32, 0), report.notes_offset % 4);
+    try testing.expectEqual(buf.len, report.notes_offset + 4 * @sizeOf(Note));
 }

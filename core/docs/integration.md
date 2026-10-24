@@ -81,7 +81,11 @@ unsigned int    jd_abi_layout(unsigned int what);
 
 /* User dictionary — see the section below. */
 typedef struct {
-  unsigned int status, line, entries, dropped;
+  unsigned int line, flags, other, builtin, peers;
+} jd_user_dict_note;
+
+typedef struct {
+  unsigned int status, line, entries, dropped, shared, invalid, notes, notes_offset;
 } jd_user_dict_report;
 
 typedef struct {
@@ -92,9 +96,8 @@ typedef struct {
 size_t          jd_user_dict_blob_bound(const char *phrases, size_t phrases_len);
 unsigned int    jd_user_dict_build(const char *phrases, size_t phrases_len,
                                    unsigned long long source_tag,
-                                   void *blob, size_t blob_cap, size_t *blob_len,
-                                   jd_user_dict_report *report,
-                                   unsigned int *dropped_lines, unsigned int dropped_cap);
+                                   void *buf, size_t buf_cap, size_t *blob_len,
+                                   jd_user_dict_report *report);
 unsigned int    jd_user_dict_check(const void *blob, size_t blob_len,
                                    jd_user_dict_info *info);
 
@@ -122,8 +125,8 @@ No function returns a struct by value, so there is no sret shim on any target.
 | `jd_read_range(...)`          | Copy a window of candidates into caller memory. Pure — see below.            |
 | `jd_scratch_ptr(ctx)`         | A context-owned buffer usable as `jd_read_range`'s `out`.                    |
 | `jd_abi_layout(what)`         | Struct sizes and limits, for checking hand-written declarations.             |
-| `jd_user_dict_blob_bound(...)`| How big a buffer `jd_user_dict_build` needs for this text.                   |
-| `jd_user_dict_build(...)`     | Compile `value<TAB>keys` text into a blob, in your buffer, stamped with your source tag. Reports the bad line on failure, the dropped lines on success. |
+| `jd_user_dict_blob_bound(...)`| How big a buffer `jd_user_dict_build` needs for this text, notes included.   |
+| `jd_user_dict_build(...)`     | Compile `value<TAB>keys` text into a blob, in your buffer, stamped with your source tag. A line that does not parse is skipped, not fatal; the notes left past the blob say which, along with the dropped lines and the phrases on shared codes. |
 | `jd_user_dict_check(blob, len, info)` | Validate a cached blob the way `jd_init` would; say why it fails, or hand back its source tag and phrase count. |
 | `jd_alloc(size)` / `jd_free(ptr, size)` | Memory from the library's allocator, for hosts that have none of their own. |
 
@@ -240,6 +243,7 @@ assert(jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_REPORT) == sizeof(jd_user_dict_repo
 assert(jd_abi_layout(JD_ABI_USER_DICT_MAX_ENTRIES)   == JD_USER_DICT_MAX_ENTRIES);
 assert(jd_abi_layout(JD_ABI_USER_DICT_VALUE_MAX)     == JD_USER_DICT_VALUE_MAX);
 assert(jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_INFO)   == sizeof(jd_user_dict_info));
+assert(jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_NOTE)   == sizeof(jd_user_dict_note));
 ```
 
 Run them once at init. Unknown queries return 0.
@@ -250,22 +254,25 @@ The built-in dictionary is fixed at build time. A **user dictionary** is the hos
 
 ### Building a blob
 
-Input is `value<TAB>keys` text — the format of `core/tables/*.txt`, so an existing table file is a valid user dictionary. `#` starts a comment line, blank lines are ignored, spaces around either field are trimmed, CRLF is fine. Keys are one to six characters from `a`-`z` and `;`; values are one to `JD_USER_DICT_VALUE_MAX` (255) bytes of UTF-8 without control characters; at most `JD_USER_DICT_MAX_ENTRIES` (10 000) phrases. How the phrases are *stored* is the host's business — a text file the user edits, a table behind a GUI, a preferences store; the text is only the interchange format for this one call.
+Input is `value<TAB>keys` text — the format of `core/tables/*.txt`, so an existing table file is a valid user dictionary. `#` starts a comment line, blank lines are ignored, spaces around either field are trimmed, CRLF is fine. Keys are one to six characters from `a`-`z` and `;`; values are one to `JD_USER_DICT_VALUE_MAX` (255) bytes of UTF-8 without control characters; at most `JD_USER_DICT_MAX_ENTRIES` (10 000) phrases. A line that breaks these rules is skipped and noted rather than failing the build, so one typo never costs the user the rest of the file; only a problem with the call as a whole — too much text, too many phrases, a buffer below the bound — fails. How the phrases are *stored* is the host's business — a text file the user edits, a table behind a GUI, a preferences store; the text is only the interchange format for this one call.
 
 ```c
 size_t cap = jd_user_dict_blob_bound(text, text_len);
 void *buf = aligned_alloc(4, cap);              /* 4-byte aligned, at least the bound */
-unsigned int dropped[LINES];                    /* one slot per input line */
 size_t blob_len;
 jd_user_dict_report report;
-if (jd_user_dict_build(text, text_len, source_tag, buf, cap, &blob_len, &report,
-                       dropped, LINES) != JD_USER_DICT_OK) {
+if (jd_user_dict_build(text, text_len, source_tag, buf, cap, &blob_len, &report)
+    != JD_USER_DICT_OK) {
   /* report.status says what (JD_USER_DICT_*), report.line where (1-based) */
 }
 /* buf[0..blob_len) is the dictionary: cache exactly those bytes. */
+const jd_user_dict_note *notes = (const jd_user_dict_note *)((char *)buf + report.notes_offset);
+for (unsigned i = 0; i < report.notes; i++) {
+  /* notes[i].line, .flags (JD_USER_DICT_LINE_*), .other, .builtin, .peers */
+}
 ```
 
-`report.entries` is how many phrases went in; `report.dropped` how many were exact duplicates — of an earlier line with the same keys and value, or of a built-in word on the same code — and were left out so nothing is listed twice. Their 1-based line numbers land in `dropped`, ascending, as many as fit; with one slot per input line you get all of them, which is what a phrase manager wants in order to flag the rows that will not show up. The build is linear with a sort and happens entirely inside your buffer.
+`report.entries` is how many phrases went in; `report.dropped` how many were exact duplicates — of an earlier line with the same keys and value, or of a built-in word on the same code — and were left out so nothing is listed twice; `report.shared` how many kept phrases sit on a code that is already taken (重码); `report.invalid` how many lines were skipped because they do not parse. The details are the **notes**, written into your buffer past the blob (the bound already covers them, one per input line): one per skipped line, saying why (`JD_USER_DICT_LINE_MALFORMED`, `_BAD_KEYS` or `_BAD_VALUE`), one per dropped line, saying whether it repeats an earlier kept line (`other` names it) or a built-in word, and one per kept phrase on a shared code, saying how many built-in words (`builtin`) and how many other kept lines (`peers`, the first of them in `other`) share it. They come ascending by line, so a phrase manager flags its rows in one pass and a CLI prints them as they are. A phrase on a shared code works — it is listed ahead of the built-in word — the note only tells the user that the code is not theirs alone. The build is linear with a sort and happens entirely inside your buffer; `jd_init` reads only the blob prefix, so you can create a context from the buffer while you still read the notes.
 
 `source_tag` is 64 bits of yours, stored in the blob and never interpreted: whatever identifies the phrases this blob was built from — a file's modification time, a hash of the text, a database revision. `jd_user_dict_check` hands it back, so deciding whether a cached blob is current needs no record beside the blob itself.
 
@@ -302,7 +309,7 @@ The blob is your memory and the engine reads it in place:
 
 - A user phrase sits in the same flat candidate list as built-in words, in the same order — shorter completions first, ties by key order — with hints like any other candidate. On an exact tie, a user phrase on a built-in code, the **user phrase comes first**, so it is what space commits: adding a phrase on a code is how a user overrides that code's default.
 - A code only the user dictionary knows composes exactly like a built-in one, including the auto-commit when it is the sole completion, the `;` second-candidate rule, backspace, and the commit-and-jump when it starts a new composition.
-- A user phrase on a code that used to be unique therefore turns that code's auto-commit into a two-candidate window — that is what sharing a code means. A GUI can warn before saving: press the code on a scratch context and read the candidates whose hint is empty.
+- A user phrase on a code that used to be unique therefore turns that code's auto-commit into a two-candidate window — that is what sharing a code means. The build's notes say so (`JD_USER_DICT_LINE_CODE_IN_BUILTIN`, with the number of built-in words on the code), so a GUI can show it next to the row.
 - Per keystroke a user dictionary costs a handful of binary searches, whatever its size, and the per-context allocation is unchanged.
 
 ## WebAssembly
