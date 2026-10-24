@@ -28,10 +28,13 @@ pub struct Loaded {
     /// Leaked on purpose: the engine reads it for the rest of the process.
     pub dict: &'static jd::UserDict,
     pub source: Source,
-    /// Phrases dropped as duplicates — line number and the line itself —
-    /// known only when the dictionary was rebuilt from the text.
-    pub dropped_lines: Vec<(u32, String)>,
+    /// The engine's notes — skipped lines, dropped duplicates and phrases on
+    /// shared codes, each with the line itself — known only when the
+    /// dictionary was rebuilt from the text.
+    pub notes: Vec<(jd::UserDictNote, String)>,
+    pub invalid: u32,
     pub dropped: u32,
+    pub shared: u32,
 }
 
 impl Loaded {
@@ -40,9 +43,11 @@ impl Loaded {
         match self.source {
             Source::Cache => format!("{} phrases (cached)", self.dict.entries()),
             Source::Rebuilt(reason) => format!(
-                "{} phrases, {} duplicates dropped (rebuilt: {reason})",
+                "{} phrases, {} bad lines skipped, {} duplicates dropped, {} on shared codes (rebuilt: {reason})",
                 self.dict.entries(),
-                self.dropped
+                self.invalid,
+                self.dropped,
+                self.shared
             ),
         }
     }
@@ -126,8 +131,10 @@ pub fn load(path: &str) -> Result<Loaded, String> {
                 return Ok(Loaded {
                     dict: dict.leak(),
                     source: Source::Cache,
-                    dropped_lines: Vec::new(),
+                    notes: Vec::new(),
+                    invalid: 0,
                     dropped: 0,
+                    shared: 0,
                 });
             }
             Ok(_) => "source changed",
@@ -155,24 +162,26 @@ pub fn load(path: &str) -> Result<Loaded, String> {
     }
 
     // Line numbers are libjd's: lines split on `\n`, counted from 1.
-    let dropped_lines = report
-        .dropped_lines
+    let notes = report
+        .notes
         .iter()
-        .map(|&n| {
+        .map(|&note| {
             let line = text
                 .split('\n')
-                .nth(n as usize - 1)
+                .nth(note.line as usize - 1)
                 .unwrap_or("")
                 .trim_end_matches('\r');
-            (n, line.to_string())
+            (note, line.to_string())
         })
         .collect();
 
     Ok(Loaded {
         dict: dict.leak(),
         source: Source::Rebuilt(reason),
-        dropped_lines,
+        notes,
+        invalid: report.invalid,
         dropped: report.dropped,
+        shared: report.shared,
     })
 }
 

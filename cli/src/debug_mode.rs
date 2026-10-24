@@ -10,9 +10,9 @@ use crate::user_dict;
 const WINDOW: u32 = 4;
 
 /// `user_dict` is the path of a `value<TAB>keys` text file whose phrases are
-/// merged into every candidate list. The REPL is the one place the dropped
-/// lines are listed. A dictionary that cannot be loaded ends the run with
-/// exit status 2.
+/// merged into every candidate list. The REPL is the one place the engine's
+/// notes — skipped lines, dropped lines, and phrases on shared codes — are
+/// listed. A dictionary that cannot be loaded ends the run with exit status 2.
 pub fn debug_mode<W>(w: &mut W, user_dict: Option<&str>) -> Result<ExitCode>
 where
     W: Write,
@@ -30,8 +30,8 @@ where
     };
     if let Some(loaded) = &loaded {
         writeln!(w, "User dict: {}", loaded.summary())?;
-        for (line, text) in &loaded.dropped_lines {
-            writeln!(w, "  dropped line {line}: {text}")?;
+        for (note, text) in &loaded.notes {
+            writeln!(w, "  {note}: {text}")?;
         }
     }
 

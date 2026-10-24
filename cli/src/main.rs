@@ -64,14 +64,15 @@ Options:
                       (`#` comments and blank lines are ignored). Its phrases
                       are merged into every candidate list, ahead of built-in
                       words on the same code; exact duplicates of built-in
-                      words are dropped. The compiled dictionary is cached in
-                      the OS temp directory, keyed by the file's absolute path
-                      and stamped with its modification time, and rebuilt when
-                      the file changes or after a libjd update. A bad line is
-                      reported with its number and the program exits with
-                      status 2. Normal mode prints nothing else about it;
-                      --debug prints a summary and, whenever the dictionary
-                      is rebuilt, the dropped lines.
+                      words are dropped, and a line that does not parse is
+                      skipped. The compiled dictionary is cached in the OS
+                      temp directory, keyed by the file's absolute path and
+                      stamped with its modification time, and rebuilt when
+                      the file changes or after a libjd update. A file that
+                      cannot be loaded at all is reported and the program
+                      exits with status 2. Normal mode prints nothing else
+                      about it; --debug prints a summary and, whenever the
+                      dictionary is rebuilt, the skipped and dropped lines.
 
 Tips:
     Pipe the output into your clipboard tool to copy the committed text
