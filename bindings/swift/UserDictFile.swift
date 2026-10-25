@@ -1,18 +1,20 @@
-// The phrases file behind the macOS client's user dictionary: where it
-// lives, and how its lines are read and written. Pure Foundation, no engine
+// The phrases file behind a client's user dictionary — libjd's own table
+// format — and how its lines are read and written. Shared source, compiled
+// into both the macOS and iOS frontends (see bindings/swift/README.md); where
+// the file lives is each frontend's business. Pure Foundation, no engine
 // calls, and no rules of its own: libjd is the authority on what a line
 // means — it parses the whole file on every build, skips the lines that do
-// not parse, and says why, by line number — so the GUI never validates a
-// cell; it writes what the user typed and shows the engine's verdict. What
-// is mirrored here is only how a line is split into cells for display.
+// not parse, and says why, by line number — so a client never validates a
+// cell; it writes what the user typed and shows the engine's verdict
+// (UserDictProblem). What is mirrored here is only how a line is split into
+// cells for display.
 //
-// The file is `~/Library/Application Support/<bundle id>/用户自造词.txt`, in
-// libjd's own table format: one `value<TAB>keys` line per phrase, `#`
-// comments, blank lines ignored. The GUI reads it leniently — comments and
-// blank lines are skipped, a line without a TAB becomes a row with empty
-// keys so it can be fixed in place — and writes it back as one header
-// comment plus one line per entry. Anything a text editor put between the
-// lines is gone after the first GUI save; the GUI is a table, not an editor.
+// One `value<TAB>keys` line per phrase, `#` comments, blank lines ignored.
+// A client reads the file leniently — comments and blank lines are skipped,
+// a line without a TAB becomes a row with empty keys so it can be fixed in
+// place — and writes it back as one header comment plus one line per entry.
+// Anything a text editor put between the lines is gone after the first save
+// from a client; a phrase list is a table, not an editor.
 
 import Foundation
 
@@ -37,7 +39,7 @@ struct UserDictRow: Equatable {
 }
 
 enum UserDictFileError: Error, Equatable {
-    /// The file is not UTF-8. libjd would reject it line by line; the GUI
+    /// The file is not UTF-8. libjd would reject it line by line; a client
     /// says so once.
     case notUTF8
 }
@@ -45,7 +47,7 @@ enum UserDictFileError: Error, Equatable {
 enum UserDictFile {
     static let fileName = "用户自造词.txt"
 
-    /// The first line of every file the GUI writes, for whoever opens it in
+    /// The first line of every file a client writes, for whoever opens it in
     /// a text editor.
     static let header =
         "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 和 ; 组成，1 到 \(UserDict.maxKeyLength) 个字符。"
@@ -53,17 +55,6 @@ enum UserDictFile {
     /// What libjd trims from a raw line, and from each field.
     static let lineTrim = CharacterSet(charactersIn: " \r")
     static let fieldTrim = CharacterSet(charactersIn: " ")
-
-    /// `~/Library/Application Support/<bundle id>/用户自造词.txt`.
-    static func defaultURL() -> URL {
-        let fm = FileManager.default
-        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.hronro.ime-jd"
-        return support
-            .appendingPathComponent(bundleID, isDirectory: true)
-            .appendingPathComponent(fileName, isDirectory: false)
-    }
 
     // MARK: - Reading and writing
 
@@ -146,7 +137,7 @@ enum UserDictFile {
     // MARK: - Identity
 
     /// FNV-1a, 64-bit, over the UTF-8 text: the dictionary's source tag, and
-    /// how the store tells an unchanged file (or its own write) from an edit.
+    /// how a client tells an unchanged file (or its own write) from an edit.
     static func hash(_ text: String) -> UInt64 {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         for byte in text.utf8 {

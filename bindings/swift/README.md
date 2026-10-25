@@ -79,6 +79,8 @@ A line that does not parse never fails the build: the engine skips it, counts it
 - **`Candidate.swift`** — `Candidate` and `EngineState`. A `Candidate` wraps the C `query_option` and materializes its `String`s **on access**: values point into a dictionary blob (libjd's embedded one, or the user dictionary the engine retains) and hints are inline bytes, so nothing has to be copied and a long candidate strip pays no String cost for rows nobody scrolls to. The one lifetime rule is documented there: a candidate read from an engine with a user dictionary must not outlive that engine.
 - **`UserDict.swift`** — the runtime user dictionary: `UserDict.build` compiles `value<TAB>keys` text into the blob and returns the engine's notes (skipped lines, dropped duplicates, shared codes), `Engine(userDict:)` reads it in place, and `blob` / `init(blob:)` / `check` wrap cached bytes. The `UserDict` owns its aligned storage; the `Engine` retains it.
 - **`KeyAction.swift`** — the semantic key-action enum shared by each frontend's key gate / dispatch layer.
+- **`UserDictFile.swift`** — the phrases file in libjd's table format, as a client keeps it: lenient line parsing for display, serialization (a header comment plus one `value<TAB>keys` line per phrase) and the FNV-1a hash that tags a build with the text it came from. No rules of its own — libjd judges every line. Where the file lives is each frontend's business.
+- **`UserDictProblem.swift`** — the engine's verdict on one row of a phrase list, mapped from a build's notes onto the rows by line, with the text a status column shows (a skipped line, a dropped duplicate, a shared code). One copy for both phrase lists.
 
 Candidates are addressed by flat index — there is no page concept in the engine. `readRange` is a pure read that never moves what the engine's automatic commits resolve to; call `setAnchor` when the user's view moves.
 
@@ -90,4 +92,4 @@ The platform-specific parts deliberately live elsewhere: macOS's `KeyGate` / `Co
 
 ## Tests
 
-Engine-semantics tests live in each frontend's test target: `macos/JdIMETests/EngineSmokeTests.swift` and `ios/KeyboardTests/InputSessionTests.swift` — both drive the real engine through the shared wrapper in this directory. `macos/JdIMETests/UserDictTests.swift` covers `UserDict` (mirroring `bindings/rust/tests/engine.rs`).
+Engine-semantics tests live in each frontend's test target: `macos/JdIMETests/EngineSmokeTests.swift` and `ios/KeyboardTests/InputSessionTests.swift` — both drive the real engine through the shared wrapper in this directory. `macos/JdIMETests/UserDictTests.swift` covers `UserDict` (mirroring `bindings/rust/tests/engine.rs`). `macos/JdIMETests/UserDictFileTests.swift` and `ios/KeyboardTests/UserDictStoreTests.swift` cover the file format and the per-row verdicts.

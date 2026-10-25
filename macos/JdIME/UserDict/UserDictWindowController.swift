@@ -35,57 +35,9 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         var problem: Problem?
     }
 
-    private enum Problem {
-        /// In the file, but libjd skips it: it does not parse.
-        case invalid(UserDictNote.Flags)
-        /// In the file, but libjd drops it: the same phrase as the row given,
-        /// or (nil) as a built-in word.
-        case duplicate(ofRow: Int?)
-        /// Works, and is listed first — but the code already carries
-        /// `builtIn` built-in words and/or `peers` other rows, the first of
-        /// them `otherRow`.
-        case sharedCode(builtIn: Int, otherRow: Int?, peers: Int)
-
-        var text: String {
-            switch self {
-            case .invalid(let flags):
-                if flags.contains(.malformed) {
-                    return "缺少制表符（无编码），不生效"
-                }
-                if flags.contains(.badKeys) {
-                    return "编码无效（1 到 \(UserDict.maxKeyLength) 个 a-z 或 ;），不生效"
-                }
-                return "词无效（不能为空或含控制字符，最长 \(UserDict.maxValueBytes) 字节），不生效"
-            case .duplicate(let row?):
-                return "与第 \(row + 1) 条重复，不生效"
-            case .duplicate(nil):
-                return "与内置词重复，不生效"
-            case .sharedCode(let builtIn, let otherRow, let peers):
-                // "与 2 个内置词及第 3 条等 2 条同码", or either half alone.
-                var parts: [String] = []
-                if builtIn > 0 { parts.append(" \(builtIn) 个内置词") }
-                if let otherRow {
-                    parts.append(peers > 1 ? "第 \(otherRow + 1) 条等 \(peers) 条" : "第 \(otherRow + 1) 条")
-                }
-                return "与" + parts.joined(separator: "及") + "同码"
-            }
-        }
-
-        var isInvalid: Bool {
-            if case .invalid = self { return true }
-            return false
-        }
-
-        var isDuplicate: Bool {
-            if case .duplicate = self { return true }
-            return false
-        }
-
-        var isSharedCode: Bool {
-            if case .sharedCode = self { return true }
-            return false
-        }
-    }
+    /// The status column's verdicts: the mapping and its words are shared
+    /// with the iOS phrase list (bindings/swift/UserDictProblem.swift).
+    private typealias Problem = UserDictProblem
 
     private enum ColumnID {
         static let value = NSUserInterfaceItemIdentifier("value")
@@ -337,39 +289,12 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
     /// mapped onto rows by line: why a skipped row does not parse, what a
     /// dropped row repeats, and whose code a kept row shares.
     private func recomputeProblems() {
-        var notes: [Int: UserDictNote] = [:]
-        if store.lastError == nil, let report = store.report {
-            for note in report.notes {
-                notes[Int(note.line)] = note
-            }
-        }
-        var rowByLine: [Int: Int] = [:]
+        let problems = UserDictProblem.forRows(
+            lines: rows.map(\.fileLine),
+            report: store.lastError == nil ? store.report : nil
+        )
         for index in rows.indices {
-            if let line = rows[index].fileLine {
-                rowByLine[line] = index
-            }
-        }
-        for index in rows.indices {
-            guard let line = rows[index].fileLine, let note = notes[line] else {
-                rows[index].problem = nil
-                continue
-            }
-            let other = rowByLine[Int(note.other)]
-            if note.isInvalid {
-                rows[index].problem = .invalid(note.flags)
-            } else if note.flags.contains(.repeatsLine) {
-                rows[index].problem = .duplicate(ofRow: other)
-            } else if note.flags.contains(.repeatsBuiltIn) {
-                rows[index].problem = .duplicate(ofRow: nil)
-            } else if note.isShared {
-                rows[index].problem = .sharedCode(
-                    builtIn: Int(note.builtIn),
-                    otherRow: note.flags.contains(.codeInLine) ? other : nil,
-                    peers: Int(note.peers)
-                )
-            } else {
-                rows[index].problem = nil
-            }
+            rows[index].problem = problems[index]
         }
     }
 
