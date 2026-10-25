@@ -12,11 +12,17 @@ package com.hronro.imejd.engine
 
 import java.io.Closeable
 
-class Engine : Closeable {
-    // jd_init returns NULL on allocation failure; fail fast with a clear
-    // message instead of passing a 0 handle into the native pointer casts.
+/**
+ * One engine context. [userDict] is merged into every candidate list; null
+ * for the built-in dictionary alone. A context's dictionary is fixed for its
+ * lifetime: to adopt another, create another engine (InputSession does).
+ */
+class Engine(userDict: UserDict? = null) : Closeable {
+    // The native handle: the context plus this engine's copy of the
+    // dictionary blob (jd_jni.c). 0 means allocation failure; fail fast with
+    // a clear message instead of passing it into the native pointer casts.
     private var ctx: Long = run {
-        val handle = nativeInit()
+        val handle = nativeInit(userDict?.blob)
         check(handle != 0L) { "jd_init failed (allocation failure)" }
         handle
     }
@@ -79,7 +85,7 @@ class Engine : Closeable {
         }
     }
 
-    private external fun nativeInit(): Long
+    private external fun nativeInit(userDict: ByteArray?): Long
     private external fun nativeDeinit(ctx: Long)
     private external fun nativePressKey(ctx: Long, key: Byte): EngineState
     private external fun nativeBackspace(ctx: Long): EngineState

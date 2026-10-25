@@ -8,6 +8,7 @@ import com.hronro.imejd.engine.InputSession
 import com.hronro.imejd.engine.KeyAction
 import com.hronro.imejd.engine.KeyboardHost
 import com.hronro.imejd.engine.SessionSnapshot
+import com.hronro.imejd.engine.UserDict
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -266,5 +267,55 @@ class InputSessionTest {
         s.handle(KeyAction.EngineKey(ascii('a')))
         assertTrue(s.snapshot.candidates.size < grown)
         assertEquals("ba", s.rawBuffer)
+    }
+
+    /**
+     * A user dictionary joins the candidates like the built-in words do, and
+     * a code only it knows composes — hints and all — and commits.
+     */
+    @Test
+    fun aUserDictionaryJoinsTheCandidates() {
+        val s = InputSession(UserDict.build("键道\tzzzzzz\n").dict)
+        val h = MockHost()
+        s.host = h
+        repeat(5) { s.handle(KeyAction.EngineKey(ascii('z'))) }
+        assertTrue(s.isComposing)
+        assertEquals(listOf("键道"), s.snapshot.candidates.map { it.value })
+        assertEquals("z", s.snapshot.candidates.first().hint)
+        s.handle(KeyAction.EngineKey(ascii('z')))
+        assertEquals("the sole completion auto-commits", "键道", h.joined)
+        assertFalse(s.isComposing)
+        s.close()
+    }
+
+    /**
+     * Swapping the dictionary mid-composition drops the composition and tells
+     * the UI so; the next keys read the new dictionary.
+     */
+    @Test
+    fun replacingTheDictionaryDropsTheComposition() {
+        val s = InputSession(UserDict.build("键道\tzzzzzz\n").dict)
+        val h = MockHost()
+        s.host = h
+        val seen = mutableListOf<SessionSnapshot>()
+        s.onChange = { seen.add(it) }
+        repeat(3) { s.handle(KeyAction.EngineKey(ascii('z'))) }
+        assertTrue(s.isComposing)
+
+        s.replaceDictionary(null)
+        assertFalse(s.isComposing)
+        assertEquals(SessionSnapshot.EMPTY, seen.last())
+        assertTrue("nothing committed by the swap", h.inserted.isEmpty())
+
+        repeat(5) { s.handle(KeyAction.EngineKey(ascii('z'))) }
+        assertFalse(s.snapshot.candidates.map { it.value }.contains("键道"))
+        assertFalse(h.joined.contains("键道"))
+
+        // And back to a dictionary with a different phrase on the code.
+        s.cancelAndReset()
+        s.replaceDictionary(UserDict.build("键道输入法\tzzzzzz\n").dict)
+        repeat(5) { s.handle(KeyAction.EngineKey(ascii('z'))) }
+        assertEquals(listOf("键道输入法"), s.snapshot.candidates.map { it.value })
+        s.close()
     }
 }

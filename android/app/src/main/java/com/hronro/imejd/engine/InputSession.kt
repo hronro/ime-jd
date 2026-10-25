@@ -41,8 +41,12 @@ data class SessionSnapshot(
     }
 }
 
-class InputSession {
-    private val engine = Engine()
+/**
+ * [userDict] is merged into every candidate list (see [Engine]); null for the
+ * built-in dictionary alone.
+ */
+class InputSession(userDict: UserDict? = null) {
+    private var engine = Engine(userDict)
     var host: KeyboardHost? = null
 
     /** The in-flight raw code (e.g. "js"), shown in the keyboard's candidate bar. */
@@ -57,6 +61,21 @@ class InputSession {
     var onChange: ((snapshot: SessionSnapshot) -> Unit)? = null
 
     val isComposing: Boolean get() = rawBuffer.isNotEmpty()
+
+    /**
+     * Adopt another dictionary: a fresh engine, so whatever was composing is
+     * dropped, and the UI is told so. The candidates on screen are Strings
+     * the JNI layer copied, so nothing outlives the old engine, which is
+     * closed once the new one exists.
+     */
+    fun replaceDictionary(userDict: UserDict?) {
+        val old = engine
+        engine = Engine(userDict)
+        old.close()
+        rawBuffer = ""
+        snapshot = SessionSnapshot.EMPTY
+        onChange?.invoke(snapshot)
+    }
 
     // MARK: - Single entry point
 
