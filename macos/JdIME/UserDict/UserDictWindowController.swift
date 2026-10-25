@@ -14,9 +14,9 @@ import AppKit
 /// phrase on the same code as an earlier row, or as a built-in word) in
 /// grey; a row whose code is already taken — by a built-in word, by another
 /// row, or both — in orange: it works, listed first, and the flag is a
-/// warning only. The 检查重复 button sums the notes up and offers to delete
-/// the duplicates — or says so while the file cannot be loaded at all, when
-/// there are no notes to sum up.
+/// warning only. The 移除重复词条 button offers to delete the duplicates,
+/// counted and explained — or says so while the file cannot be loaded at
+/// all, when there are no notes to act on.
 ///
 /// Order matters only among phrases on the same code — they appear in file
 /// order — which is what dragging rows is for.
@@ -168,9 +168,9 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         addRemove.setToolTip("添加词条", forSegment: 0)
         addRemove.setToolTip("删除选中的词条", forSegment: 1)
 
-        let checkButton = NSButton(title: "检查重复", target: self, action: #selector(checkDuplicates(_:)))
+        let removeButton = NSButton(title: "移除重复词条", target: self, action: #selector(removeDuplicates(_:)))
         let editorButton = NSButton(title: "用文本编辑器打开", target: self, action: #selector(openInEditor(_:)))
-        for button in [checkButton, editorButton] {
+        for button in [removeButton, editorButton] {
             button.bezelStyle = .rounded
             button.controlSize = .regular
         }
@@ -182,7 +182,7 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let bottom = NSStackView(views: [addRemove, checkButton, editorButton, statusLabel])
+        let bottom = NSStackView(views: [addRemove, removeButton, editorButton, statusLabel])
         bottom.orientation = .horizontal
         bottom.alignment = .centerY
         bottom.distribution = .fill
@@ -450,10 +450,10 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         tableView.editColumn(tableView.column(withIdentifier: ColumnID.value), row: row, with: nil, select: true)
     }
 
-    /// What 检查重复 has to say, apart from how it says it: the rows libjd
+    /// What 移除重复词条 has to say, apart from how it says it: the rows libjd
     /// drops as duplicates and the rows whose code is already taken — both
     /// flagged in the table already — summed up, with the rows it skipped
-    /// as unparsable mentioned; or that nothing could be checked, because
+    /// as unparsable mentioned; or that nothing can be done, because
     /// the file could not be loaded at all and so there are no notes.
     enum DuplicateCheck: Equatable {
         case unavailable(reason: String)
@@ -478,17 +478,19 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         "另有 \(invalid) 条无效的词条（标红），输入法已跳过。"
     }
 
-    /// The overview behind the 检查重复 button, with the offer to delete the
-    /// duplicates.
-    @objc private func checkDuplicates(_ sender: Any?) {
+    /// Behind the 移除重复词条 button: the offer to delete the rows libjd
+    /// drops as duplicates, counted and explained. The same-code rows, which
+    /// stay, and the skipped rows are mentioned, and 选中查看 selects every
+    /// flagged row to look at instead. While the file cannot be loaded at
+    /// all it says so: the engine never built this version of the file, so
+    /// there are no notes to act on.
+    @objc private func removeDuplicates(_ sender: Any?) {
         window?.makeFirstResponder(tableView)
         switch duplicateCheck() {
         case .unavailable(let reason):
-            // The engine never built this version of the file, so there is
-            // nothing to sum up.
             let text = "用户自造词文件无法读入：\(reason)。请用文本编辑器修正文件；文件可读后，状态列才会标出无效、重复与同码的词条。"
             let alert = NSAlert()
-            alert.messageText = "无法检查重复"
+            alert.messageText = "无法移除重复词条"
             alert.informativeText = text
             alert.alertStyle = .warning
             alert.addButton(withTitle: "好")
@@ -497,58 +499,55 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
                 openInEditor(nil)
             }
         case .clean(let invalid):
-            var text =
-                "与前面某条词条完全相同、或与内置词库中同一编码下的词相同的词条，算重复，不会生效；"
-                + "编码已被内置词或其他自造词占用的词条，算同码，仍然生效。"
+            var text = "与前面某条词条完全相同、或与内置词库中同一编码下的词相同的词条，算重复，不会生效。"
             if invalid > 0 {
                 text += "\n" + invalidNote(invalid)
             }
             let alert = NSAlert()
-            alert.messageText = "没有发现重复或同码的词条"
+            alert.messageText = "没有重复词条"
             alert.informativeText = text
             alert.addButton(withTitle: "好")
             alert.runModal()
         case .found(let duplicates, let shared, let invalid):
-            offerFixes(duplicates: duplicates, shared: shared, invalid: invalid)
+            offerRemoval(duplicates: duplicates, shared: shared, invalid: invalid)
         }
     }
 
-    /// The counts and what they mean, with the offer to delete the
-    /// duplicates or to select every flagged row.
-    private func offerFixes(duplicates: [Int], shared: [Int], invalid: Int) {
-        var headline: [String] = []
+    /// The counts and what they mean, with 移除 for the duplicates when
+    /// there are any, and 选中查看 for every flagged row.
+    private func offerRemoval(duplicates: [Int], shared: [Int], invalid: Int) {
         var details: [String] = []
         if !duplicates.isEmpty {
             let ofRows = duplicates.filter {
                 if case .duplicate(ofRow: .some) = rows[$0].problem { return true }
                 return false
             }.count
-            headline.append("\(duplicates.count) 条重复词条")
             details.append(
                 "重复：\(ofRows) 条与前面的词条相同，\(duplicates.count - ofRows) 条与内置词库相同；这些词条不会出现在候选中。"
             )
         }
         if !shared.isEmpty {
-            headline.append("\(shared.count) 条同码词条")
-            details.append("同码：编码已有内置词或其他自造词；这些词条仍然生效，并排在内置词之前，多条自造词同码时按表中顺序排列。")
+            details.append(
+                "同码（保留）：\(shared.count) 条词条的编码已有内置词或其他自造词；这些词条仍然生效，并排在内置词之前，多条自造词同码时按表中顺序排列。"
+            )
         }
         if invalid > 0 {
             details.append(invalidNote(invalid))
         }
         let alert = NSAlert()
-        alert.messageText = "发现 " + headline.joined(separator: "，")
+        alert.messageText = duplicates.isEmpty ? "没有重复词条" : "移除 \(duplicates.count) 条重复词条？"
         alert.informativeText = details.joined(separator: "\n")
-        if !duplicates.isEmpty {
-            alert.addButton(withTitle: "删除重复词条")
-        }
+        // 选中查看 is the second button either way.
+        alert.addButton(withTitle: duplicates.isEmpty ? "好" : "移除")
         alert.addButton(withTitle: "选中查看")
-        alert.addButton(withTitle: "取消")
+        if !duplicates.isEmpty {
+            alert.addButton(withTitle: "取消")
+        }
 
         let response = alert.runModal()
-        let deleteOffered = !duplicates.isEmpty
-        if deleteOffered, response == .alertFirstButtonReturn {
+        if !duplicates.isEmpty, response == .alertFirstButtonReturn {
             remove(rowsAt: duplicates)
-        } else if response == (deleteOffered ? .alertSecondButtonReturn : .alertFirstButtonReturn) {
+        } else if response == .alertSecondButtonReturn {
             if !filter.isEmpty {
                 searchField.stringValue = ""
                 filter = ""
