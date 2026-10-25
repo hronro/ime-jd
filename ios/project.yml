@@ -39,6 +39,15 @@ targets:
   JdIME-iOS:
     type: application
     platform: iOS
+    # The App Group the user dictionary is handed to the keyboard through
+    # (see README, User dictionary). A signed build needs it enabled on the
+    # App ID; unsigned CI and simulator builds do not.
+    entitlements:
+      path: App/JdIME.entitlements
+      # xcodegen writes the file from these on every generate.
+      properties:
+        com.apple.security.application-groups:
+          - group.com.hronro.ime-jd
     sources:
       - path: App
         excludes:
@@ -73,6 +82,12 @@ targets:
   JdKeyboard:
     type: app-extension
     platform: iOS
+    entitlements:
+      path: Keyboard/JdKeyboard.entitlements
+      # xcodegen writes the file from these on every generate.
+      properties:
+        com.apple.security.application-groups:
+          - group.com.hronro.ime-jd
     sources:
       - path: Keyboard
         excludes:
@@ -112,6 +127,8 @@ targets:
     sources:
       - path: KeyboardTests
       - path: Keyboard/Engine
+      # The container app's side of the user dictionary (no UIKit).
+      - path: App/UserDict
       - path: Keyboard/UI
       - path: ../bindings/swift
         includes:

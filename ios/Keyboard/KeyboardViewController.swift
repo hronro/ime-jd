@@ -7,7 +7,11 @@ import Libjd
 final class KeyboardViewController: UIInputViewController {
     // 16 per fetch — iOS selects by tap, so pages aren't capped at 9 the way
     // macOS's 1-9 digit labels cap them; bigger pages = fewer grid-fill round trips.
-    private let session = InputSession()
+    private let session = InputSession(userDict: UserDictContainer.shared.load()?.dict)
+    /// What the session's dictionary was loaded from, compared at every
+    /// presentation: an edit made in the container app in between is
+    /// adopted then, when nothing is composing (see syncUserDict).
+    private var userDictStamp = UserDictContainer.shared.stamp()
     private var keyboard: KeyboardView!
     private var heightConstraint: NSLayoutConstraint!
 
@@ -58,8 +62,20 @@ final class KeyboardViewController: UIInputViewController {
         // viewIsAppearing. The constraint stays at `target` until then.
     }
 
+    /// Adopt an edited user dictionary. A context's dictionary is fixed for
+    /// its lifetime and the candidates on screen point into its blob, so the
+    /// swap happens between presentations, when nothing is composing. Two
+    /// stats and a defaults read when nothing changed.
+    private func syncUserDict() {
+        let stamp = UserDictContainer.shared.stamp()
+        guard stamp != userDictStamp, !session.isComposing else { return }
+        userDictStamp = stamp
+        session.replaceDictionary(UserDictContainer.shared.load()?.dict)
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        syncUserDict()
         // Every presentation opens on the plane the field asks for (a numeric
         // field on 123, anything else on letters), whatever plane was showing
         // when the keyboard went away — the system keyboards reset the same way.

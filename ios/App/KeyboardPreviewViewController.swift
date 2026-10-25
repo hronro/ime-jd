@@ -4,7 +4,8 @@ import UIKit
 /// extension in Settings. It drives the SAME `KeyboardView` + `InputSession`, with
 /// committed text routed into a real text view (which conforms to `UIKeyInput`).
 final class KeyboardPreviewViewController: UIViewController {
-    private let session = InputSession()   // mirrors the extension
+    private let session = InputSession(userDict: UserDictStore.shared.activeDictionary)   // mirrors the extension
+    private var userDictObserver: NSObjectProtocol?
     private let host = FieldHost()
     private let textView = UITextView()
     private var keyboard: KeyboardView!
@@ -18,12 +19,25 @@ final class KeyboardPreviewViewController: UIViewController {
     /// stock backdrop's flat colour in classic.
     private var previewBackdrop: UIVisualEffectView?
 
+    deinit {
+        if let userDictObserver {
+            NotificationCenter.default.removeObserver(userDictObserver)
+        }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
         title = "试用"
 
         session.host = host
+        // Phrases edited in the app reach the preview the way they reach the
+        // extension: a fresh engine (the session drops its candidates first).
+        userDictObserver = NotificationCenter.default.addObserver(
+            forName: UserDictStore.didChange, object: UserDictStore.shared, queue: .main
+        ) { [weak self] _ in
+            self?.session.replaceDictionary(UserDictStore.shared.activeDictionary)
+        }
 
         textView.font = .systemFont(ofSize: 22)
         textView.backgroundColor = .secondarySystemBackground

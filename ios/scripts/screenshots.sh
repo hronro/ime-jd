@@ -111,8 +111,7 @@ build_app() {
   xcodebuild -project "$IOS_DIR/JdIME-iOS.xcodeproj" -scheme JdIME-iOS \
     -sdk iphonesimulator -configuration Debug \
     -derivedDataPath "$DD" \
-    -destination 'generic/platform=iOS Simulator' \
-    CODE_SIGNING_ALLOWED=NO -quiet build
+    -destination 'generic/platform=iOS Simulator' -quiet build
 }
 
 # Port UUID of the device display with the given pixel width — how a

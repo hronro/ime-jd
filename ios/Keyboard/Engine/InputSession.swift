@@ -37,7 +37,7 @@ final class InputSession {
     /// asks for more as it scrolls.
     private static let windowSize = 16
 
-    private let engine = Engine()
+    private var engine: Engine
     weak var host: KeyboardHost?
 
     /// The in-flight raw code (e.g. "js"), shown in the keyboard's candidate bar.
@@ -49,6 +49,23 @@ final class InputSession {
     var onChange: ((SessionSnapshot) -> Void)?
 
     var isComposing: Bool { !rawBuffer.isEmpty }
+
+    /// `userDict` is merged into every candidate list (see `Engine`); nil
+    /// for the built-in dictionary alone.
+    init(userDict: UserDict? = nil) {
+        engine = Engine(userDict: userDict)
+    }
+
+    /// Adopt another dictionary: a fresh engine, so whatever was composing
+    /// is dropped. The candidates on screen point into the old dictionary's
+    /// blob, so they are cleared — and the UI told so — before the old
+    /// engine, and with it the blob, goes away (see `Candidate`).
+    func replaceDictionary(_ userDict: UserDict?) {
+        rawBuffer = ""
+        snapshot = .empty
+        onChange?(snapshot)
+        engine = Engine(userDict: userDict)
+    }
 
     // MARK: - Single entry point
 

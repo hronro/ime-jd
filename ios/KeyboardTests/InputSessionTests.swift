@@ -19,6 +19,50 @@ final class InputSessionTests: XCTestCase {
         return (s, h)
     }
 
+    /// A user dictionary joins the candidates like the built-in words do,
+    /// and a code only it knows composes — hints and all — and commits.
+    func testAUserDictionaryJoinsTheCandidates() throws {
+        let dict = try UserDict.build("键道\tzzzzzz\n").dict
+        let s = InputSession(userDict: dict)
+        let h = MockHost()
+        s.host = h
+        for b in "zzzzz".utf8 { s.handle(.engineKey(b)) }
+        XCTAssertTrue(s.isComposing)
+        XCTAssertEqual(s.snapshot.candidates.map(\.value), ["键道"])
+        XCTAssertEqual(s.snapshot.candidates.first?.hint, "z")
+        s.handle(.engineKey(UInt8(ascii: "z")))
+        XCTAssertEqual(h.joined, "键道", "the sole completion auto-commits")
+        XCTAssertFalse(s.isComposing)
+    }
+
+    /// Swapping the dictionary mid-composition drops the composition and
+    /// tells the UI so before the old engine (and the blob its candidates
+    /// point into) goes away; the next keys read the new dictionary.
+    func testReplacingTheDictionaryDropsTheCompositionFirst() throws {
+        let dict = try UserDict.build("键道\tzzzzzz\n").dict
+        let s = InputSession(userDict: dict)
+        let h = MockHost()
+        s.host = h
+        var seen: [SessionSnapshot] = []
+        s.onChange = { seen.append($0) }
+        for b in "zzz".utf8 { s.handle(.engineKey(b)) }
+        XCTAssertTrue(s.isComposing)
+
+        s.replaceDictionary(nil)
+        XCTAssertFalse(s.isComposing)
+        XCTAssertEqual(seen.last, .empty)
+        XCTAssertEqual(h.inserted, [], "nothing committed by the swap")
+
+        for b in "zzzzz".utf8 { s.handle(.engineKey(b)) }
+        XCTAssertFalse(s.snapshot.candidates.map(\.value).contains("键道"))
+        XCTAssertFalse(h.joined.contains("键道"))
+
+        // And back to a dictionary with a different phrase on the code.
+        s.replaceDictionary(try UserDict.build("键道输入法\tzzzzzz\n").dict)
+        for b in "zzzzz".utf8 { s.handle(.engineKey(b)) }
+        XCTAssertEqual(s.snapshot.candidates.map(\.value), ["键道输入法"])
+    }
+
     /// A letter starts a composition shown in the keyboard's own bar — nothing
     /// must leak to the host until commit (the cardinal iOS rule).
     func testLetterStartsCompositionWithoutInserting() {

@@ -7,13 +7,15 @@ A native iOS **custom keyboard extension** for the 键道 (jd) input method, bui
 ```
 ios/
   project.yml                 # XcodeGen spec (source of truth; .xcodeproj is gitignored)
-  App/                        # container app (instructions + in-app keyboard preview)
+  App/                        # container app (instructions, in-app keyboard preview, the user-dictionary list)
+    UserDict/                 # UserDictStore — the app's side of the user dictionary (no UIKit; tested hostless)
+    JdIME.entitlements        # the App Group the user dictionary is handed over through
   Keyboard/
     KeyboardViewController.swift   # the extension's principal class (UIInputViewController)
-    Engine/                   # InputSession — the iOS dispatch core (the FFI wrapper itself
-                              # is shared source at ../bindings/swift, listed in project.yml)
+    Engine/                   # InputSession — the iOS dispatch core; UserDictContainer — the App Group
+                              # hand-off (the FFI wrapper itself is shared source at ../bindings/swift)
     UI/                       # KeyboardView, key grid, candidate bar/grid, theme, popups
-  KeyboardTests/              # InputSession + theme logic tests (hostless)
+  KeyboardTests/              # InputSession, theme and user-dictionary logic tests (hostless)
   KeyboardUITests/            # QA-only driver for the real extension (JdKeyboardQA scheme)
   scripts/
     build-libjd.sh              # Xcode prebuild: thin per-platform libjd.a (+ LIBJD_A fast-path)
@@ -38,8 +40,7 @@ The "Build libjd" prebuild phase compiles `../core` for the platform being built
 
 ```sh
 xcodebuild -project JdIME-iOS.xcodeproj -scheme JdIME-iOS \
-  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
-  CODE_SIGNING_ALLOWED=NO build
+  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 18 Pro' build
 ```
 
 (Simulator names follow the installed runtimes — `xcrun simctl list devices available`; Xcode 27's iOS 27 runtime has no iPhone 17 Pro.)
@@ -48,15 +49,32 @@ xcodebuild -project JdIME-iOS.xcodeproj -scheme JdIME-iOS \
 
 After installing the container app: **Settings ▸ General ▸ Keyboard ▸ Keyboards ▸ Add New Keyboard ▸ 键道** (on iOS 27 a sheet that lists third-party keyboards below the suggested ones). No "Allow Full Access" needed. The container app also has an **in-app preview** ("在应用内试用键盘") to try the keyboard without enabling it system-wide.
 
+## User dictionary
+
+The user's own phrases (用户自造词) are merged into every candidate list once the feature is switched on in the container app: a phrase on a code of its own composes like a built-in word, hints included, and a phrase on a code it shares with a built-in word is listed first, so adding one is how a user overrides what that code commits by default. The engine side is the same `UserDict` wrapper the macOS client uses (`bindings/swift/UserDict.swift`); what differs is where the phrases live and how they reach the keyboard, because an iOS keyboard extension and its app are two sandboxed processes.
+
+**The hand-off.** Both processes share one App Group container (`group.com.hronro.ime-jd`, entitled in `App/JdIME.entitlements` and `Keyboard/JdKeyboard.entitlements`). The phrases file `用户自造词.txt` in it, in `libjd`'s table format (`bindings/swift/UserDictFile.swift`), is the single source of truth, and the app is its only writer: on every change the app rewrites it and, beside it, `用户自造词.blob`, the dictionary it compiled from that text, tagged with the text's hash. The on/off switch (`JdUserDictEnabled`, off by default) sits in the group's shared `UserDefaults`. The keyboard only reads. At every presentation it checks the switch and the two files' sizes and dates, and when something changed and nothing is composing it loads the blob — sub-millisecond — or, when the blob is missing, corrupt, stale after an app update or tagged for another text, builds the dictionary from the text in memory (a few milliseconds) without writing anything; the app rewrites the blob the next time it runs. A container or file the keyboard cannot read means no user dictionary, never an error.
+
+This split is what the platform allows, verified on an iPhone 16 Pro Max running iOS 18.2 with Full Access off: a keyboard extension can read the App Group's files and shared defaults, and cannot write there (permission denied). The simulator proves nothing here — its extensions run unconfined — so verify such questions on a device. Older iOS versions are unverified; the keyboard treats an unreadable container as "no dictionary". **Full Access is still not required.**
+
+**The list.** 用户自造词 in the container app: the file's phrases in file order, with the switch, a search field, add (+), tap to edit, swipe to delete, and drag to reorder in edit mode (order matters only among phrases on one code). Every row is saved as typed — the screen validates nothing — and the engine's notes from the build that follows every save are each row's status (`bindings/swift/UserDictProblem.swift`, shared with the macOS window): a line the engine skips because it does not parse (red, 不生效), a duplicate it drops (grey, 不生效), a phrase on a code that a built-in word or another row already uses (orange, 同码: it works, listed ahead of the built-in word). The footer counts them. The in-app preview adopts an edited dictionary at once, the way the extension does at its next presentation.
+
+**Importing a file.** 从文件导入… on the same screen opens the Files picker (any file; a text file that reached the device without its extension is typed as plain data) for a phrases file in `libjd`'s format: one 键道 wrote on another device, or any text file laid out the same way. The file is read the way the list's own is (comments and blank lines skipped, every other line a row as typed, nothing judged), must be UTF-8 and hold at least one phrase line, and its rows are appended to the list as they are: the screen compares nothing. What that makes of the list is the engine's verdict, as after typing — a row repeating an earlier row or a built-in word is flagged grey, so importing the same file twice shows a second, grey copy of every phrase. **移除重复词条**, next to the import row, deletes exactly those rows after a confirmation that counts them and says what they repeat (the first of each stays); it is greyed out while the engine flags none, or has no notes because the file did not build at all. The one check before an import is written is the engine's own build of the result: an import that would push the file over the caps changes nothing and says why, unlike a typed row, which is always kept.
+
+**Exporting.** 导出… hands the phrases file itself to the share sheet — AirDrop, 存储到「文件」, or any app that takes a text file — byte for byte what the keyboard reads, so what one device exports another imports as it is. The sheet is given a copy in the app's temporary directory, removed when the sheet is done; the row is greyed out while the list is empty.
+
+**Signing.** The App Group must be enabled on both App IDs (`com.hronro.ime-jd` and `com.hronro.ime-jd.keyboard`) in the developer portal for a signed build to install; the unsigned device builds CI makes are unaffected. A simulator build gets the group only through Xcode's ad-hoc signature, so build it signed as the commands above do: `CODE_SIGNING_ALLOWED=NO` leaves the app and the keyboard with no entitlements at all, after which the app reports 无法加载：无法访问共享容器, the keyboard runs without the dictionary, and the simulator discards the group's container, phrases included, at its next restart.
+
+Implementation: `App/UserDict/UserDictStore.swift` (the writer: file, blob, switch, per-row verdicts, the import's reader and checked save, the export copy, the duplicates' removal), `App/UserDictListViewController.swift` (the screen, the picker and the share sheet), `Keyboard/Engine/UserDictContainer.swift` (paths, the switch, the keyboard's loader and change stamp), `InputSession.init(userDict:)` / `replaceDictionary`, and `KeyboardViewController.syncUserDict`. Tests: `KeyboardTests/UserDictContainerTests.swift`, `UserDictStoreTests.swift` and the user-dictionary cases in `InputSessionTests.swift`.
+
 ## Tests
 
 ```sh
 xcodebuild -project JdIME-iOS.xcodeproj -scheme JdIME-iOS \
-  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
-  CODE_SIGNING_ALLOWED=NO test
+  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 18 Pro' test
 ```
 
-`KeyboardTests` covers the `InputSession` dispatch core (composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top) and `KeyboardTheme` resolution (style gate, appearance, return-key tinting).
+`KeyboardTests` covers the `InputSession` dispatch core (composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, a user dictionary's phrases and swapping it), `KeyboardTheme` resolution (style gate, appearance, return-key tinting), and the user dictionary's store and hand-off (`UserDictStoreTests`, `UserDictContainerTests`) against a temporary directory standing in for the App Group container.
 
 ### QA launch args (in-app preview)
 
@@ -71,6 +89,7 @@ The container app's preview screen takes launch args for screenshot-driven QA (`
 - `-classic` — force the pre-iOS-26 style on an iOS 26 simulator
 - `-field numbersAndPunctuation` — give the field that `UIKeyboardType` (case name): the preview opens on the plane the type asks for, and under `-system` so does the real extension (for the types iOS reserves for its own pads / keyboard — see the architecture note — `-system` shows what the user gets instead)
 - `-return search` — give the field that `UIReturnKeyType` (case name), to see the return key's glyph / label and tint for it (under `-system`, the system keyboard's too)
+- `-userdict "词<TAB>编码;词<TAB>编码"` — seed the user dictionary with these phrases (replacing the file) and switch it on, so a known phrase can be typed in the preview (`-type`) or on the real extension without going through the list
 - `-system` — use the SYSTEM keyboard instead of the inline preview: with the extension enabled, that is the real 键道 extension in its real hosting context
 
 With `SIMCTL_CHILD_JD_QA_READY=<path>` set for `simctl launch`, the preview creates that file once it has applied these args, so a screenshot loop can wait for it rather than for a fixed delay (`scripts/screenshots.sh` does).
@@ -82,12 +101,16 @@ With `SIMCTL_CHILD_JD_QA_READY=<path>` set for `simctl launch`, the preview crea
 ```sh
 TEST_RUNNER_JD_QA_MARKER=/tmp/jd-qa-ready \
 xcodebuild test -project JdIME-iOS.xcodeproj -scheme JdKeyboardQA \
-  -destination "id=$UDID" -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO &
+  -destination "id=$UDID" -derivedDataPath build/DD &
 # wait for /tmp/jd-qa-ready, screenshot via `simctl io`, then rm the marker
 # (the test exits once the marker disappears)
 ```
 
+If the test fails with `did not switch to 键道` and the preview field shows no keyboard at all, the simulator has a hardware keyboard attached (DeviceHub's hardware-keyboard simulation; the simulator's `log show` reports `backboardd: Hardware keyboard attached` at boot), which hides every software keyboard: switch it off in DeviceHub first.
+
 `TEST_RUNNER_JD_QA_ARGS="-field numberPad"` forwards extra launch args to the preview app, e.g. to present the extension over a numeric field.
+
+`testImportFromFiles` (run with `-only-testing:JdKeyboardUITests/KeyboardExtensionQA/testImportFromFiles` and `TEST_RUNNER_JD_QA_IMPORT=<file name>`) drives the user dictionary's import through the Files picker: it seeds the list, picks the named file under Browse ▸ On My iPhone, checks the appended rows and the repeat the engine flags, then removes it with 移除重复词条. Plant the file first in the simulator's local file-provider storage, which Files shows as On My iPhone: `~/Library/Developer/CoreSimulator/Devices/<UDID>/data/Containers/Shared/AppGroup/<the container whose metadata plist names group.com.apple.FileProvider.LocalStorage>/File Provider Storage/`. With `TEST_RUNNER_JD_QA_MARKER` set it holds twice, at `<marker>-imported` and `<marker>-deduped`, for screenshots; `TEST_RUNNER_JD_QA_DUMP=<path>` writes the element tree at each picker step, for when the picker's labels move. `testExportToFiles` (`TEST_RUNNER_JD_QA_EXPORT=1`) is the counterpart: it shares the file through the sheet's Save to Files into the same storage directory, holding at `<marker>-share`, `<marker>-save-sheet` and `<marker>-exported`, so the host can compare the saved file with the group container's.
 
 ### iPhone Duo fold states
 

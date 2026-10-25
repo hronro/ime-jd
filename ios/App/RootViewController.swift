@@ -24,8 +24,9 @@ final class RootViewController: UIViewController {
         let stepsCard = makeStepsCard()
         let note = makeFullAccessNote()
         let openSettings = makeOpenSettingsButton()
+        let userDict = makeUserDictButton()
 
-        let content = UIStackView(arrangedSubviews: [hero, header, stepsCard, note, openSettings])
+        let content = UIStackView(arrangedSubviews: [hero, header, stepsCard, note, openSettings, userDict])
         content.axis = .vertical
         content.spacing = 16
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -33,6 +34,7 @@ final class RootViewController: UIViewController {
         content.setCustomSpacing(10, after: header)      // header → card
         content.setCustomSpacing(12, after: stepsCard)   // card → reassurance note
         content.setCustomSpacing(24, after: note)        // note → primary button
+        content.setCustomSpacing(12, after: openSettings) // primary → user dictionary
         scrollView.addSubview(content)
 
         let bottomBar = makeBottomBar()
@@ -70,6 +72,10 @@ final class RootViewController: UIViewController {
 
     private func openPreview() {
         navigationController?.pushViewController(KeyboardPreviewViewController(), animated: true)
+    }
+
+    private func openUserDict() {
+        navigationController?.pushViewController(UserDictListViewController(), animated: true)
     }
 
     // MARK: - Hero
@@ -200,6 +206,12 @@ final class RootViewController: UIViewController {
     private func makeOpenSettingsButton() -> UIView {
         let button = makeButton(title: "打开系统设置", prominent: true, systemImage: "gearshape.fill")
         button.onTap { [weak self] in self?.openSystemSettings() }
+        return button
+    }
+
+    private func makeUserDictButton() -> UIView {
+        let button = makeButton(title: "用户自造词", prominent: false, systemImage: "character.book.closed")
+        button.onTap { [weak self] in self?.openUserDict() }
         return button
     }
 
