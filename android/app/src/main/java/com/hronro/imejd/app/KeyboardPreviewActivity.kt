@@ -26,6 +26,7 @@ import com.hronro.imejd.ui.FieldPolicy
 import com.hronro.imejd.ui.KeyboardLayer
 import com.hronro.imejd.ui.KeyboardTheme
 import com.hronro.imejd.ui.KeyboardView
+import com.hronro.imejd.userdict.UserDictStore
 
 class KeyboardPreviewActivity : AppCompatActivity() {
 
@@ -59,7 +60,11 @@ class KeyboardPreviewActivity : AppCompatActivity() {
         }
     }
 
-    private val session = InputSession() // mirrors JdInputMethodService
+    // Mirrors JdInputMethodService, user dictionary included: phrases edited
+    // in the app reach the preview the way they reach the IME.
+    private val userDict by lazy { UserDictStore.get(this) }
+    private val session by lazy { InputSession(userDict.activeDictionary) }
+    private val userDictListener: () -> Unit = { session.replaceDictionary(userDict.activeDictionary) }
     private val host = FieldHost()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -90,6 +95,7 @@ class KeyboardPreviewActivity : AppCompatActivity() {
         }
         host.input = field
         session.host = host
+        userDict.addListener(userDictListener)
         // An external caret move mid-composition orphans the composition's
         // context — drop it, exactly like the service does in onUpdateSelection.
         field.onCaretMoved = { if (session.isComposing) session.cancelAndReset() }
@@ -137,6 +143,7 @@ class KeyboardPreviewActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        userDict.removeListener(userDictListener)
         session.close()
         super.onDestroy()
     }

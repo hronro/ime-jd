@@ -92,6 +92,10 @@ dependencies {
     // deps. 1.12's lack of a materialButtonTonalStyle attr is worked around in
     // MainActivity with two theme colors.
     implementation("com.google.android.material:material:1.12.0")
+    // The user dictionary's list (app/UserDictActivity): the versions material
+    // 1.12 already resolves, declared because the screen uses them directly.
+    implementation("androidx.recyclerview:recyclerview:1.1.0")
+    implementation("androidx.coordinatorlayout:coordinatorlayout:1.1.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     // JVM unit tests (src/test): the update feed model. The unit-test

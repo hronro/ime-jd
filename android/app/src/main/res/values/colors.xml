@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The phrase list's 同码 verdict (iOS: systemOrange). Material 3 has no
+         warning role; this pair keeps the text readable on both surfaces. -->
+    <color name="user_dict_shared">#B35C00</color>
+</resources>

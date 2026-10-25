@@ -27,6 +27,13 @@
             android:label="@string/preview_title"
             android:exported="false" />
 
+        <!-- The user dictionary's phrase list (用户自造词). -->
+        <activity
+            android:name=".app.UserDictActivity"
+            android:label="@string/user_dict"
+            android:parentActivityName=".app.MainActivity"
+            android:exported="false" />
+
         <!-- The IME itself: a Service the system binds to. This is the mandatory
              JVM entry point — Android has no native IME entry point. -->
         <service

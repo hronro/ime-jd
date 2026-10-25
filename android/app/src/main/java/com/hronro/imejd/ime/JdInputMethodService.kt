@@ -19,13 +19,26 @@ import com.hronro.imejd.ui.FieldPolicy
 import com.hronro.imejd.ui.KeyboardTheme
 import com.hronro.imejd.ui.KeyboardView
 import com.hronro.imejd.update.UpdateChecker
+import com.hronro.imejd.userdict.UserDictStore
 
 class JdInputMethodService : InputMethodService(), KeyboardHost {
 
     // 16 per fetch — selection is by tap, so pages aren't capped at 9 the way
     // macOS's 1-9 digit labels cap them; bigger pages = fewer grid-fill round trips.
-    private val session: InputSession by lazy { InputSession().also { it.host = this } }
+    private val session: InputSession by lazy {
+        userDictGeneration = userDict.generation
+        InputSession(userDict.activeDictionary).also { it.host = this }
+    }
     private var keyboard: KeyboardView? = null
+
+    /**
+     * The user dictionary, shared with the container app in this process,
+     * and the generation of it the session runs on. An edit or the switch
+     * reaches the session when nothing is composing (see [syncUserDict]).
+     */
+    private val userDict: UserDictStore by lazy { UserDictStore.get(this) }
+    private var userDictGeneration = 0
+    private val userDictListener: () -> Unit = { if (keyboard != null && !session.isComposing) syncUserDict() }
 
     /**
      * When we last edited the host ourselves (commit / literal / delete), in
@@ -33,6 +46,22 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
      * own edits' echoes apart from external caret moves — see there.
      */
     private var lastOwnHostEdit = 0L
+
+    override fun onCreate() {
+        super.onCreate()
+        userDict.addListener(userDictListener)
+    }
+
+    /**
+     * Adopt the store's current dictionary. A context's dictionary is fixed
+     * for its lifetime, so this is a fresh engine; callers make sure nothing
+     * is composing. A no-op when nothing changed.
+     */
+    private fun syncUserDict() {
+        if (userDict.generation == userDictGeneration) return
+        userDictGeneration = userDict.generation
+        session.replaceDictionary(userDict.activeDictionary)
+    }
 
     override fun onCreateInputView(): View {
         val opts = currentInputEditorInfo?.imeOptions ?: 0
@@ -46,6 +75,7 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         session.cancelAndReset()
+        syncUserDict()
         val opts = info?.imeOptions ?: 0
         keyboard?.applyTheme(KeyboardTheme.resolve(this, opts))
         keyboard?.returnLabel = KeyboardTheme.returnLabel(KeyboardTheme.effectiveAction(opts))
@@ -169,6 +199,7 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
     }
 
     override fun onDestroy() {
+        userDict.removeListener(userDictListener)
         session.close()
         super.onDestroy()
     }

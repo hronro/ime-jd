@@ -16,6 +16,40 @@
     <string name="key_sound">按键音效</string>
     <string name="key_vibration">按键振动</string>
     <string name="try_hint">在此试打：输入 jd 试试</string>
+    <string name="user_dict">用户自造词</string>
+
+    <!-- The user dictionary's screen (UserDictActivity). -->
+    <string name="user_dict_enabled">启用用户自造词</string>
+    <string name="user_dict_search">搜索词或编码</string>
+    <string name="user_dict_add">添加词条</string>
+    <string name="user_dict_edit">编辑词条</string>
+    <string name="user_dict_value">词</string>
+    <string name="user_dict_keys">编码</string>
+    <string name="user_dict_keys_helper">a-z 和 ;，1 到 6 个</string>
+    <string name="user_dict_import">从文件导入…</string>
+    <string name="user_dict_export">导出到文件…</string>
+    <string name="user_dict_remove_duplicates">移除重复词条</string>
+    <string name="user_dict_actions_footer">「从文件导入」读取其他设备上的键道导出的用户自造词（.txt），或任何同样格式的 UTF-8 文本文件：每行一条，词和编码之间用制表符分隔；导入的词条追加在列表末尾。「导出到文件」把这里的词条存成同样格式的文本文件。与前面的词条或内置词相同的词条算重复，不生效，「移除重复词条」会把它们一并删除。</string>
+    <string name="user_dict_phrases_header">词条</string>
+    <string name="user_dict_empty_footer">尚无词条。点右下角的 + 添加：一个词和它的编码。与内置词同码时，自造词排在内置词之前。</string>
+    <string name="user_dict_list_footer">左右滑动删除。同一编码下的词按此处的顺序排列，拖动右侧的手柄可调整。</string>
+    <string name="user_dict_search_footer">搜索时不能拖动排序。</string>
+    <string name="user_dict_no_match">没有匹配的词条。</string>
+    <string name="user_dict_reorder">拖动排序</string>
+    <string name="user_dict_save">保存</string>
+    <string name="user_dict_cancel">取消</string>
+    <string name="user_dict_ok">好</string>
+    <string name="user_dict_undo">撤销</string>
+    <string name="user_dict_deleted">已删除「%1$s」</string>
+    <string name="user_dict_imported">已追加 %1$d 条词条</string>
+    <string name="user_dict_exported">已导出</string>
+    <string name="user_dict_save_failed">无法保存</string>
+    <string name="user_dict_import_failed">无法导入</string>
+    <string name="user_dict_export_failed">无法导出</string>
+    <string name="user_dict_too_large">文件过大</string>
+    <string name="user_dict_remove_title">移除 %1$d 条重复词条？</string>
+    <string name="user_dict_remove_message">%1$d 条与前面的词条相同，%2$d 条与内置词相同；这些词条不会出现在候选中。</string>
+    <string name="user_dict_remove">移除</string>
 
     <!-- Updates: the app's version/update section and the keyboard's idle-bar notice. -->
     <string name="update_current_version">当前版本 %1$s</string>

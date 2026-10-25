@@ -14,13 +14,14 @@ android/
       AndroidManifest.xml       # updater permissions + receiver, merged only with -PjdAutoUpdate=true
       cpp/jd_jni.c              # C JNI shim over libjd's C ABI (marshals jd_state / query_option → Kotlin)
       java/com/hronro/imejd/
-        engine/                 # Engine (JNI), EngineState/Candidate, KeyAction, InputSession (dispatch core)
+        engine/                 # Engine (JNI), EngineState/Candidate, UserDict, KeyAction, InputSession (dispatch core)
         ime/JdInputMethodService.kt   # the IME service; InputConnection host; lifecycle
         ui/                     # KeyLayout, KeyboardView, key plane, key previews, candidate bar/grid, theme
-        app/                    # MainActivity (enable flow, settings, updates) + KeyboardPreviewActivity (embedded try-out)
+        userdict/               # the user dictionary: phrases file, per-row verdicts, the store
+        app/                    # MainActivity (enable flow, settings, updates), KeyboardPreviewActivity (embedded try-out), UserDictActivity (用户自造词)
         update/                 # release-feed model + daily check (UpdateChecker) + APK download/install (UpdateInstaller)
-    src/androidTest/            # InputSession logic tests (instrumented; drive the real engine)
-    src/test/                   # JVM unit tests for the update feed model
+    src/androidTest/            # engine, session and user-dictionary tests (instrumented; drive the real engine)
+    src/test/                   # JVM unit tests: the update feed model, the phrases file's format
   scripts/build-libjd.sh        # zig core per-ABI + NDK-clang JNI shim → src/main/jniLibs/<abi>/
 ```
 
@@ -51,6 +52,20 @@ Install the app, then **Settings ▸ System ▸ Languages & input ▸ On-screen 
 
 On an emulator with a hardware keyboard (`hw.keyboard=yes`), Android hides soft keyboards by default — enable showing them with: `adb shell settings put secure show_ime_with_hard_keyboard 1`.
 
+## User dictionary
+
+The user's own phrases (用户自造词) are merged into every candidate list once the feature is switched on: a phrase on a code of its own composes like a built-in word, hints included, and a phrase on a code it shares with a built-in word is listed first, so adding one is how a user overrides what that code commits by default. Among the user's own phrases on one code, file order decides.
+
+**Where they live.** One text file, `用户自造词.txt` in the app's private files, in `libjd`'s table format (`userdict/UserDictFile.kt`, a port of the Swift clients' shared source), is the single source of truth. The container app, the embedded preview and the IME service share one process, so one store (`userdict/UserDictStore.kt`) serves all three, and the switch (`user_dict_enabled`, off by default) sits in the keyboard's preferences next to the key-feedback switches. A context's dictionary is fixed for its lifetime, so the store never touches an engine: it bumps a generation and tells its listeners, and the IME adopts the new dictionary when nothing is composing, at once if the keyboard is idle and otherwise at the next `onStartInputView`. The file is in Auto Backup's default set, so it moves to a new phone with the app's data.
+
+**The cache.** Building is slow on low-end phones, and the keyboard loads the dictionary at every start of the IME process, so every save also writes `用户自造词.blob`, the dictionary compiled from the text and tagged with the FNV-1a hash of its bytes, to the app's no-backup files: it is derived, and tied to the build of `libjd` that made it. A load reads the file's bytes, hashes them and takes the blob when `jd_user_dict_check` accepts it and its tag is that hash — no decoding, no parsing, no build. A missing, corrupt or stale blob (after an app update) or one tagged for another text (a restored backup) is rebuilt from the text and rewritten. The rows and the engine's verdict on each, which come from a build's notes, are worked out only when the list asks for them. On the Android 17 emulator, with 10 000 phrases, the dictionary's share of a cold start is about 9 ms from the cache against about 21 ms when building, beside about 10 ms for loading the engine library either way; the store logs each load (`adb logcat -s JdIME`).
+
+**The engine side.** `engine/UserDict.kt` ports `bindings/swift/UserDict.swift`. `UserDict.build` runs `jd_user_dict_build` in the JNI shim, which hands back the blob as a `byte[]` and the report — counts and the per-line notes — as an `int[]`, and `UserDict.fromBlob` runs `jd_user_dict_check` on a cached blob, which hands back its status, phrase count and tag as a `long[]`: plain arrays, so R8 has no new class names to keep in step with `jd_jni.c`. `jd_init` reads the blob in place for the context's whole lifetime and a JVM array can move, so each `Engine(userDict)` copies the blob into native memory of its own, freed after `jd_deinit`. Candidates cross JNI as Strings, so nothing a session shows points into a dictionary, and `InputSession.replaceDictionary` simply swaps engines.
+
+**The list.** **用户自造词** on the main screen opens it (`app/UserDictActivity.kt`): the file's phrases in file order under the switch and its status line, with search (the list narrows to the matching phrases), add (+), tap to edit, swipe either way to delete (with 撤销), and drag by the handle to reorder — order matters only among phrases on one code, and dragging is off while searching. Every row is saved as typed, the screen validates nothing, and the engine's notes from the build that follows every save are each row's second line, in the words and colours of the other clients (`userdict/UserDictProblem.kt`): red for a line the engine skips because it does not parse, grey for a duplicate it drops, orange for a phrase on a code a built-in word or another row already uses (it works, listed first). The code field is a visible-password field, so 键道 types into it directly instead of composing (`FieldPolicy`) and other keyboards offer no suggestions.
+
+**Moving the file.** **从文件导入…** opens the system's document picker (any type: a text file that lost its extension is plain data to the system) and appends the file's rows as they are; the picked file must be UTF-8 and hold a phrase line, and the one other check is the engine's own build of the result, so an import that would push the file over `libjd`'s caps — phrases or text size, as on every client — changes nothing and says why. The screen compares nothing, so importing a file twice shows the engine's grey copies, and **移除重复词条** deletes exactly the rows the engine flags as duplicates, after a confirmation with the counts, keeping the first of each. **导出到文件…** writes the file itself through the system's save dialog — the device's storage, Drive, any document provider — byte for byte what the engine reads, so what one device exports another imports as it is.
+
 ## Updates
 
 The in-app updater is a **build flag**, off by default: `./gradlew assembleRelease -PjdAutoUpdate=true` (the default lives in `gradle.properties`). Only GitHub-distributed APKs need it — `release.yml` and `build-on-push.yml` pass the flag — while an app-store build leaves it off and ships a plain APK: no permissions at all, no receiver (`src/autoUpdate/AndroidManifest.xml` is merged only when the flag is on), no update UI, and R8 strips `update/` behind the false `BuildConfig.AUTO_UPDATE` constant. Check a built APK with `aapt2 dump badging app.apk | grep uses-permission`.
@@ -66,7 +81,7 @@ The check can be turned off with the **自动检查更新** switch; **检查更�
 ./gradlew :app:connectedDebugAndroidTest    # needs a running device/emulator
 ```
 
-`InputSessionTest` (instrumented, because it drives the real engine through JNI) covers the `InputSession` dispatch core: composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, raw commit, cancel. `FieldPolicyTest` pins the field policy — numeric classes open on ?123, text classes on letters, every password variation (and only those) gets direct input.
+`InputSessionTest` (instrumented, because it drives the real engine through JNI) covers the `InputSession` dispatch core: composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, raw commit, cancel, a user dictionary's phrases and swapping it. `FieldPolicyTest` pins the field policy — numeric classes open on ?123, text classes on letters, every password variation (and only those) gets direct input. `UserDictTest` drives the `UserDict` wrapper against the real engine (notes, caps, cached blobs, the engine's own copy of the blob), `UserDictStoreTest` the store against temporary files (the cache included), and the JVM `UserDictFileTest` the file's line format and hash.
 
 For UI screenshots without enabling the IME, the embedded preview takes QA intent extras (the counterpart of the iOS app's `-preview`/`-numbers`/`-symbols`/`-type` launch args), forwarded through the launcher activity:
 
@@ -76,6 +91,8 @@ adb shell am start -n com.hronro.imejd/.app.MainActivity \
 ```
 
 `--es jd.field number|decimal|phone|datetime|password|visiblePassword|numberPassword|email|uri|text` gives the field that input type: with `jd.preview` the embedded keyboard opens the way the IME would over it; without, it types the launcher's try-field instead, so the real IME can be driven over such a field.
+
+`--es jd.userdict "词<TAB>编码;词<TAB>编码"` seeds the user dictionary with these phrases (replacing the file) and switches it on, before the preview opens, so `--es jd.userdict "$(printf '键道\tzzzzzz')" --ez jd.preview true --es jd.type zzzzz` shows the phrase in the preview's bar with no taps; `adb shell` hands the command to the device's shell, so quote the TAB there. `--ez jd.userdict_list true` opens the 用户自造词 screen.
 
 ## Architecture notes
 

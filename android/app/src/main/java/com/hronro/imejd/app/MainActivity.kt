@@ -83,6 +83,12 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(this@MainActivity, KeyboardPreviewActivity::class.java))
             }
         }
+        val userDictBtn = tonalButton().apply {
+            text = getString(R.string.user_dict)
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, UserDictActivity::class.java))
+            }
+        }
         // Key-press feedback toggles, the ones the built-in keyboards also
         // offer (Gboard/AOSP; the iOS keyboard always clicks — extensions
         // have no settings surface there). They write the prefs KeyFeedback
@@ -122,6 +128,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(enableBtn, lp)
         root.addView(switchBtn, lp)
         root.addView(previewBtn, lp)
+        root.addView(userDictBtn, lp)
         root.addView(soundSwitch, lp)
         root.addView(vibrationSwitch, lp)
         updates?.let {
@@ -150,6 +157,15 @@ class MainActivity : AppCompatActivity() {
 
         updates?.start()
 
+        // QA: seed the user dictionary first, so the preview below — and the
+        // real IME — read it (see UserDictActivity.EXTRA_SEED). Once per
+        // launch: a rotation must not seed over edits made since.
+        if (savedInstanceState == null) {
+            intent.getStringExtra(UserDictActivity.EXTRA_SEED)?.let { UserDictActivity.seed(this, it) }
+            if (intent.getBooleanExtra(UserDictActivity.EXTRA_OPEN, false)) {
+                startActivity(Intent(this, UserDictActivity::class.java))
+            }
+        }
         // QA fast-path (the iOS -preview launch arg's counterpart): forward to
         // the embedded preview, so one adb command reaches that non-exported
         // screen through this exported launcher — see KeyboardPreviewActivity.
