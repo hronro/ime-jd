@@ -33,7 +33,7 @@ object UserDictFile {
 
     /** The first line of every file the app writes, for whoever opens it in a text editor. */
     const val HEADER =
-        "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 和 ; 组成，1 到 ${UserDict.MAX_KEY_LENGTH} 个字符。"
+        "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，1 到 ${UserDict.MAX_KEY_LENGTH} 个字符。"
 
     /** The file's bytes, or null when there is no file. [decode] makes them text. */
     @Throws(IOException::class)

@@ -13,7 +13,7 @@
 //!   [Header][Entry × entry_count][strings pool]
 //!
 //! Entries are sorted by key length, then by the keys themselves in
-//! `trie.keyRank` order (keys are stored as rank bytes 0..26, so a plain
+//! `trie.keyRank` order (keys are stored as rank bytes 0..25, so a plain
 //! byte comparison *is* keyRank order), then by position in the source
 //! text. That is exactly the order `pagination.NodePagination` enumerates a
 //! trie subtree in — shorter completions first, ties by key rank — so the
@@ -66,7 +66,9 @@ pub const FORMAT_VERSION: u32 = 1;
 const MAGIC: [4]u8 = "JDUD".*;
 /// Written natively; reads back wrong on a blob from the other endianness.
 const ENDIAN_TAG: u32 = 0x0102_0304;
-const ALPHA: u8 = 27;
+/// User keys are letters only, so every stored rank is below this; ';'
+/// (rank 26) is the built-in symbol codes' key — see `parseLine`.
+const LETTERS: u8 = 26;
 
 /// Mirrors the `JD_USER_DICT_*` status codes in `include/jd.h`. These are
 /// failures of a call as a whole; a line that does not parse is not one —
@@ -159,7 +161,7 @@ pub const NoteFlag = struct {
     pub const code_in_line: u32 = 0x8;
     /// Skipped: neither blank nor a comment, and no TAB.
     pub const malformed: u32 = 0x10;
-    /// Skipped: keys empty, longer than `MAX_KEYS_LEN`, or outside a-z ';'.
+    /// Skipped: keys empty, longer than `MAX_KEYS_LEN`, or not all a-z.
     pub const bad_keys: u32 = 0x20;
     /// Skipped: value empty, longer than `VALUE_MAX`, not UTF-8, or
     /// containing control bytes.
@@ -314,7 +316,7 @@ pub const UserDict = struct {
             while (i < hi) : (i += 1) {
                 const e = &entries[i];
                 if (e.keys_len != len or e._pad != 0) return error.Corrupt;
-                for (e.keys[0..len]) |r| if (r >= ALPHA) return error.Corrupt;
+                for (e.keys[0..len]) |r| if (r >= LETTERS) return error.Corrupt;
                 for (e.keys[len..]) |r| if (r != 0) return error.Corrupt;
                 if (e.value_len == 0 or e.value_len > VALUE_MAX) return error.Corrupt;
                 const end = @as(u64, e.value_off) + e.value_len;
@@ -400,7 +402,8 @@ pub const UserDict = struct {
 };
 
 /// Rank-encode a key-byte prefix (a-z, ';') into `buf`. The caller
-/// guarantees the bytes are in the alphabet and fit.
+/// guarantees the bytes are in the alphabet and fit. A prefix with ';'
+/// in it matches no entry: user keys are letters only.
 pub fn ranksOf(keys: []const u8, buf: *[MAX_KEYS_LEN]u8) []const u8 {
     for (keys, 0..) |k, i| buf[i] = trie_mod.keyRank(k);
     return buf[0..keys.len];
@@ -491,7 +494,11 @@ const ParseError = error{ MalformedLine, BadKeys, BadValue };
 
 /// Parse one raw line. Null for blank and comment lines. The rules are the
 /// table files' (`scripts/gen_trie.zig`), tightened: empty keys and empty
-/// values are errors rather than silently skipped.
+/// values are errors rather than silently skipped, and keys are letters
+/// only. In the built-in tables `;` appears only in the symbol codes,
+/// which all start with it; users do not define symbols, and a user code
+/// with `;` after a prefix would make that key descend there instead of
+/// committing the second candidate (`query.zig`, case B).
 fn parseLine(raw: []const u8) ParseError!?Line {
     const trimmed = std.mem.trim(u8, raw, " \r");
     if (trimmed.len == 0 or trimmed[0] == '#') return null;
@@ -499,7 +506,7 @@ fn parseLine(raw: []const u8) ParseError!?Line {
     const value = std.mem.trim(u8, trimmed[0..tab], " ");
     const keys = std.mem.trim(u8, trimmed[tab + 1 ..], " ");
     if (keys.len == 0 or keys.len > MAX_KEYS_LEN) return error.BadKeys;
-    for (keys) |k| if (!trie_mod.isValidKeyByte(k)) return error.BadKeys;
+    for (keys) |k| if (k < 'a' or k > 'z') return error.BadKeys;
     if (value.len == 0 or value.len > VALUE_MAX or !isCleanValue(value)) return error.BadValue;
     return .{ .value = value, .keys = keys };
 }
@@ -831,13 +838,13 @@ test "build + fromBytes round-trip, in enumeration order" {
     var base = try emptyBase(testing.allocator);
     defer base.deinit(testing.allocator);
 
-    // Deliberately unsorted; ';' sorts after 'z'; same code keeps file order.
+    // Deliberately unsorted; same code keeps file order.
     const text =
         "# comment\n" ++
         "丁\tacd\n" ++
         "\n" ++
         "乙\tab\n" ++
-        "分号\ta;\r\n" ++
+        "末尾\taz\r\n" ++
         "甲\ta\n" ++
         "乙2\tab\n" ++
         "  戊  \t  b  \n";
@@ -857,7 +864,7 @@ test "build + fromBytes round-trip, in enumeration order" {
         .{ .keys = "b", .value = "戊" },
         .{ .keys = "ab", .value = "乙" },
         .{ .keys = "ab", .value = "乙2" },
-        .{ .keys = "a;", .value = "分号" },
+        .{ .keys = "az", .value = "末尾" },
         .{ .keys = "acd", .value = "丁" },
     };
     var buf: [MAX_KEYS_LEN]u8 = undefined;
@@ -866,7 +873,7 @@ test "build + fromBytes round-trip, in enumeration order" {
         try testing.expectEqualStrings(want.value, valueOf(&d, i));
     }
     try testing.expectEqualSlices(u32, &.{ 0, 2, 5, 6, 6, 6, 6 }, &d.length_starts);
-    try testing.expectEqual(@as(u32, "分号".len), d.max_value_len);
+    try testing.expectEqual(@as(u32, "末尾".len), d.max_value_len);
 }
 
 test "lookups: ranges per length, counts and paths under a prefix" {
@@ -1044,6 +1051,8 @@ test "lines that do not parse are skipped and noted" {
         .{ .text = "乙\tabcdefg\n", .flag = NoteFlag.bad_keys, .line = 1, .entries = 0 },
         .{ .text = "甲\ta\n\n\n\tb\n", .flag = NoteFlag.bad_value, .line = 4, .entries = 1 },
         .{ .text = "a\tb\tc\n", .flag = NoteFlag.bad_keys, .line = 1, .entries = 0 },
+        .{ .text = "甲\ta\n冒号\t;;\n", .flag = NoteFlag.bad_keys, .line = 2, .entries = 1 },
+        .{ .text = "分号\ta;\n", .flag = NoteFlag.bad_keys, .line = 1, .entries = 0 },
         .{ .text = "\xff\xfe\ta\n", .flag = NoteFlag.bad_value, .line = 1, .entries = 0 },
         .{ .text = "x\x01y\ta\n", .flag = NoteFlag.bad_value, .line = 1, .entries = 0 },
         .{ .text = "x\x7fy\ta\n", .flag = NoteFlag.bad_value, .line = 1, .entries = 0 },
@@ -1242,6 +1251,9 @@ test "fromBytes rejects stale, misaligned and corrupt blobs" {
     try testing.expectEqual(Status.corrupt, try mutate(good, entries_off + 6, 2, FP));
     // A rank outside the alphabet.
     try testing.expectEqual(Status.corrupt, try mutate(good, entries_off + 0, 27, FP));
+    // ';' (rank 26), which no user key holds. Entry 1 ("b") is the last
+    // of its length, so it stays sorted and only the alphabet check fails.
+    try testing.expectEqual(Status.corrupt, try mutate(good, entries_off + @sizeOf(Entry), 26, FP));
     // Non-zero key padding.
     try testing.expectEqual(Status.corrupt, try mutate(good, entries_off + 1, 1, FP));
     // Unsorted: entries 0 and 1 are "a" and "b" (both length 1); turn

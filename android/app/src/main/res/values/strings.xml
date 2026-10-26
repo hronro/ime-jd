@@ -25,7 +25,7 @@
     <string name="user_dict_edit">编辑词条</string>
     <string name="user_dict_value">词</string>
     <string name="user_dict_keys">编码</string>
-    <string name="user_dict_keys_helper">a-z 和 ;，1 到 6 个</string>
+    <string name="user_dict_keys_helper">a-z，1 到 6 个</string>
     <string name="user_dict_import">从文件导入…</string>
     <string name="user_dict_export">导出到文件…</string>
     <string name="user_dict_remove_duplicates">移除重复词条</string>

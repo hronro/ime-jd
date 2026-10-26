@@ -328,7 +328,7 @@ fn bad_lines_are_skipped_and_noted_never_fatal() {
     );
     assert_eq!(
         report.notes[1].to_string(),
-        "line 3: skipped, keys must be 1 to 6 characters from a-z and `;`"
+        "line 3: skipped, keys must be 1 to 6 letters a-z"
     );
     assert_eq!(
         report.notes[2].to_string(),

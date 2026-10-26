@@ -24,7 +24,7 @@ enum UserDictProblem: Equatable {
                 return "缺少制表符（无编码），不生效"
             }
             if flags.contains(.badKeys) {
-                return "编码无效（1 到 \(UserDict.maxKeyLength) 个 a-z 或 ;），不生效"
+                return "编码无效（1 到 \(UserDict.maxKeyLength) 个 a-z），不生效"
             }
             return "词无效（不能为空或含控制字符，最长 \(UserDict.maxValueBytes) 字节），不生效"
         case .duplicate(let row?):

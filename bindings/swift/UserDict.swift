@@ -100,7 +100,7 @@ struct UserDictNote: Equatable {
         static let codeInLine = Flags(rawValue: UInt32(JD_USER_DICT_LINE_CODE_IN_LINE))
         /// Skipped: neither blank nor a comment, and no TAB.
         static let malformed = Flags(rawValue: UInt32(JD_USER_DICT_LINE_MALFORMED))
-        /// Skipped: keys empty, longer than `UserDict.maxKeyLength`, or outside `a`-`z` and `;`.
+        /// Skipped: keys empty, longer than `UserDict.maxKeyLength`, or not all `a`-`z`.
         static let badKeys = Flags(rawValue: UInt32(JD_USER_DICT_LINE_BAD_KEYS))
         /// Skipped: value empty, longer than `UserDict.maxValueBytes`, not UTF-8,
         /// or containing control characters.
@@ -202,7 +202,7 @@ final class UserDict {
     /// `badKeys` note.
     static let maxKeyLength = 6
     /// The characters a code is made of.
-    static let keyAlphabet = Set("abcdefghijklmnopqrstuvwxyz;")
+    static let keyAlphabet = Set("abcdefghijklmnopqrstuvwxyz")
 
     /// 16-byte aligned; the engine requires 4.
     private let storage: UnsafeMutableRawPointer

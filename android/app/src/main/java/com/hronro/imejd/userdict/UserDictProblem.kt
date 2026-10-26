@@ -26,7 +26,7 @@ sealed interface UserDictProblem {
             is Invalid -> when {
                 (flags and UserDictNote.MALFORMED) != 0 -> "缺少制表符（无编码），不生效"
                 (flags and UserDictNote.BAD_KEYS) != 0 ->
-                    "编码无效（1 到 ${UserDict.MAX_KEY_LENGTH} 个 a-z 或 ;），不生效"
+                    "编码无效（1 到 ${UserDict.MAX_KEY_LENGTH} 个 a-z），不生效"
                 else -> "词无效（不能为空或含控制字符，最长 ${UserDict.MAX_VALUE_BYTES} 字节），不生效"
             }
             is Duplicate -> if (ofRow != null) "与第 ${ofRow + 1} 条重复，不生效" else "与内置词重复，不生效"

@@ -121,7 +121,7 @@ final class UserDictWindowTests: XCTestCase {
         defer { controller.close() }
         XCTAssertNil(store.lastError)
         XCTAssertEqual(store.report?.invalid, 1)
-        XCTAssertEqual(controller.statusText(forRow: 1), "编码无效（1 到 6 个 a-z 或 ;），不生效")
+        XCTAssertEqual(controller.statusText(forRow: 1), "编码无效（1 到 6 个 a-z），不生效")
         XCTAssertEqual(controller.statusText(forRow: 2), "与第 1 条重复，不生效")
         XCTAssertEqual(controller.duplicateCheck(), .found(duplicates: [2], shared: [], invalid: 1))
 

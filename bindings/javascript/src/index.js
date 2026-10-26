@@ -135,7 +135,7 @@ export const UserDictNoteFlags = Object.freeze({
   CODE_IN_LINE: 8,
   /** Skipped: neither blank nor a comment, and no TAB. */
   MALFORMED: 16,
-  /** Skipped: keys empty, longer than 6, or outside a-z and `;`. */
+  /** Skipped: keys empty, longer than 6, or not all a-z. */
   BAD_KEYS: 32,
   /** Skipped: value empty, too long, not UTF-8, or containing control characters. */
   BAD_VALUE: 64,
@@ -331,14 +331,14 @@ export class JdModule {
    * Compile `value<TAB>keys` text — the format of libjd's own table files —
    * into a {@link UserDict}. `#` starts a comment line, blank lines are
    * skipped, spaces around either field are trimmed, CRLF is accepted. Keys
-   * are one to six characters from `a`-`z` and `;`; values are text without
-   * control characters. A line that breaks these rules is skipped and
-   * counted, never fatal. Exact duplicates, of an earlier line or of a
-   * built-in word on the same code, are dropped and counted; the report's
-   * notes say which lines were skipped and why, which were dropped, and
-   * which kept phrases sit on a code a built-in word or another phrase
-   * already uses. Throws a {@link UserDictError} only for a problem with the
-   * call as a whole: too much text, too many phrases.
+   * are one to six letters `a`-`z`; values are text without control
+   * characters. A line that breaks these rules is skipped and counted, never
+   * fatal. Exact duplicates, of an earlier line or of a built-in word on the
+   * same code, are dropped and counted; the report's notes say which lines
+   * were skipped and why, which were dropped, and which kept phrases sit on
+   * a code a built-in word or another phrase already uses. Throws a
+   * {@link UserDictError} only for a problem with the call as a whole: too
+   * much text, too many phrases.
    *
    * `sourceTag` is 64 bits of yours, stored in the blob and never
    * interpreted — a modification time, a content hash, a revision — so a

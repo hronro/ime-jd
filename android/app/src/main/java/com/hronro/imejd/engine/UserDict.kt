@@ -107,7 +107,7 @@ data class UserDictNote(
         const val CODE_IN_LINE = 0x8
         /** Skipped: neither blank nor a comment, and no TAB. */
         const val MALFORMED = 0x10
-        /** Skipped: keys empty, longer than [UserDict.MAX_KEY_LENGTH], or outside a-z and `;`. */
+        /** Skipped: keys empty, longer than [UserDict.MAX_KEY_LENGTH], or not all a-z. */
         const val BAD_KEYS = 0x20
         /** Skipped: value empty, too long, not UTF-8, or containing control characters. */
         const val BAD_VALUE = 0x40

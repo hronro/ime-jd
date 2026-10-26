@@ -177,6 +177,6 @@ final class UserDictTests: XCTestCase {
         XCTAssertEqual(UserDict.maxEntries, 10_000)
         XCTAssertEqual(UserDict.maxValueBytes, 255)
         XCTAssertEqual(UserDict.maxKeyLength, 6)
-        XCTAssertEqual(UserDict.keyAlphabet.count, 27)
+        XCTAssertEqual(UserDict.keyAlphabet.count, 26)
     }
 }

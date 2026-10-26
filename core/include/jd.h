@@ -132,19 +132,33 @@ void jd_deinit(jd_context *ctx);
  * still matches the phrases you have without keeping a sidecar record.
  * The engine never interprets it.
  *
- * Input text is lines of `value<TAB>keys`, the format of the library's own
- * table files: `#` starts a comment line, blank lines are ignored, spaces
- * around either field are trimmed, CRLF is accepted. Keys are 1 to 6 bytes
- * from a-z and `;`. Values are 1 to JD_USER_DICT_VALUE_MAX bytes of UTF-8
- * with no control characters. A line that breaks these rules is skipped —
- * it never fails the build — and counted in `invalid`. A phrase that
- * exactly repeats an earlier line, or a built-in word on the same code, is
- * dropped and counted in `dropped`. Everything the build has to say about
- * individual lines — why a line was skipped, what a dropped line repeats,
- * and which kept phrases sit on a code that a built-in word or another
- * phrase already uses (重码) — comes back as jd_user_dict_notes, written
- * into your buffer past the blob. The status codes are for the call as a
- * whole: a buffer below the bound, too many phrases, too much text.
+ * Input text is lines of `value<TAB>keys`, the line format of the
+ * library's own table files. A host that lists the phrases splits the text
+ * itself, so this is exactly how the library reads it, byte by byte:
+ *
+ *   - Lines end at LF and count from 1; a CR alone ends nothing.
+ *   - Each line is trimmed of spaces (0x20) and CRs at both ends, and of
+ *     nothing else: not TAB, not U+3000 or any other whitespace.
+ *   - A line that is then empty is blank and one that starts with `#` is a
+ *     comment; both are ignored.
+ *   - Any other line splits at its first TAB into the value before it and
+ *     the keys after it, each trimmed of spaces at both ends. A line with
+ *     no TAB is skipped.
+ *   - Keys are 1 to 6 letters a-z: `;`, which starts the built-in symbol
+ *     codes, is not a user key. Values are 1 to JD_USER_DICT_VALUE_MAX
+ *     bytes of UTF-8 with no byte below 0x20 and no 0x7F.
+ *   - A byte-order mark is not skipped. Drop one when you decode a file,
+ *     or U+FEFF becomes part of line 1.
+ *
+ * A line that breaks these rules is skipped — it never fails the build —
+ * and counted in `invalid`. A phrase that exactly repeats an earlier line,
+ * or a built-in word on the same code, is dropped and counted in
+ * `dropped`. Everything the build has to say about individual lines — why
+ * a line was skipped, what a dropped line repeats, and which kept phrases
+ * sit on a code that a built-in word or another phrase already uses
+ * (重码) — comes back as jd_user_dict_notes, written into your buffer past
+ * the blob. The status codes are for the call as a whole: a buffer below
+ * the bound, too many phrases, too much text.
  * ---------------------------------------------------------------------- */
 
 /** Hard limits. Also reported by jd_abi_layout so a binding can verify them. */
@@ -203,7 +217,7 @@ typedef struct {
 #define JD_USER_DICT_LINE_CODE_IN_LINE 0x8u
 /** Skipped: neither blank nor a comment, and no TAB. */
 #define JD_USER_DICT_LINE_MALFORMED 0x10u
-/** Skipped: keys empty, longer than 6, or outside a-z `;`. */
+/** Skipped: keys empty, longer than 6, or not all a-z. */
 #define JD_USER_DICT_LINE_BAD_KEYS 0x20u
 /** Skipped: value empty, longer than JD_USER_DICT_VALUE_MAX, not UTF-8, or containing control bytes. */
 #define JD_USER_DICT_LINE_BAD_VALUE 0x40u

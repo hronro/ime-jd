@@ -140,7 +140,7 @@ final class UserDictListViewController: UITableViewController, UISearchResultsUp
             field.clearButtonMode = .whileEditing
         }
         alert.addTextField { field in
-            field.placeholder = "编码（a-z 和 ;，1 到 \(UserDict.maxKeyLength) 个）"
+            field.placeholder = "编码（a-z，1 到 \(UserDict.maxKeyLength) 个）"
             field.text = entry.keys
             field.keyboardType = .asciiCapable
             field.autocapitalizationType = .none

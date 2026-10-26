@@ -96,7 +96,7 @@ export const UserDictNoteFlags: {
   readonly CODE_IN_LINE: 8;
   /** Skipped: neither blank nor a comment, and no TAB. */
   readonly MALFORMED: 16;
-  /** Skipped: keys empty, longer than 6, or outside a-z and `;`. */
+  /** Skipped: keys empty, longer than 6, or not all a-z. */
   readonly BAD_KEYS: 32;
   /** Skipped: value empty, too long, not UTF-8, or containing control characters. */
   readonly BAD_VALUE: 64;

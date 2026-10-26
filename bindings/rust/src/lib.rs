@@ -311,7 +311,7 @@ impl UserDictNote {
     pub const CODE_IN_LINE: u32 = 0x8;
     /// Skipped: neither blank nor a comment, and no TAB.
     pub const MALFORMED: u32 = 0x10;
-    /// Skipped: keys empty, longer than six, or outside `a`-`z` and `;`.
+    /// Skipped: keys empty, longer than six, or not all `a`-`z`.
     pub const BAD_KEYS: u32 = 0x20;
     /// Skipped: value empty, longer than [`UserDict::VALUE_MAX`] bytes, not
     /// UTF-8, or containing control characters.
@@ -341,7 +341,7 @@ impl fmt::Display for UserDictNote {
             return f.write_str("skipped, expected `value<TAB>keys`");
         }
         if self.flags & Self::BAD_KEYS != 0 {
-            return f.write_str("skipped, keys must be 1 to 6 characters from a-z and `;`");
+            return f.write_str("skipped, keys must be 1 to 6 letters a-z");
         }
         if self.flags & Self::BAD_VALUE != 0 {
             return write!(
@@ -516,10 +516,10 @@ impl UserDict {
     /// Build from lines of `value<TAB>keys` — the format of libjd's own
     /// table files. `#` starts a comment line, blank lines are skipped,
     /// spaces around either field are trimmed, CRLF is accepted. Keys are
-    /// one to six characters from `a`-`z` and `;`; values are UTF-8 without
-    /// control characters. Exact duplicates, of an earlier line or of a
-    /// built-in word on the same code, are dropped and counted; the report's
-    /// notes say which lines, and which kept phrases sit on a code that a
+    /// one to six letters `a`-`z`; values are UTF-8 without control
+    /// characters. Exact duplicates, of an earlier line or of a built-in
+    /// word on the same code, are dropped and counted; the report's notes
+    /// say which lines, and which kept phrases sit on a code that a
     /// built-in word or another phrase already uses.
     ///
     /// `source_tag` is stored in the blob, uninterpreted: a modification

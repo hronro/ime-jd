@@ -81,7 +81,7 @@ class UserDictStoreTest {
         val shared = store.problems[4] as UserDictProblem.SharedCode
         assertTrue(shared.builtIn >= 1)
         assertNull(shared.otherRow)
-        assertEquals("编码无效（1 到 6 个 a-z 或 ;），不生效", store.problems[1]?.text)
+        assertEquals("编码无效（1 到 6 个 a-z），不生效", store.problems[1]?.text)
         assertEquals("与第 1 条重复，不生效", store.problems[2]?.text)
         assertEquals("与内置词重复，不生效", store.problems[3]?.text)
         assertEquals("与 ${shared.builtIn} 个内置词同码", shared.text)

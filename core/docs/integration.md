@@ -254,7 +254,16 @@ The built-in dictionary is fixed at build time. A **user dictionary** is the hos
 
 ### Building a blob
 
-Input is `value<TAB>keys` text — the format of `core/tables/*.txt`, so an existing table file is a valid user dictionary. `#` starts a comment line, blank lines are ignored, spaces around either field are trimmed, CRLF is fine. Keys are one to six characters from `a`-`z` and `;`; values are one to `JD_USER_DICT_VALUE_MAX` (255) bytes of UTF-8 without control characters; at most `JD_USER_DICT_MAX_ENTRIES` (10 000) phrases. A line that breaks these rules is skipped and noted rather than failing the build, so one typo never costs the user the rest of the file; only a problem with the call as a whole — too much text, too many phrases, a buffer below the bound — fails. How the phrases are *stored* is the host's business — a text file the user edits, a table behind a GUI, a preferences store; the text is only the interchange format for this one call.
+Input is `value<TAB>keys` text, the line format of `core/tables/*.txt`. A host that lists the phrases splits the text itself, so these are the exact rules, byte by byte:
+
+- Lines end at LF and count from 1; a CR alone ends nothing.
+- Each line is trimmed of spaces (0x20) and CRs at both ends, and of nothing else — not TAB, not U+3000 or any other whitespace.
+- A line that is then empty is blank and one that starts with `#` is a comment; both are ignored.
+- Any other line splits at its first TAB into the value before it and the keys after it, each trimmed of spaces at both ends. A line with no TAB is skipped.
+- Keys are one to six letters `a`-`z`. `;` starts the built-in symbol codes and is not a user key. Values are one to `JD_USER_DICT_VALUE_MAX` (255) bytes of UTF-8 with no byte below 0x20 and no 0x7F.
+- A byte-order mark is not skipped: drop one when you decode a file, or U+FEFF becomes part of line 1.
+
+A dictionary holds at most `JD_USER_DICT_MAX_ENTRIES` (10 000) phrases. A line that breaks these rules is skipped and noted rather than failing the build, so one typo never costs the user the rest of the file; only a problem with the call as a whole — too much text, too many phrases, a buffer below the bound — fails. How the phrases are *stored* is the host's business — a text file the user edits, a table behind a GUI, a preferences store; the text is only the interchange format for this one call.
 
 ```c
 size_t cap = jd_user_dict_blob_bound(text, text_len);

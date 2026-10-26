@@ -50,7 +50,7 @@ enum UserDictFile {
     /// The first line of every file a client writes, for whoever opens it in
     /// a text editor.
     static let header =
-        "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 和 ; 组成，1 到 \(UserDict.maxKeyLength) 个字符。"
+        "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，1 到 \(UserDict.maxKeyLength) 个字符。"
 
     /// What libjd trims from a raw line, and from each field.
     static let lineTrim = CharacterSet(charactersIn: " \r")

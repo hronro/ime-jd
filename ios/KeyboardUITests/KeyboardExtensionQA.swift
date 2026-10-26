@@ -107,7 +107,7 @@ final class KeyboardExtensionQA: XCTestCase {
         tapFirst(app, "用户自造词")
         XCTAssertTrue(app.staticTexts["键道"].waitForExistence(timeout: 5), "seeded row")
         XCTAssertTrue(app.staticTexts["zzzzzz"].exists, "its code")
-        XCTAssertTrue(app.staticTexts["ZZZZZA  ·  编码无效（1 到 6 个 a-z 或 ;），不生效"].exists, "the engine's verdict")
+        XCTAssertTrue(app.staticTexts["ZZZZZA  ·  编码无效（1 到 6 个 a-z），不生效"].exists, "the engine's verdict")
         XCTAssertEqual(app.switches.firstMatch.value as? String, "1", "switched on")
 
         // The real extension over the preview's field: the code composes the
@@ -202,7 +202,7 @@ final class KeyboardExtensionQA: XCTestCase {
         XCTAssertFalse(app.staticTexts["zzzzzz  ·  与第 1 条重复，不生效"].exists, "the repeat is gone")
         XCTAssertTrue(app.staticTexts["zzzzzz"].exists, "the first 键道 stays")
         XCTAssertTrue(app.staticTexts["导入词"].exists, "so does the imported row")
-        XCTAssertTrue(app.staticTexts["ZZZZZA  ·  编码无效（1 到 6 个 a-z 或 ;），不生效"].exists, "and the invalid one")
+        XCTAssertTrue(app.staticTexts["ZZZZZA  ·  编码无效（1 到 6 个 a-z），不生效"].exists, "and the invalid one")
         dump(app, "deduped")
         hold("deduped")
     }

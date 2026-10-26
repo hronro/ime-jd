@@ -49,7 +49,7 @@ final class UserDictStoreTests: XCTestCase {
             return XCTFail("expected a shared-code verdict, got \(String(describing: store.problems[4]))")
         }
         XCTAssertGreaterThanOrEqual(builtIn, 1)
-        XCTAssertEqual(store.problems[1]?.text, "编码无效（1 到 6 个 a-z 或 ;），不生效")
+        XCTAssertEqual(store.problems[1]?.text, "编码无效（1 到 6 个 a-z），不生效")
         XCTAssertEqual(store.problems[2]?.text, "与第 1 条重复，不生效")
         XCTAssertEqual(store.problems[3]?.text, "与内置词重复，不生效")
         XCTAssertEqual(store.problems[4]?.text, "与 \(builtIn) 个内置词同码")

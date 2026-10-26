@@ -1686,17 +1686,19 @@ test "a user-only root child triggers the commit-and-jump case" {
     try expectCommit(ctx, "UBC");
 }
 
-test "`;` descends when only the user dictionary continues the prefix with it" {
+test "a user code cannot take `;` over: the line is skipped, case B stands" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
     var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "USemi\ta;\n");
     defer harness.deinit(testing.allocator);
     const ctx = &harness.ctx;
 
-    // Without the user entry this would be case B (commit 乙).
+    // User keys are letters only, so "a;" never reaches the dictionary and
+    // `;` after "a" still commits the second candidate.
+    try testing.expectEqual(@as(u32, 1), harness.user_blob.?.report.invalid);
     ctx.pressKey('a');
     ctx.pressKey(';');
-    try expectCommit(ctx, "USemi");
+    try expectCommit(ctx, "乙");
 }
 
 test "the literal fallbacks are unchanged by a user dictionary that lacks the key" {
