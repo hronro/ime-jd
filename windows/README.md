@@ -1,6 +1,6 @@
 # 键道输入法 for Windows
 
-Rust implementation of 键道输入法 as a Windows TSF Text Input Processor. Besides the built-in dictionary it carries the user's own phrases, edited in a small window of their own — see [User dictionary](#user-dictionary) — and keeps its settings in the menu of its mode icon in the taskbar — see [Mode icon](#mode-icon).
+Rust implementation of 键道输入法 as a Windows TSF Text Input Processor. Like Windows' own Chinese IMEs it has a 中 and an 英 mode, switched with Shift — see [中 and 英](#中-and-英). Besides the built-in dictionary it carries the user's own phrases, edited in a small window of their own — see [User dictionary](#user-dictionary) — and keeps its settings in the menu of its mode icon in the taskbar — see [Mode icon](#mode-icon).
 
 ## Requirements
 
@@ -50,9 +50,15 @@ Clicking it downloads that release's zip in the background, verifies it against 
 
 To turn the check off, untick **自动检查更新** in the [mode icon](#mode-icon)'s menu, which sets the DWORD `CheckForUpdates` under `HKCU\Software\hronro\ime-jd` to `0`. The other update values there are state: `LastUpdateCheck` (QWORD, Unix seconds), `LatestVersion`, `SeenVersion` — delete `LastUpdateCheck` to force a check on the next activation. The request carries no identifying data beyond a `User-Agent` with the IME version. Implementation: `src/update/` (`feed.rs` is the host-independent model — version/asset parsing — with unit tests, `mod.rs` the WinHTTP download + SHA-256 + extract + registry + elevated-launch side); the notice row lives in `candidate_window.rs`.
 
+## 中 and 英
+
+Like Windows' own Chinese IMEs, 键道 has two input modes. In **中** the keys go to the engine as described under [Keys in 中](#keys-in-中); in **英** every key reaches the application as typed, ASCII punctuation included, with no candidates. Pressing and releasing **Shift** on its own switches between them, as do a left click on the [mode icon](#mode-icon), whose 中 or 英 shows the mode, and Windows' Ctrl+Space input-method on/off hotkey. Shift counts only when nothing else happened while it was down: with a letter it types a capital, Ctrl+Shift and Alt+Shift belong to Windows, and with a click or the wheel it extends a selection or scrolls, so none of those switch. Shift while a code is being typed puts the letters typed so far into the text as they are, as Enter does, and then switches to 英; with a punctuation window open, the key itself goes in (`[`, not 「). In a field where the application has switched input methods off, Shift does nothing.
+
+Each application keeps its own mode — it is TSF's keyboard open/close switch (`GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`) of the application's thread, so an application that closes the input method switches 键道 to 英 too — and every application starts in 中, as Microsoft's IME guidelines ask. The key is not configurable. Implementation: `src/input_mode.rs`, and the keys themselves in `src/tip.rs`.
+
 ## Mode icon
 
-While 键道 is the input method of the window in front, Windows shows the IME's mode icon in the taskbar, left of the input indicator — the spot where Windows' own IMEs keep their settings. 键道 has one input mode, so the icon is a plain 中, drawn in the taskbar's own glyph colour (white on a dark taskbar, black on a light one, the theme's text colour in high contrast) at the taskbar's scale, and redrawn when either changes. A left click, which switches modes in other IMEs, does nothing; a right click opens the menu:
+While 键道 is the input method of the window in front, Windows shows the IME's mode icon in the taskbar, left of the input indicator — where Windows' own IMEs show their mode and keep their settings. It shows the [input mode](#中-and-英), 中 or 英, drawn in the taskbar's own glyph colour (white on a dark taskbar, black on a light one, the theme's text colour in high contrast) at the taskbar's scale, and redrawn when the mode, the theme or the scale changes. A left click switches the mode, as Shift does; a right click opens the menu:
 
 - **用户自造词...** opens the [user-dictionary window](#user-dictionary).
 - **启用用户自造词** is the user dictionary's switch.
@@ -84,7 +90,7 @@ The user's own phrases (用户自造词) are merged into every candidate list on
 
 Implementation: `userdict/` (package `jd-userdict`). Its library is shared with the DLL — `file.rs` (the location, the line format, atomic writes, the change stamp), `switch.rs` (the registry switches, the update check's too) and `access.rs` (the sandbox grants). Its binary is the window, `src/window/`: `mod.rs` (the dialog, from `userdict.rc`), `entry.rs` (the 新建/编辑 dialog), `table.rs` (the phrase list and its operations), `store.rs` (reading, building and writing the file), `problem.rs` (the engine's verdict on a line, in the words every client uses) and `watch.rs` (the watcher on the folder and on the switches). On the DLL's side, `src/user_dict.rs` loads and reloads the dictionary, and `jd.rs` swaps a thread's engine for one over the new dictionary when nothing is composing. `cargo test` covers the format, the switches, the grants, the list operations against temporary files, the DLL's loading, and the mode icon's drawing.
 
-## Keys (when 键道 is the active IME)
+## Keys in 中
 
 | Key | Action |
 |---|---|
@@ -95,8 +101,10 @@ Implementation: `userdict/` (package `jd-userdict`). Its library is shared with 
 | PgUp / PgDn / `-` / `=` | Navigate candidate pages within the same composition |
 | Backspace | Remove the last typed key (shrinks composition + engine) |
 | Esc | Cancel the in-flight composition |
+| Enter | Commit the typed letters as they are |
+| Shift, alone | Switch to 英 — while composing, after committing the typed letters as they are |
 
-In a field where the application has switched input methods off — a password box, the user-dictionary window's 编码 field — keys reach the application as typed.
+In 英, and in a field where the application has switched input methods off — a password box, the user-dictionary window's 编码 field — keys reach the application as typed.
 
 ## Project layout
 
@@ -121,6 +129,7 @@ windows/
     display_attribute.rs  ITfDisplayAttributeInfo + IEnumTfDisplayAttributeInfo
                           plus apply/clear helpers via ITfProperty
     candidate_window.rs   D2D + DirectWrite popup showing the engine candidates
+    input_mode.rs     中 and 英: the mode, and Shift pressed alone
     mode_icon.rs      the taskbar's mode icon (a language-bar item) and its menu
     settings.rs       what that menu reads, and the helper that changes it
     host.rs           what kind of process the IME is in (AppContainer or not)

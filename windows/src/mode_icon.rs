@@ -1,20 +1,21 @@
 //! The IME mode icon: the glyph Windows shows in the taskbar, beside the
 //! input indicator, while 键道 is the input method of the window in front —
-//! where Windows' own IMEs keep their settings. It is a TSF language-bar
-//! item under the GUID Windows reserves for that spot (`GUID_LBI_INPUTMODE`),
-//! added to a thread's language bar when the IME activates there (tip.rs)
-//! and removed when it deactivates.
+//! where Windows' own IMEs show their mode and keep their settings. It is a
+//! TSF language-bar item under the GUID Windows reserves for that spot
+//! (`GUID_LBI_INPUTMODE`), added to a thread's language bar when the IME
+//! activates there (tip.rs) and removed when it deactivates.
 //!
-//! 键道 has one input mode, so the icon is a plain 中 — drawn here at the
+//! The icon is the input mode (input_mode.rs), 中 or 英 — drawn here at the
 //! taskbar's scale, white on a dark taskbar and black on a light one, the
-//! way Windows draws its own tray glyphs, and drawn again when the theme or
-//! the scale changes. A click on it reaches the IME in the application in
-//! front, whose window keeps the focus; a right click opens the menu there —
-//! the user dictionary's window and switch, and the daily update check
-//! (settings.rs) — and a left click, which would switch modes, does nothing. In a Store app the menu does not open — the window
-//! in front belongs to another process — and a sandbox could change none of
-//! it anyway (settings.rs again). Nor does it from the keyboard (Win+B),
-//! which leaves the taskbar in front.
+//! way Windows draws its own tray glyphs, and drawn again when the mode, the
+//! theme or the scale changes. A click on it reaches the IME in the
+//! application in front, whose window keeps the focus. A left click switches
+//! the mode, as Shift does; a right click opens the menu — the user
+//! dictionary's window and switch, and the daily update check (settings.rs).
+//! In a Store app the menu does not open — the window in front belongs to
+//! another process — and a sandbox could change none of it anyway
+//! (settings.rs again). Nor does it from the keyboard (Win+B), which leaves
+//! the taskbar in front.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -52,8 +53,8 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::TextServices::{
     GUID_LBI_INPUTMODE, ITfLangBarItem, ITfLangBarItem_Impl, ITfLangBarItemButton,
     ITfLangBarItemButton_Impl, ITfLangBarItemMgr, ITfLangBarItemSink, ITfMenu, ITfSource,
-    ITfSource_Impl, ITfThreadMgr, TF_LANGBARITEMINFO, TF_LBI_ICON, TF_LBI_STYLE_BTN_BUTTON,
-    TF_LBI_CLK_RIGHT, TF_LBI_STYLE_SHOWNINTRAY, TfLBIClick,
+    ITfSource_Impl, ITfThreadMgr, TF_LANGBARITEMINFO, TF_LBI_CLK_LEFT, TF_LBI_CLK_RIGHT,
+    TF_LBI_ICON, TF_LBI_STYLE_BTN_BUTTON, TF_LBI_STYLE_SHOWNINTRAY, TF_LBI_TOOLTIP, TfLBIClick,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
@@ -69,10 +70,11 @@ use windows::core::{
 };
 
 use crate::candidate_window::read_hkcu_dword;
-use crate::{dll_hmodule, guids, host, settings};
+use crate::{dll_hmodule, guids, host, input_mode, settings};
 
-/// The glyph: 键道's one input mode is Chinese.
-const GLYPH: &str = "中";
+/// The two input modes' glyphs, as Windows' Chinese IMEs draw them.
+const CHINESE_GLYPH: &str = "中";
+const ENGLISH_GLYPH: &str = "英";
 const FONT_FAMILY: PCWSTR = w!("Microsoft YaHei UI");
 /// The mode icon's size at 100% scale, from Microsoft's IME guidelines; it
 /// grows with the taskbar's DPI.
@@ -82,7 +84,8 @@ const ICON_SIZE: i32 = 16;
 const GLYPH_SCALE: f32 = 0.875;
 
 const DESCRIPTION: &str = "键道";
-const TOOLTIP: &str = "键道输入法";
+const CHINESE_TOOLTIP: &str = "中文模式（Shift 切换）";
+const ENGLISH_TOOLTIP: &str = "英文模式（Shift 切换）";
 
 const OWNER_CLASS: PCWSTR = w!("JdImeModeIconOwner");
 
@@ -97,6 +100,9 @@ const SINK_COOKIE: u32 = 1;
 #[implement(ITfLangBarItemButton, ITfLangBarItem, ITfSource)]
 struct ModeIcon {
     sink: RefCell<Option<ITfLangBarItemSink>>,
+    /// Whose input mode a left click switches.
+    thread_mgr: ITfThreadMgr,
+    client_id: u32,
     /// The secure desktop (the sign-in screen, a UAC prompt): nothing there
     /// may start a program, so the menu changes nothing.
     secure: bool,
@@ -114,7 +120,7 @@ thread_local! {
 }
 
 /// Put the mode icon on this thread's language bar.
-pub fn add(thread_mgr: &ITfThreadMgr, secure: bool) {
+pub fn add(thread_mgr: &ITfThreadMgr, tid: u32, secure: bool) {
     remove(thread_mgr);
     let Ok(manager) = thread_mgr.cast::<ITfLangBarItemMgr>() else {
         return;
@@ -124,6 +130,8 @@ pub fn add(thread_mgr: &ITfThreadMgr, secure: bool) {
     };
     let item = ComObject::new(ModeIcon {
         sink: RefCell::new(None),
+        thread_mgr: thread_mgr.clone(),
+        client_id: tid,
         secure,
     });
     let button: ITfLangBarItemButton = item.to_interface();
@@ -151,6 +159,21 @@ pub fn remove(thread_mgr: &ITfThreadMgr) {
     // SAFETY: the window is this thread's own.
     unsafe {
         let _ = DestroyWindow(active.owner);
+    }
+}
+
+/// The mode, the theme or the scale changed: have TSF ask for the icon and
+/// its tooltip again.
+pub fn refresh() {
+    let sink = ACTIVE.with(|active| {
+        active
+            .borrow()
+            .as_ref()
+            .and_then(|active| active.item.sink.borrow().clone())
+    });
+    if let Some(sink) = sink {
+        // SAFETY: a plain call on TSF's sink.
+        let _ = unsafe { sink.OnUpdate(TF_LBI_ICON | TF_LBI_TOOLTIP) };
     }
 }
 
@@ -185,18 +208,24 @@ impl ITfLangBarItem_Impl for ModeIcon_Impl {
     }
 
     fn GetTooltipString(&self) -> Result<BSTR> {
-        Ok(BSTR::from(TOOLTIP))
+        Ok(BSTR::from(if input_mode::is_english() {
+            ENGLISH_TOOLTIP
+        } else {
+            CHINESE_TOOLTIP
+        }))
     }
 }
 
 impl ITfLangBarItemButton_Impl for ModeIcon_Impl {
-    /// The right button opens the menu. The left one switches an IME's
-    /// mode, and 键道 has only the one, so it does nothing. The item's
-    /// rectangle TSF passes is no help — its size is in another scale than
-    /// its origin at 200% — but the point is where the click was.
+    /// A left click switches 中 and 英, as Shift does; a right click opens
+    /// the menu. The item's rectangle TSF passes is no help — its size is
+    /// in another scale than its origin at 200% — but the point is where the
+    /// click was.
     fn OnClick(&self, click: TfLBIClick, pt: &POINT, _area: *const RECT) -> Result<()> {
         if click == TF_LBI_CLK_RIGHT {
             show_menu(self.secure, *pt);
+        } else if click == TF_LBI_CLK_LEFT {
+            input_mode::toggle(&self.thread_mgr, self.client_id);
         }
         Ok(())
     }
@@ -212,7 +241,12 @@ impl ITfLangBarItemButton_Impl for ModeIcon_Impl {
     }
 
     fn GetIcon(&self) -> Result<HICON> {
-        draw_icon(icon_size(), glyph_color())
+        let glyph = if input_mode::is_english() {
+            ENGLISH_GLYPH
+        } else {
+            CHINESE_GLYPH
+        };
+        draw_icon(icon_size(), glyph, glyph_color())
     }
 
     fn GetText(&self) -> Result<BSTR> {
@@ -411,18 +445,8 @@ fn create_owner() -> Option<HWND> {
 
 extern "system" fn owner_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if matches!(msg, WM_SETTINGCHANGE | WM_DISPLAYCHANGE | WM_DPICHANGED) {
-        // The taskbar may have changed colour or scale: have TSF ask for the
-        // icon again.
-        let sink = ACTIVE.with(|active| {
-            active
-                .borrow()
-                .as_ref()
-                .and_then(|active| active.item.sink.borrow().clone())
-        });
-        if let Some(sink) = sink {
-            // SAFETY: a plain call on TSF's sink.
-            let _ = unsafe { sink.OnUpdate(TF_LBI_ICON) };
-        }
+        // The taskbar may have changed colour or scale.
+        refresh();
     }
     // SAFETY: the default handling of this window's own message.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -493,9 +517,9 @@ fn high_contrast() -> bool {
     }
 }
 
-/// The glyph on a transparent square of `size` pixels, centred on its ink,
-/// as an icon the caller owns.
-fn draw_icon(size: i32, color: D2D1_COLOR_F) -> Result<HICON> {
+/// `glyph` on a transparent square of `size` pixels, centred on its ink, as
+/// an icon the caller owns.
+fn draw_icon(size: i32, glyph: &str, color: D2D1_COLOR_F) -> Result<HICON> {
     let pixels = (size * size) as usize;
     // SAFETY: a DIB section drawn into through a DC render target, read
     // back after GdiFlush, and every GDI object released before returning;
@@ -525,7 +549,7 @@ fn draw_icon(size: i32, color: D2D1_COLOR_F) -> Result<HICON> {
                 }
             };
         let previous = SelectObject(dc, color_bitmap.into());
-        let drawn = draw_glyph(dc, size, color);
+        let drawn = draw_glyph(dc, size, glyph, color);
         SelectObject(dc, previous);
         let _ = DeleteDC(dc);
         if let Err(error) = drawn {
@@ -600,13 +624,14 @@ fn center_ink(bgra: &mut [u8], size: usize) {
     }
 }
 
-/// Draw the glyph into the 32-bit bitmap selected into `dc`.
+/// Draw `glyph` into the 32-bit bitmap selected into `dc`.
 ///
 /// # Safety
 /// `dc` has a `size`-square 32-bit DIB section selected.
 unsafe fn draw_glyph(
     dc: windows::Win32::Graphics::Gdi::HDC,
     size: i32,
+    glyph: &str,
     color: D2D1_COLOR_F,
 ) -> Result<()> {
     unsafe {
@@ -645,7 +670,7 @@ unsafe fn draw_glyph(
             size as f32 * GLYPH_SCALE,
             w!("zh-CN"),
         )?;
-        let text: Vec<u16> = GLYPH.encode_utf16().collect();
+        let text: Vec<u16> = glyph.encode_utf16().collect();
         let side = size as f32;
         let layout = dwrite.CreateTextLayout(&text, &format, side, side)?;
         // How far the ink reaches past the layout box on each side; centre
@@ -722,19 +747,26 @@ mod tests {
             let _ = DeleteObject(info.hbmMask.into());
             assert_eq!(rows, size);
         }
-        bgra.as_chunks::<4>().0.iter().map(|pixel| pixel[3]).collect()
+        bgra.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[3])
+            .collect()
     }
 
     #[test]
-    fn the_glyph_is_drawn_centred_at_every_scale() {
+    fn each_glyph_is_drawn_centred_at_every_scale() {
         let white = D2D1_COLOR_F {
             r: 1.0,
             g: 1.0,
             b: 1.0,
             a: 1.0,
         };
-        for size in [16, 20, 24, 32, 40, 48] {
-            let icon = draw_icon(size, white).unwrap();
+        for (glyph, size) in [CHINESE_GLYPH, ENGLISH_GLYPH]
+            .into_iter()
+            .flat_map(|glyph| [16, 20, 24, 32, 40, 48].map(|size| (glyph, size)))
+        {
+            let icon = draw_icon(size, glyph, white).unwrap();
             let alpha = alpha(icon, size);
             // SAFETY: the icon is ours.
             unsafe { DestroyIcon(icon).unwrap() };
@@ -758,7 +790,7 @@ mod tests {
                     println!("|{line}|");
                 }
             }
-            assert!(!inked.is_empty(), "{size}px: no ink");
+            assert!(!inked.is_empty(), "{glyph} {size}px: no ink");
             let (left, right) = (
                 inked.iter().map(|p| p.0).min().unwrap(),
                 inked.iter().map(|p| p.0).max().unwrap(),
@@ -771,16 +803,16 @@ mod tests {
             // pixel an odd difference leaves.
             assert!(
                 (left - (size - 1 - right)).abs() <= 1,
-                "{size}px: ink {left}..{right} across"
+                "{glyph} {size}px: ink {left}..{right} across"
             );
             assert!(
                 (top - (size - 1 - bottom)).abs() <= 1,
-                "{size}px: ink {top}..{bottom} down"
+                "{glyph} {size}px: ink {top}..{bottom} down"
             );
             // And it fills the icon the way tray glyphs do.
             assert!(
                 right - left + 1 >= size * 3 / 4,
-                "{size}px: ink {left}..{right} too narrow"
+                "{glyph} {size}px: ink {left}..{right} too narrow"
             );
         }
     }

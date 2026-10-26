@@ -6,8 +6,8 @@ use windows::Win32::Foundation::RECT;
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfContext, ITfContextComposition, ITfEditSession,
-    TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION,
-    TF_SELECTIONSTYLE,
+    TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_ES_ASYNCDONTCARE, TF_ES_READWRITE,
+    TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE,
 };
 use windows::core::{BOOL, ComObjectInner, Interface, Result};
 
@@ -129,8 +129,32 @@ pub fn backspace(ctx: &ITfContext, tid: u32) -> Result<()> {
 }
 
 pub fn commit(ctx: &ITfContext, tid: u32) -> Result<()> {
-    let ctx_for_session = ctx.clone();
-    let session = EditSession::new(move |ec| {
+    request_session(ctx, tid, commit_session(ctx.clone()))
+}
+
+/// `commit`, for a switch to 英 that came from outside a key event — the
+/// mode icon, an application, a hotkey — and so names no context: the
+/// composition's own is used, and TSF runs the edit at once if it can, or
+/// as soon as the document is free. No-op if there's no composition.
+pub fn commit_as_typed(tid: u32) -> Result<()> {
+    let context = STATE.with(|s| {
+        s.borrow()
+            .composition
+            .as_ref()
+            .map(|comp| unsafe { comp.GetRange().and_then(|range| range.GetContext()) })
+    });
+    let Some(ctx) = context.transpose()? else {
+        return Ok(());
+    };
+    let iface: ITfEditSession = commit_session(ctx.clone()).into_object().into_interface();
+    let _ = unsafe { ctx.RequestEditSession(tid, &iface, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE) }?;
+    Ok(())
+}
+
+/// End the composition, leaving its text — the letters as typed — in the
+/// document.
+fn commit_session(ctx: ITfContext) -> EditSession {
+    EditSession::new(move |ec| {
         STATE.with(|s| -> Result<()> {
             let mut state = s.borrow_mut();
             if let Some(comp) = state.composition.take() {
@@ -138,14 +162,13 @@ pub fn commit(ctx: &ITfContext, tid: u32) -> Result<()> {
                 // it stops rendering as in-flight. SampleIME does the same in
                 // `_ClearCompositionDisplayAttributes`.
                 let range = unsafe { comp.GetRange() }?;
-                let _ = display_attribute::clear(&ctx_for_session, ec, &range);
+                let _ = display_attribute::clear(&ctx, ec, &range);
                 unsafe { comp.EndComposition(ec) }?;
             }
             state.buffer.clear();
             Ok(())
         })
-    });
-    request_session(ctx, tid, session)
+    })
 }
 
 /// Tear down the composition WITHOUT committing (Escape): the in-flight text

@@ -9,6 +9,7 @@ mod edit_session;
 mod factory;
 mod guids;
 mod host;
+mod input_mode;
 mod mode_icon;
 mod registration;
 mod settings;

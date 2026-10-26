@@ -5,10 +5,11 @@ use windows::Win32::System::Variant::{VT_I4, VariantClear};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, GetKeyboardState, ToUnicode};
 use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_EMPTYCONTEXT, GUID_COMPARTMENT_KEYBOARD_DISABLED,
-    IEnumTfDisplayAttributeInfo, ITfCompartmentMgr, ITfComposition, ITfCompositionSink,
+    GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, IEnumTfDisplayAttributeInfo, ITfCompartmentEventSink,
+    ITfCompartmentEventSink_Impl, ITfCompartmentMgr, ITfComposition, ITfCompositionSink,
     ITfCompositionSink_Impl, ITfContext, ITfDisplayAttributeInfo, ITfDisplayAttributeProvider,
     ITfDisplayAttributeProvider_Impl, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr,
-    ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
+    ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
     ITfTextInputProcessorEx_Impl, ITfThreadMgr, TF_TMAE_SECUREMODE,
 };
 use windows::core::{BOOL, ComObjectInner, GUID, IUnknownImpl, Interface, Ref, Result, implement};
@@ -16,6 +17,7 @@ use windows::core::{BOOL, ComObjectInner, GUID, IUnknownImpl, Interface, Ref, Re
 use crate::candidate_window::{self, CandidateItem};
 use crate::display_attribute::{DisplayAttributeEnum, DisplayAttributeInfo};
 use crate::guids::GUID_JD_DISPLAY_ATTRIBUTE;
+use crate::input_mode::{self, VK_SHIFT};
 use crate::{composition, jd, mode_icon, ui_element};
 
 #[implement(
@@ -23,7 +25,8 @@ use crate::{composition, jd, mode_icon, ui_element};
     ITfTextInputProcessor,
     ITfKeyEventSink,
     ITfCompositionSink,
-    ITfDisplayAttributeProvider
+    ITfDisplayAttributeProvider,
+    ITfCompartmentEventSink
 )]
 #[derive(Default)]
 pub struct TextInputProcessor {
@@ -34,6 +37,9 @@ pub struct TextInputProcessor {
 struct TipState {
     thread_mgr: Option<ITfThreadMgr>,
     client_id: u32,
+    /// The connection that tells this TIP of every change to the input mode
+    /// (input_mode.rs).
+    mode_sink_cookie: Option<u32>,
 }
 
 impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
@@ -47,9 +53,16 @@ impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
             if let Ok(keystroke_mgr) = thread_mgr.cast::<ITfKeystrokeMgr>() {
                 let _ = unsafe { keystroke_mgr.UnadviseKeyEventSink(state.client_id) };
             }
+            if let Some(cookie) = state.mode_sink_cookie
+                && let Ok(source) =
+                    input_mode::compartment(thread_mgr).and_then(|c| c.cast::<ITfSource>())
+            {
+                let _ = unsafe { source.UnadviseSink(cookie) };
+            }
             mode_icon::remove(thread_mgr);
         }
         drop(state);
+        input_mode::cancel();
         *self.state.borrow_mut() = TipState::default();
         composition::on_externally_terminated();
         ui_element::destroy();
@@ -72,13 +85,25 @@ impl ITfTextInputProcessorEx_Impl for TextInputProcessor_Impl {
         let keystroke_mgr: ITfKeystrokeMgr = thread_mgr.cast()?;
         let key_sink: ITfKeyEventSink = self.to_interface();
         unsafe { keystroke_mgr.AdviseKeyEventSink(tid, &key_sink, true) }?;
-        // The taskbar's mode icon and its menu.
-        mode_icon::add(&thread_mgr, dwflags & TF_TMAE_SECUREMODE != 0);
 
+        // 中 and 英: hear every change of the mode, then start in 中.
+        let mode_sink: ITfCompartmentEventSink = self.to_interface();
+        let mode_sink_cookie = input_mode::compartment(&thread_mgr)
+            .and_then(|compartment| compartment.cast::<ITfSource>())
+            .and_then(|source| unsafe {
+                source.AdviseSink(&ITfCompartmentEventSink::IID, &mode_sink)
+            })
+            .ok();
         *self.state.borrow_mut() = TipState {
-            thread_mgr: Some(thread_mgr),
+            thread_mgr: Some(thread_mgr.clone()),
             client_id: tid,
+            mode_sink_cookie,
         };
+        let _ = input_mode::set(&thread_mgr, tid, false);
+        input_mode::sync(&thread_mgr);
+
+        // The taskbar's mode icon and its menu.
+        mode_icon::add(&thread_mgr, tid, dwflags & TF_TMAE_SECUREMODE != 0);
         Ok(())
     }
 }
@@ -102,7 +127,11 @@ impl ITfDisplayAttributeProvider_Impl for TextInputProcessor_Impl {
 }
 
 impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
-    fn OnSetFocus(&self, _fforeground: BOOL) -> Result<()> {
+    fn OnSetFocus(&self, fforeground: BOOL) -> Result<()> {
+        // A press of Shift does not survive the focus going elsewhere.
+        if !fforeground.as_bool() {
+            input_mode::cancel();
+        }
         Ok(())
     }
 
@@ -113,22 +142,37 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
         _lparam: LPARAM,
     ) -> Result<BOOL> {
         if pic.as_ref().is_some_and(keyboard_disabled) {
+            input_mode::cancel();
             return Ok(BOOL(0));
         }
-        Ok(BOOL(if should_consume(wparam.0 as u16) {
-            1
-        } else {
-            0
-        }))
+        let vk = wparam.0 as u16;
+        // Every key down counts towards telling a lone Shift from one used
+        // as a modifier; Shift itself always reaches the application.
+        let m = mods();
+        input_mode::key_down(vk, m.ctrl || m.alt || m.win);
+        // 英: every key reaches the application as typed.
+        if input_mode::is_english() {
+            return Ok(BOOL(0));
+        }
+        Ok(BOOL(if should_consume(vk) { 1 } else { 0 }))
     }
 
+    /// Shift pressed and released alone switches 中 and 英, in `OnKeyUp`;
+    /// that key-up is this IME's, and no other is.
     fn OnTestKeyUp(
         &self,
-        _pic: Ref<'_, ITfContext>,
-        _wparam: WPARAM,
+        pic: Ref<'_, ITfContext>,
+        wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
-        Ok(BOOL(0))
+        if wparam.0 as u16 != VK_SHIFT {
+            return Ok(BOOL(0));
+        }
+        if pic.as_ref().is_some_and(keyboard_disabled) {
+            input_mode::cancel();
+            return Ok(BOOL(0));
+        }
+        Ok(BOOL::from(input_mode::shift_up_is_tap()))
     }
 
     fn OnKeyDown(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
@@ -137,7 +181,7 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
             return Ok(BOOL(0));
         };
         let ctx = ctx_ref;
-        if keyboard_disabled(ctx) {
+        if keyboard_disabled(ctx) || input_mode::is_english() {
             return Ok(BOOL(0));
         }
         let tid = self.state.borrow().client_id;
@@ -283,12 +327,62 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
         Ok(BOOL(0))
     }
 
-    fn OnKeyUp(&self, _pic: Ref<'_, ITfContext>, _wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        Ok(BOOL(0))
+    /// Shift pressed alone, released: from 中, the letters typed so far go in
+    /// as they are — what Enter does — and the mode turns to 英; from 英, it
+    /// turns back to 中.
+    fn OnKeyUp(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+        if wparam.0 as u16 != VK_SHIFT || !input_mode::take_tap() {
+            return Ok(BOOL(0));
+        }
+        let (thread_mgr, tid) = {
+            let state = self.state.borrow();
+            (state.thread_mgr.clone(), state.client_id)
+        };
+        let Some(thread_mgr) = thread_mgr else {
+            return Ok(BOOL(0));
+        };
+        if composition::is_active()
+            && let Some(ctx) = pic.as_ref()
+        {
+            let _ = composition::commit(ctx, tid);
+            jd::reset();
+            candidate_window::hide();
+            ui_element::end();
+        }
+        input_mode::toggle(&thread_mgr, tid);
+        Ok(BOOL(1))
     }
 
     fn OnPreservedKey(&self, _pic: Ref<'_, ITfContext>, _rguid: *const GUID) -> Result<BOOL> {
         Ok(BOOL(0))
+    }
+}
+
+impl ITfCompartmentEventSink_Impl for TextInputProcessor_Impl {
+    /// The input mode changed — by Shift, the mode icon, an application or
+    /// a hotkey (input_mode.rs).
+    fn OnChange(&self, rguid: *const GUID) -> Result<()> {
+        // SAFETY: TSF passes the compartment's GUID.
+        if unsafe { rguid.as_ref() } != Some(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE) {
+            return Ok(());
+        }
+        let (thread_mgr, tid) = {
+            let state = self.state.borrow();
+            (state.thread_mgr.clone(), state.client_id)
+        };
+        let Some(thread_mgr) = thread_mgr else {
+            return Ok(());
+        };
+        // Turned to 英 by anything but Shift, which has already done this:
+        // the letters typed so far go in as they are, as with Shift.
+        if input_mode::sync(&thread_mgr) && composition::is_active() {
+            let _ = composition::commit_as_typed(tid);
+            jd::reset();
+            candidate_window::hide();
+            ui_element::end();
+        }
+        mode_icon::refresh();
+        Ok(())
     }
 }
 
