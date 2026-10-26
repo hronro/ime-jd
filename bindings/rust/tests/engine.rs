@@ -335,6 +335,13 @@ fn bad_lines_are_skipped_and_noted_never_fatal() {
         "line 4: skipped, value must be 1 to 255 bytes of text without control characters"
     );
 
+    // MAX_KEY_LENGTH is stated in prose in jd.h, so pin it here: a code that
+    // long is kept, one letter more is skipped as bad keys.
+    let max = "z".repeat(UserDict::MAX_KEY_LENGTH as usize);
+    let (_, report) = UserDict::build(&format!("长\t{max}\n长\t{max}z\n"), 0).expect("build");
+    assert_eq!((report.entries, report.invalid), (1, 1));
+    assert_eq!(report.notes[0].flags, UserDictNote::BAD_KEYS);
+
     // Only a problem with the call as a whole fails: too many phrases.
     use std::fmt::Write;
     let mut text = String::new();

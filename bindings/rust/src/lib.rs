@@ -311,7 +311,8 @@ impl UserDictNote {
     pub const CODE_IN_LINE: u32 = 0x8;
     /// Skipped: neither blank nor a comment, and no TAB.
     pub const MALFORMED: u32 = 0x10;
-    /// Skipped: keys empty, longer than six, or not all `a`-`z`.
+    /// Skipped: keys empty, longer than [`UserDict::MAX_KEY_LENGTH`], or not
+    /// all `a`-`z`.
     pub const BAD_KEYS: u32 = 0x20;
     /// Skipped: value empty, longer than [`UserDict::VALUE_MAX`] bytes, not
     /// UTF-8, or containing control characters.
@@ -512,6 +513,10 @@ impl UserDict {
     pub const MAX_ENTRIES: u32 = 10_000;
     /// Longest phrase value in bytes (`JD_USER_DICT_VALUE_MAX`).
     pub const VALUE_MAX: u32 = 255;
+    /// Longest code. `jd.h` states it in prose — keys are 1 to 6 letters
+    /// `a`-`z` — rather than as a macro; the builder skips a longer code
+    /// with a [`UserDictNote::BAD_KEYS`] note.
+    pub const MAX_KEY_LENGTH: u32 = 6;
 
     /// Build from lines of `value<TAB>keys` — the format of libjd's own
     /// table files. `#` starts a comment line, blank lines are skipped,
