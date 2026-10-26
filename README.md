@@ -43,12 +43,31 @@
 
 ## 📦 安装指南
 
-iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法/id6791807743) 下载，其它平台用户请前往 [GitHub Releases](https://github.com/hronro/ime-jd/releases/latest) 下载对应平台的安装包：
+iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法/id6791807743) 下载，其它平台用户请前往 [GitHub Releases](https://github.com/hronro/ime-jd/releases/latest) 下载对应平台的安装包。**输入法安装包的文件名均以 `jd-ime-` 开头**（页面上其它文件的用途见[下文](#releases-页面上的其它文件)）：
 
-- **Windows**: 下载 `jd-ime-{版本号}-windows-{架构}.zip`
-- **macOS**: 下载 `jd-ime-{版本号}-macos-{架构}.pkg`
-- **Android**: 下载 `jd-ime-{版本号}-android-{架构}.apk` 
+- **Windows**: 下载 `jd-ime-{版本号}-windows-{架构}.zip`（大多数电脑选 `x86_64`，搭载骁龙等 ARM 处理器的电脑选 `arm64`），然后按照下方的 [Windows 安装步骤](#windows-安装步骤) 完成安装
+- **macOS**: 下载 `jd-ime-{版本号}-macos-{架构}.pkg`（搭载 Apple 芯片的 Mac 选 `arm64`，Intel 芯片的 Mac 选 `x86_64`）
+- **Android**: 下载 `jd-ime-{版本号}-android-{架构}.apk`（绝大多数手机选 `arm64`）
 - **iOS**: 我们在 GitHub Releases 页面亦分发未签名的 `jd-ime-{版本号}-ios.ipa` 文件，有需求的用户可以使用 Sideload 工具进行自签安装
+
+### Windows 安装步骤
+
+Windows 版目前没有安装程序，下载的压缩包需要手动解压，再运行其中的安装脚本：
+
+1. **解压**：右键单击下载的 `.zip` 文件，选择「全部解压缩」。请不要在压缩包里直接运行其中的文件，那样无法完成安装。
+2. **安装**：在解压出的文件夹中右键单击 `register.bat`（如果系统隐藏了文件扩展名，它会显示为 `register`），选择「以管理员身份运行」，并在随后弹出的系统确认窗口中点击「是」。看到「键道输入法注册成功」即表示安装完成，按任意键关闭窗口。
+3. **添加键盘**：在「设置 → 时间和语言 → 语言」（Windows 11 中为「语言和区域」）里找到「中文（简体）」，打开它的语言选项，点击「添加键盘」并选择「键道」。
+
+如果解压出的文件夹中没有 `register.bat`，说明下载的不是输入法安装包，请确认文件名以 `jd-ime-` 开头。安装脚本会把输入法复制到 `C:\Program Files\ime-jd\`，所以安装完成后，解压出的文件夹可以删除。以后有新版本时，点击输入法给出的提示即可升级，无需重复以上步骤（详见[版本更新](#-版本更新)）。如需卸载，以管理员身份运行压缩包中的 `unregister.bat` 即可。
+
+### Releases 页面上的其它文件
+
+以下文件都**不是**输入法安装包，普通用户无需下载：
+
+- `jd-cli-*`：键道的命令行版本（CLI），提供 Linux、macOS 和 Windows 版，用于在终端中快速调试与体验输入方案。它只是一个终端程序，不会安装为系统输入法，也无法在其它应用中打字。需要的用户解压后在终端中运行其中的 `jd-cli` 即可（`jd-cli --help` 查看用法），引擎与词库均已内置，无需另外下载 libjd。Linux 版分为 `gnu` 和 `musl` 两种构建，其中 `musl` 版为静态链接，不依赖系统的 glibc。
+- `libjd-*`：键道的核心引擎库，供开发者集成到自己的程序中，详见下方的 [libjd 核心引擎](#-libjd-核心引擎)。
+- `jd-ime-{版本号}-android-mapping.txt`：Android 版的混淆映射文件，供开发者分析崩溃日志时使用。
+- 「Source code (zip)」和「Source code (tar.gz)」：GitHub 自动附带的项目源代码。
 
 ## 🔄 版本更新
 
@@ -60,6 +79,21 @@ iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法
 - **Android**：通过应用商店安装的版本由商店负责更新，应用本身不含更新器，也不申请任何权限。从 GitHub Releases 下载的 APK 内置更新器：键盘空闲时，候选栏会提示新版本，点击进入应用即可「下载并安装」——APK 校验后交给系统安装器确认（首次需要在系统设置里允许「键道输入法」安装应用）；应用内也有「检查更新」按钮和「自动检查更新」开关。
 
 只有当发布版本的版本号高于当前版本时才会提示。
+
+## 🧩 libjd 核心引擎
+
+libjd 是键道输入法的核心引擎，使用 Zig 编写，本项目的各平台前端（包括 CLI）都建立在它之上。它通过一套精简的 C ABI 提供完整的键道输入逻辑，包括按键处理、候选查询、标点转换和用户自造词；词库在编译期直接嵌入库中，运行时不需要任何数据文件，也没有任何运行时依赖。如果你想在自己的程序中集成键道，或者为其它平台编写前端，可以直接使用 libjd。
+
+GitHub Releases 中提供各平台预编译的 libjd，每个压缩包都附带 C 头文件 `include/jd.h`：
+
+- **Linux**: `libjd-{版本号}-linux-{架构}.so.tar.xz`（动态库）、`libjd-{版本号}-linux-{架构}.a.tar.xz`（静态库）
+- **macOS**: `libjd-{版本号}-macos-{架构}.dylib.tar.xz`（动态库）、`libjd-{版本号}-macos-{架构}.a.tar.xz`（静态库）
+- **Windows**: `libjd-{版本号}-windows-{架构}.zip`（包含动态库 `jd.dll` 及其导入库 `jd.lib`，以及静态库 `jd_static.lib`）
+- **iOS**: `libjd-{版本号}-ios-arm64.a.tar.xz`（静态库）
+- **Android**: `libjd-{版本号}-android-{架构}.so.tar.xz`（动态库）
+- **WebAssembly**: `libjd-{版本号}-wasm.wasm.tar.xz`（`jd.wasm` 模块，导出同一套 C ABI）
+
+C API 的用法见 [core/docs/integration.md](./core/docs/integration.md)，引擎架构与从源码构建的方法见 [core/README.md](./core/README.md)。[bindings/](./bindings) 目录下还提供了 Rust、Swift、Java（JNI）和 JavaScript（WebAssembly）的封装，本项目的各平台前端正是通过这些封装调用 libjd 的。
 
 ## 🤝 致谢
 
