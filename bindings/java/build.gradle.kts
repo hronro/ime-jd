@@ -61,6 +61,9 @@ val buildHostLibs by tasks.registering(Exec::class) {
 
 tasks.test {
     useJUnitPlatform()
+    // HotSpot's JNI checker: it reports misuse (a call made with an exception
+    // pending, a wrong reference type) that a passing test would hide.
+    jvmArgs("-Xcheck:jni")
     // The tests load these libraries, so rebuilt ones rerun the tests.
     inputs.files(buildHostLibs).withPropertyName("hostLibs")
     systemProperty("java.library.path", hostLibs.get().asFile.path)

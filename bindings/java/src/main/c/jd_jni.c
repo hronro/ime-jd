@@ -119,6 +119,15 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     return JNI_VERSION_1_6;
 }
 
+// Every allocation here can fail. A NULL result from a function in this file
+// means an exception is pending — OutOfMemoryError, mostly — which the Java
+// side throws once the native method returns. Nothing calls JNI again before
+// returning, beyond releasing references.
+static void throw_oom(JNIEnv *env, const char *what) {
+    jclass oom = (*env)->FindClass(env, "java/lang/OutOfMemoryError");
+    if (oom != NULL) (*env)->ThrowNew(env, oom, what);
+}
+
 // Decode one code point from standard UTF-8, advancing *pp. Invalid bytes yield
 // U+FFFD. (libjd emits standard UTF-8; do NOT feed it to NewStringUTF, which
 // expects *modified* UTF-8 and mis-encodes 4-byte / supplementary-plane chars.)
@@ -141,11 +150,9 @@ static uint32_t utf8_next(const unsigned char **pp) {
 }
 
 // UTF-8 bytes -> jstring (via UTF-16). `s` need not be NUL-terminated when
-// `limit` is given; pass SIZE_MAX to stop at the NUL. Returns NULL for a NULL
-// input, and an empty string for an empty one.
+// `limit` is given; pass SIZE_MAX to stop at the NUL. An empty string for an
+// empty input; NULL, with OutOfMemoryError pending, when memory runs out.
 static jstring utf8_to_jstring_n(JNIEnv *env, const char *s, size_t limit) {
-    if (s == NULL) return NULL;
-
     const unsigned char *start = (const unsigned char *)s;
     const unsigned char *end = start;
     while ((size_t)(end - start) < limit && *end) end++;
@@ -162,7 +169,10 @@ static jstring utf8_to_jstring_n(JNIEnv *env, const char *s, size_t limit) {
     }
 
     jchar *buf = (jchar *)malloc(n16 * sizeof(jchar));
-    if (buf == NULL) return NULL;
+    if (buf == NULL) {
+        throw_oom(env, "string buffer");
+        return NULL;
+    }
 
     // Pass 2: emit UTF-16 (surrogate pairs for supplementary code points).
     size_t j = 0;
@@ -197,7 +207,10 @@ static jobject build_state(JNIEnv *env, jd_context *ctx) {
         // The engine's own bound: two longest values plus one literal byte.
         const unsigned int cap = jd_abi_layout(JD_ABI_MAX_COMMIT_LEN);
         char *joined = (char *)malloc((size_t)cap + 1);
-        if (joined == NULL) return NULL;
+        if (joined == NULL) {
+            throw_oom(env, "commit buffer");
+            return NULL;
+        }
 
         size_t len = 0;
         const char *segs[2] = { s->commit_a, s->commit_b };
@@ -211,6 +224,7 @@ static jobject build_state(JNIEnv *env, jd_context *ctx) {
 
         commit = utf8_to_jstring(env, joined);
         free(joined);
+        if (commit == NULL) return NULL;
     }
 
     jobject state = (*env)->NewObject(env, g_state_cls, g_state_ctor,
@@ -323,18 +337,24 @@ Java_com_hronro_jd_Jni_readRange(
     unsigned int n = jd_read_range(c, (unsigned int)start, want, buf, READ_CHUNK);
 
     jobject list = (*env)->NewObject(env, g_arraylist_cls, g_arraylist_ctor, (jint)n);
+    if (list == NULL) return NULL;
     for (unsigned int i = 0; i < n; i++) {
-        jstring value = utf8_to_jstring(env, buf[i].value);
+        jstring value = utf8_to_jstring(env, buf[i].value != NULL ? buf[i].value : "");
+        if (value == NULL) return NULL;
         // The hint is inline, NUL-padded bytes — not a pointer — and an empty
         // first byte means "no hint".
-        jstring hint = (buf[i].hint[0] == 0)
-            ? NULL
-            : utf8_to_jstring_n(env, buf[i].hint, JD_HINT_CAP);
+        jstring hint = NULL;
+        if (buf[i].hint[0] != 0) {
+            hint = utf8_to_jstring_n(env, buf[i].hint, JD_HINT_CAP);
+            if (hint == NULL) return NULL;
+        }
         jobject cand = (*env)->NewObject(env, g_candidate_cls, g_candidate_ctor, value, hint);
+        if (cand == NULL) return NULL;
         (*env)->CallBooleanMethod(env, list, g_arraylist_add, cand);
+        if ((*env)->ExceptionCheck(env)) return NULL;
         (*env)->DeleteLocalRef(env, cand);
-        if (value) (*env)->DeleteLocalRef(env, value);
-        if (hint)  (*env)->DeleteLocalRef(env, hint);
+        (*env)->DeleteLocalRef(env, value);
+        if (hint) (*env)->DeleteLocalRef(env, hint);
     }
     return list;
 }
@@ -347,11 +367,6 @@ Java_com_hronro_jd_Jni_readChunk(JNIEnv *env, jclass cls) {
 }
 
 // ---- the user dictionary: UserDict's half of Jni ----
-
-static void throw_oom(JNIEnv *env, const char *what) {
-    jclass oom = (*env)->FindClass(env, "java/lang/OutOfMemoryError");
-    if (oom != NULL) (*env)->ThrowNew(env, oom, what);
-}
 
 // Validate a cached blob exactly as jd_init would (jd_user_dict_check) and
 // return {status, entries, source_tag}. The bytes are checked in a copy: a

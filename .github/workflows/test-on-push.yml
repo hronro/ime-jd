@@ -150,8 +150,8 @@ jobs:
 
   # Java bindings: the JNI shim and the wrapper, built for the runner itself
   # (zig builds libjd, zig cc the shim against the JDK's jni.h) and driven
-  # through JUnit on a plain JVM — no emulator. The Android app ships the
-  # same sources (test-android, and the APK builds).
+  # through JUnit on a plain JVM under -Xcheck:jni — no emulator. The Android
+  # app ships the same sources (test-android, and the APK builds).
   test-java:
     name: java (jvm)
     runs-on: ubuntu-latest
