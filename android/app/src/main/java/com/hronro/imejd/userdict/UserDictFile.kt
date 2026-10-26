@@ -14,7 +14,7 @@
 package com.hronro.imejd.userdict
 
 import androidx.core.util.AtomicFile
-import com.hronro.imejd.engine.UserDict
+import com.hronro.jd.UserDict
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException

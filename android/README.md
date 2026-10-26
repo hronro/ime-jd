@@ -1,28 +1,28 @@
 # 键道输入法 — Android
 
-A native Android **input method (IME)** for the 键道 (jd) input scheme, built on the shared Zig core engine (`../core`, linked as `libjd`). It draws its own on-screen keyboard, is fully offline, and requires no special permissions. The architecture mirrors the iOS keyboard extension: a small JVM layer (the mandatory `InputMethodService` + the keyboard UI in classic Android Views) over the shared Zig engine, reached through a thin C JNI shim.
+A native Android **input method (IME)** for the 键道 (jd) input scheme, built on the shared Zig core engine (`../core`, linked as `libjd`). It draws its own on-screen keyboard, is fully offline, and requires no special permissions. The architecture mirrors the iOS keyboard extension: a small JVM layer (the mandatory `InputMethodService` + the keyboard UI in classic Android Views) over the shared Zig engine, reached through the engine's Java binding (`../bindings/java`) and its thin C JNI shim.
 
 ## Layout
 
 ```
 android/
+  settings.gradle.kts           # includes ../bindings/java, the engine's Java binding (com.hronro:jd)
   app/
     build.gradle.kts            # AGP 8.7.3 / Kotlin 2.0.21; ABI splits; the buildLibjd task
     src/main/
       AndroidManifest.xml       # the IME <service> (BIND_INPUT_METHOD + android.view.InputMethod); no permissions
-    src/autoUpdate/
-      AndroidManifest.xml       # updater permissions + receiver, merged only with -PjdAutoUpdate=true
-      cpp/jd_jni.c              # C JNI shim over libjd's C ABI (marshals jd_state / query_option → Kotlin)
       java/com/hronro/imejd/
-        engine/                 # Engine (JNI), EngineState/Candidate, UserDict, KeyAction, InputSession (dispatch core)
+        engine/                 # KeyAction, InputSession (dispatch core) over the binding's Engine
         ime/JdInputMethodService.kt   # the IME service; InputConnection host; lifecycle
         ui/                     # KeyLayout, KeyboardView, key plane, key previews, candidate bar/grid, theme
         userdict/               # the user dictionary: phrases file, per-row verdicts, the store
         app/                    # MainActivity (enable flow, settings, updates), KeyboardPreviewActivity (embedded try-out), UserDictActivity (用户自造词)
         update/                 # release-feed model + daily check (UpdateChecker) + APK download/install (UpdateInstaller)
-    src/androidTest/            # engine, session and user-dictionary tests (instrumented; drive the real engine)
+    src/autoUpdate/
+      AndroidManifest.xml       # updater permissions + receiver, merged only with -PjdAutoUpdate=true
+    src/androidTest/            # session, store, layout and field-policy tests (instrumented; drive the real engine)
     src/test/                   # JVM unit tests: the update feed model, the phrases file's format
-  scripts/build-libjd.sh        # zig core per-ABI + NDK-clang JNI shim → src/main/jniLibs/<abi>/
+  scripts/build-libjd.sh        # zig core per-ABI + NDK-clang JNI shim (../bindings/java) → src/main/jniLibs/<abi>/
 ```
 
 The `engine/` files are ports of `ios/Keyboard/Engine/` — keep them in sync.
@@ -44,7 +44,7 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 ./gradlew :app:installDebug           # install on a connected device/emulator
 ```
 
-The `buildLibjd` Gradle task (a `preBuild` dependency) shells out to `scripts/build-libjd.sh`, which cross-compiles `../core` per ABI with `zig` and links `cpp/jd_jni.c` against the resulting `libjd.so` using the NDK clang, dropping `libjd.so` + `libjdjni.so` into `src/main/jniLibs/<abi>/` (both gitignored). MVP ABIs: `arm64-v8a` + `x86_64`.
+The engine wrapper is the Java binding in `../bindings/java` (`com.hronro:jd`), a Gradle build of its own that `settings.gradle.kts` includes, so the app compiles it from source. The `buildLibjd` Gradle task (a `preBuild` dependency) shells out to `scripts/build-libjd.sh`, which cross-compiles `../core` per ABI with `zig` and links the binding's JNI shim (`../bindings/java/src/main/c/jd_jni.c`) against the resulting `libjd.so` using the NDK clang, dropping `libjd.so` + `libjdjni.so` into `src/main/jniLibs/<abi>/` (both gitignored). The shim compiles against the C declarations `javac -h` writes as the binding compiles, so the task runs the binding's `compileJava` first. MVP ABIs: `arm64-v8a` + `x86_64`.
 
 ### Enabling the keyboard
 
@@ -60,7 +60,7 @@ The user's own phrases (用户自造词) are merged into every candidate list on
 
 **The cache.** Building is slow on low-end phones, and the keyboard loads the dictionary at every start of the IME process, so every save also writes `用户自造词.blob`, the dictionary compiled from the text and tagged with the FNV-1a hash of its bytes, to the app's no-backup files: it is derived, and tied to the build of `libjd` that made it. A load reads the file's bytes, hashes them and takes the blob when `jd_user_dict_check` accepts it and its tag is that hash — no decoding, no parsing, no build. A missing, corrupt or stale blob (after an app update) or one tagged for another text (a restored backup) is rebuilt from the text and rewritten. The rows and the engine's verdict on each, which come from a build's notes, are worked out only when the list asks for them. On the Android 17 emulator, with 10 000 phrases, the dictionary's share of a cold start is about 9 ms from the cache against about 21 ms when building, beside about 10 ms for loading the engine library either way; the store logs each load (`adb logcat -s JdIME`).
 
-**The engine side.** `engine/UserDict.kt` ports `bindings/swift/UserDict.swift`. `UserDict.build` runs `jd_user_dict_build` in the JNI shim, which hands back the blob as a `byte[]` and the report — counts and the per-line notes — as an `int[]`, and `UserDict.fromBlob` runs `jd_user_dict_check` on a cached blob, which hands back its status, phrase count and tag as a `long[]`: plain arrays, so R8 has no new class names to keep in step with `jd_jni.c`. `jd_init` reads the blob in place for the context's whole lifetime and a JVM array can move, so each `Engine(userDict)` copies the blob into native memory of its own, freed after `jd_deinit`. Candidates cross JNI as Strings, so nothing a session shows points into a dictionary, and `InputSession.replaceDictionary` simply swaps engines.
+**The engine side.** The binding's `UserDict` (`../bindings/java`) builds the dictionary in libjd and takes a cached blob back. `UserDict.build` runs `jd_user_dict_build` in the JNI shim, which hands back the blob as a `byte[]` and the report — counts and the per-line notes — as an `int[]`, and `UserDict.fromBlob` runs `jd_user_dict_check` on a cached blob, which hands back its status, phrase count and tag as a `long[]`. `jd_init` reads the blob in place for the context's whole lifetime and a JVM array can move, so each `Engine(userDict)` copies the blob into native memory of its own, freed after `jd_deinit`. Candidates cross JNI as Strings, so nothing a session shows points into a dictionary, and `InputSession.replaceDictionary` simply swaps engines.
 
 **The list.** **用户自造词** on the main screen opens it (`app/UserDictActivity.kt`): the file's phrases in file order under the switch and its status line, with search (the list narrows to the matching phrases), add (+), tap to edit, swipe either way to delete (with 撤销), and drag by the handle to reorder — order matters only among phrases on one code, and dragging is off while searching. Every row is saved as typed, the screen validates nothing, and the engine's notes from the build that follows every save are each row's second line, in the words and colours of the other clients (`userdict/UserDictProblem.kt`): red for a line the engine skips because it does not parse, grey for a duplicate it drops, orange for a phrase on a code a built-in word or another row already uses (it works, listed first). The code field is a visible-password field, so 键道 types into it directly instead of composing (`FieldPolicy`) and other keyboards offer no suggestions.
 
@@ -77,11 +77,12 @@ The check can be turned off with the **自动检查更新** switch; **检查更�
 ## Tests
 
 ```sh
-./gradlew :app:testDebugUnitTest            # JVM: the update feed model (no device)
+./gradlew :app:testDebugUnitTest            # JVM: the update feed model, the phrases file (no device)
 ./gradlew :app:connectedDebugAndroidTest    # needs a running device/emulator
+(cd ../bindings/java && ./gradlew test)     # JVM: the engine wrapper itself (no device)
 ```
 
-`InputSessionTest` (instrumented, because it drives the real engine through JNI) covers the `InputSession` dispatch core: composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, raw commit, cancel, a user dictionary's phrases and swapping it. `FieldPolicyTest` pins the field policy — numeric classes open on ?123, text classes on letters, every password variation (and only those) gets direct input. `UserDictTest` drives the `UserDict` wrapper against the real engine (notes, caps, cached blobs, the engine's own copy of the blob), `UserDictStoreTest` the store against temporary files (the cache included), and the JVM `UserDictFileTest` the file's line format and hash.
+`InputSessionTest` (instrumented, because it drives the real engine through JNI) covers the `InputSession` dispatch core: composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, raw commit, cancel, a user dictionary's phrases and swapping it. `FieldPolicyTest` pins the field policy — numeric classes open on ?123, text classes on letters, every password variation (and only those) gets direct input. `UserDictStoreTest` drives the store against temporary files (the cache included), and the JVM `UserDictFileTest` the file's line format and hash. The wrapper's own contract — `Engine` and `UserDict` against the real engine — is the binding's to test, on the JVM: see `../bindings/java`.
 
 For UI screenshots without enabling the IME, the embedded preview takes QA intent extras (the counterpart of the iOS app's `-preview`/`-numbers`/`-symbols`/`-type` launch args), forwarded through the launcher activity:
 
@@ -100,14 +101,14 @@ adb shell am start -n com.hronro.imejd/.app.MainActivity \
 - **No host composing region.** Like iOS, the in-flight code + candidates render in the keyboard's own candidate bar; only the final string is sent via `InputConnection.commitText`.
 - **Selection = tap, pagination = scroll.** No number-key selectors. The 123/#+= layers show Chinese punctuation directly and insert the tapped mark themselves, bypassing libjd's punctuation table but matching its behavior (see `core/docs/integration.md`).
 - **Field-aware opening plane, password passthrough.** `FieldPolicy` reads `EditorInfo.inputType` in `onStartInputView`: number / phone / datetime fields open on ?123 — Android never swaps IMEs for a field on its own (unlike iOS, which gives numeric fields its own pads), and a number field's key listener silently drops every Chinese character committed into it, so on letters the user would type into the void. Text fields open on letters, email / URI / ASCII included: non-Chinese text belongs to another keyboard. A restart on the same field (`restarting`, e.g. after an app's programmatic edit) keeps the user's plane. Password fields — the text, web, visible and number variations — put the keyboard in direct input (`KeyboardView.directInput`): letters and space bypass the engine and land in the host exactly as typed, with no composition and no candidates, because a masked field gives no hint that a stray space just committed a Chinese candidate.
-- **Native packaging.** The shim links the **dynamic** `libjd.so` (not the static `.a`, whose local-exec TLS relocations `ld` rejects in a shared object) and ships both `.so`s; `Engine` loads only `libjdjni`, whose `DT_NEEDED` pulls in `libjd.so` + `libc.so` as one group so libjd's libc references (e.g. `getauxval`) resolve.
+- **Native packaging.** The shim links the **dynamic** `libjd.so` (not the static `.a`, whose local-exec TLS relocations `ld` rejects in a shared object) and ships both `.so`s; the binding loads only `libjdjni`, whose `DT_NEEDED` pulls in `libjd.so` + `libc.so` as one group so libjd's libc references (e.g. `getauxval`) resolve.
 - **Key previews.** Character keys pop a Gboard-style balloon (`KeyPreview.kt`): instant on press, 70ms linger on release (AOSP's timing), slide-off cancels, one balloon per finger. In dark themes the balloon gets a Material elevation tint so it stands out over the keys. Balloons are children of the keyboard view — top-row previews float over the candidate bar — so there are no popup windows. Phone-only: tablets don't pop previews, matching Gboard/AOSP.
 - **Key-press feedback.** Every key down plays the system keypress sound (`AudioManager.playSoundEffect` with the per-key standard/delete/return/spacebar effects) and the system-tuned `KEYBOARD_TAP` haptic — `KeyFeedback.kt`, the counterpart of iOS's `KeyClick.swift` (sound-only there: iOS gates haptics behind Full Access). Candidate taps and the grid chevron/close give feedback too, and backspace repeats it on every auto-repeat tick, matching iOS. Both channels have toggles in the container app (default on, like Gboard's vibration and the always-on iOS click), stored in `SharedPreferences` and re-read per press — app, preview, and IME share one process, so a flip applies on the next key. Sound is muted by the silent/vibrate ringer, like the built-in keyboards.
 - **Press-and-hold punctuation groups.** Holding a grouped key (`KeyLayout.alternates`, mirrors the iOS keyboard) expands its balloon into a row of visually similar variants — the finger slides the accent highlight, release commits, sliding well below the key deselects. The row extends toward the screen's center (display order reversed on the right half) so the primary starts above the finger, Gboard-style. Groups ride the engine-bypass path, so they carry marks the engine inventory has no key for; a grouped mark never also has a dedicated key (`KeyLayoutTest`), which freed slots for the ；·×÷※℃√→★♡© keys. QA: drive it with real touches — `adb shell input motionevent DOWN x y`, `MOVE`, `UP` (the pointer stays held between adb calls).
 
 ## CI & releases
 
-- **Push** (`.github/workflows/`): `test-on-push.yml` runs the instrumented tests on an emulator; `build-on-push.yml` builds the per-ABI release APKs, signed with an ephemeral CI key — fine for grab-and-test, but each run's signature differs, so uninstall before installing a newer build.
+- **Push** (`.github/workflows/`): `test-on-push.yml` runs the instrumented tests on an emulator, and the Java binding's tests on the JVM; `build-on-push.yml` builds the per-ABI release APKs, signed with an ephemeral CI key — fine for grab-and-test, but each run's signature differs, so uninstall before installing a newer build.
 - **Version tags**: `release.yml` rebuilds the APKs with versionName/versionCode derived from the tag, signs them with the keystore from the `ANDROID_SIGNING_KEYSTORE` / `ANDROID_SIGNING_PASSWORD` repo secrets (ephemeral-key fallback until those are configured), and uploads them to the GitHub Release. Each APK is ~7.6 MB (the embedded dictionary blob is ~5 MB per ABI).
 - The APK jobs reuse the engine `.so`s prebuilt by the shared `build-libs` job via `build-libjd.sh`'s `LIBJD_SO_DIR` fast-path, so they need no zig; only the emulator test job compiles the engine itself.
 

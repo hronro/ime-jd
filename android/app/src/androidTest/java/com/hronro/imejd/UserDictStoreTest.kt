@@ -7,12 +7,12 @@ package com.hronro.imejd
 import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.hronro.imejd.engine.UserDict
-import com.hronro.imejd.engine.UserDictError
 import com.hronro.imejd.userdict.UserDictEntry
 import com.hronro.imejd.userdict.UserDictFile
 import com.hronro.imejd.userdict.UserDictProblem
 import com.hronro.imejd.userdict.UserDictStore
+import com.hronro.jd.UserDict
+import com.hronro.jd.UserDictException
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -146,7 +146,8 @@ class UserDictStoreTest {
         val tooMany = (0..UserDict.MAX_ENTRIES).map { UserDictEntry("词$it", "zzzzzz") }
         store.save(tooMany)
         val error = store.lastError as UserDictStore.LoadError.Build
-        assertEquals(UserDictError(UserDictError.Status.TOO_MANY_ENTRIES, UserDict.MAX_ENTRIES + 2), error.error)
+        assertEquals(UserDictException.Status.TOO_MANY_ENTRIES, error.error.status)
+        assertEquals(UserDict.MAX_ENTRIES + 2, error.error.line)
         assertEquals("the rows are the user's: still written", UserDict.MAX_ENTRIES + 1, store.rows.size)
         assertNull(store.dictionary)
         assertNull("every session runs on the built-in dictionary", store.activeDictionary)
@@ -247,7 +248,7 @@ class UserDictStoreTest {
         // Too much text is libjd's to refuse too, as on every client.
         val huge = listOf(UserDictEntry("词".repeat(3_000_000), "zzzzzz")) // 9 MB of UTF-8
         val tooLong = assertThrows(UserDictStore.LoadError.Build::class.java) { store.saveIfBuildable(huge) }
-        assertEquals(UserDictError.Status.TEXT_TOO_LONG, tooLong.error.status)
+        assertEquals(UserDictException.Status.TEXT_TOO_LONG, tooLong.error.status)
         assertEquals("文件超过 8 MB 上限", tooLong.message)
         assertArrayEquals(before, file.readBytes())
 

@@ -148,6 +148,36 @@ jobs:
         working-directory: windows
         run: cargo test
 
+  # Java bindings: the JNI shim and the wrapper, built for the runner itself
+  # (zig builds libjd, zig cc the shim against the JDK's jni.h) and driven
+  # through JUnit on a plain JVM — no emulator. The Android app ships the
+  # same sources (test-android, and the APK builds).
+  test-java:
+    name: java (jvm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Install JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run binding tests
+        working-directory: bindings/java
+        run: ./gradlew test
+
   # macOS IME: KeyGate (full NSEvent → KeyAction matrix), engine FFI smoke,
   # and candidate formatting, built with the shared bindings/swift sources.
   test-macos:
@@ -220,9 +250,9 @@ jobs:
           -derivedDataPath build/DD
           test
 
-  # Android: instrumented InputSession tests against the real engine through
-  # JNI — the only coverage the JNI marshaling layer has, so it earns the
-  # emulator's extra runtime.
+  # Android: the app's instrumented tests — InputSession dispatch, the user
+  # dictionary store, layouts and field policies — against the real engine
+  # through JNI on ART. The JNI layer's own tests run on the JVM (test-java).
   test-android:
     name: android (emulator)
     runs-on: ubuntu-latest

@@ -24,7 +24,7 @@ import android.view.ViewGroup
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.hronro.imejd.engine.Candidate
+import com.hronro.jd.Candidate
 
 @SuppressLint("ViewConstructor")
 class CandidateBarView(context: Context, private var theme: KeyboardTheme) : LinearLayout(context) {

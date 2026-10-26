@@ -23,9 +23,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import androidx.core.util.AtomicFile
-import com.hronro.imejd.engine.UserDict
-import com.hronro.imejd.engine.UserDictError
-import com.hronro.imejd.engine.UserDictReport
+import com.hronro.jd.UserDict
+import com.hronro.jd.UserDictException
+import com.hronro.jd.UserDictReport
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -52,11 +52,11 @@ class UserDictStore(
          * A line that does not parse is never this — it is skipped and
          * flagged on its row.
          */
-        class Build(val error: UserDictError) : LoadError(
+        class Build(val error: UserDictException) : LoadError(
             when (error.status) {
-                UserDictError.Status.TOO_MANY_ENTRIES ->
+                UserDictException.Status.TOO_MANY_ENTRIES ->
                     "第 ${error.line} 行起超过 ${UserDict.MAX_ENTRIES} 条上限"
-                UserDictError.Status.TEXT_TOO_LONG -> "文件超过 8 MB 上限"
+                UserDictException.Status.TEXT_TOO_LONG -> "文件超过 8 MB 上限"
                 else -> "无法编译词库（${error.message}）"
             },
         )
@@ -204,7 +204,7 @@ class UserDictStore(
         val tag = UserDictFile.hash(text)
         val built = try {
             UserDict.build(text, tag)
-        } catch (e: UserDictError) {
+        } catch (e: UserDictException) {
             throw LoadError.Build(e)
         }
         UserDictFile.write(text, file)
@@ -280,7 +280,7 @@ class UserDictStore(
             source = Source.BUILT
             contents = Contents({ text }) { fresh.report }
             cache(fresh.dict.blob)
-        } catch (e: UserDictError) {
+        } catch (e: UserDictException) {
             dictionary = null
             source = null
             lastError = LoadError.Build(e)
@@ -298,7 +298,7 @@ class UserDictStore(
         }
         val dict = try {
             UserDict.fromBlob(bytes)
-        } catch (_: UserDictError) {
+        } catch (_: UserDictException) {
             return null
         }
         return dict.takeIf { it.sourceTag == tag }
@@ -326,7 +326,7 @@ class UserDictStore(
     /** The notes the list shows, for a text whose dictionary came from the cache. */
     private fun notesOf(text: String): UserDictReport? = try {
         UserDict.build(text).report
-    } catch (_: UserDictError) {
+    } catch (_: UserDictException) {
         null
     }
 

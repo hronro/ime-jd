@@ -54,12 +54,13 @@ android {
     buildTypes {
         release {
             // R8 strips the ~90% of appcompat/kotlin-stdlib this app never
-            // calls (dex 5.5 MB -> 0.6 MB). Safe ONLY together with
-            // proguard-rules.pro: EngineState/Candidate are constructed from
-            // C code (FindClass in jd_jni.c), a reference R8 cannot see.
+            // calls (dex 5.5 MB -> 0.6 MB). The classes the JNI shim builds
+            // from C, out of R8's sight, are kept by rules the jd binding's jar
+            // carries (bindings/java: META-INF/proguard/jd.pro), which R8
+            // reads on its own: the app needs no rules of its own.
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
 
@@ -69,6 +70,9 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+        // The jd binding marks what can be null with JSpecify annotations.
+        // Strict makes Kotlin 2.0 type those values `T?` instead of warning.
+        freeCompilerArgs += "-Xjspecify-annotations=strict"
     }
 }
 
@@ -83,6 +87,9 @@ androidComponents {
 }
 
 dependencies {
+    // The engine: the Java binding over libjd (../bindings/java), compiled
+    // from source as an included build (settings.gradle.kts).
+    implementation("com.hronro:jd")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     // Container-app widgets only (MaterialButton, M3 theming); the IME draws
@@ -106,12 +113,15 @@ dependencies {
 
 // --- Native build ----------------------------------------------------------
 // Mirrors ios/scripts/build-libjd.sh: cross-compile the Zig core per ABI and
-// link the C JNI shim against it with the NDK clang, dropping libjd.so +
-// libjdjni.so into src/main/jniLibs/<abi>/. No CMake/externalNativeBuild — the
-// shim links the *dynamic* libjd.so (the static .a uses local-exec TLS that ld
-// rejects in a shared object), so a plain script is enough and Gradle just
-// packages the resulting jniLibs.
+// link the jd binding's C JNI shim (../bindings/java/src/main/c/jd_jni.c)
+// against it with the NDK clang, dropping libjd.so + libjdjni.so into
+// src/main/jniLibs/<abi>/. No CMake/externalNativeBuild — the shim links the
+// *dynamic* libjd.so (the static .a uses local-exec TLS that ld rejects in a
+// shared object), so a plain script is enough and Gradle just packages the
+// resulting jniLibs. The shim is compiled against the C declarations javac -h
+// writes as the binding compiles, hence the binding's compileJava first.
 val buildLibjd by tasks.registering(Exec::class) {
+    dependsOn(gradle.includedBuild("jd").task(":compileJava"))
     workingDir = rootProject.projectDir
     commandLine("bash", "scripts/build-libjd.sh", "arm64-v8a", "x86_64")
 }

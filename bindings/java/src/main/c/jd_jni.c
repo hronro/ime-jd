@@ -1,30 +1,37 @@
-// JNI bridge over libjd's C ABI (see ../../../../../core/include/jd.h).
+// JNI bridge over libjd's C ABI (see ../../../../../core/include/jd.h): the
+// native methods of com.hronro.jd.Jni, which declares every one of them.
 //
 // Unlike the Rust and Swift bindings — which can hand out libjd's immortal blob
 // pointers directly — JNI has to materialize JVM objects, so this layer is the
 // one place a copy is unavoidable. It therefore copies only what the caller
-// asks for: `nativeReadRange` builds Strings for exactly the requested window,
+// asks for: `readRange` builds Strings for exactly the requested window,
 // so a candidate strip that has fetched 900 candidates but only shows 9 pays
 // for 9 rows' worth of String work at a time.
 //
-// A user dictionary crosses as plain arrays: `UserDict.nativeBuild` returns the
-// blob as a byte[] and the report as an int[], `UserDict.nativeCheck` a cached
-// blob's verdict as a long[], and `Engine.nativeInit` copies a blob into memory
-// of its own, because jd_init reads the blob in place for the context's whole
-// lifetime and a JVM array can move. No class of this app is built here for
-// any of them, so R8 has nothing new to keep in step with this file.
+// A user dictionary crosses as plain arrays: `userDictBuild` returns the blob
+// as a byte[] and the report as an int[], `userDictCheck` a cached blob's
+// verdict as a long[], and `init` copies a blob into memory of its own,
+// because jd_init reads the blob in place for the context's whole lifetime and
+// a JVM array can move. The only classes built here are EngineState and
+// Candidate (see JNI_OnLoad).
 //
-// Compiled with the NDK clang and linked against the *dynamic* libjd.so (the
-// static archive uses local-exec TLS relocations that ld rejects in a shared
-// object). See android/scripts/build-libjd.sh.
+// The functions' names and types come from com_hronro_jd_Jni.h, which javac -h
+// writes from Jni.java. Both native builds compile this file against it with
+// -Werror=missing-prototypes, so a function that no longer matches its Java
+// declaration fails the build, not the first call:
+//   - android/scripts/build-libjd.sh, with the NDK clang, per Android ABI;
+//   - scripts/build-host.sh, with zig cc, for the machine running the tests.
+// Both link against the *dynamic* libjd: the static archive uses local-exec
+// TLS relocations that a linker rejects in a shared object.
 
 #include <jni.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "jd.h"
+#include "com_hronro_jd_Jni.h"
 
 // How many candidates one native read pulls across the JNI boundary at a time.
-// The Kotlin side loops for larger windows.
+// The Java side loops for larger windows.
 #define READ_CHUNK 64
 
 // Cached classes/methods (global refs live for the process). Populated in JNI_OnLoad.
@@ -35,7 +42,27 @@ static jmethodID g_candidate_ctor;  // (Ljava/lang/String;Ljava/lang/String;)V
 static jclass    g_arraylist_cls;
 static jmethodID g_arraylist_ctor;  // (I)V
 static jmethodID g_arraylist_add;   // (Ljava/lang/Object;)Z
-static jclass    g_object_cls;      // java/lang/Object, for UserDict.nativeBuild's pair
+static jclass    g_object_cls;      // java/lang/Object, for userDictBuild's pair
+
+// Fails the library load with an UnsatisfiedLinkError saying `why`. ART swaps
+// whatever is pending for a generic "JNI_ERR returned from JNI_OnLoad", so an
+// exception a failed lookup left (NoClassDefFoundError, NoSuchMethodError) is
+// printed first, to stderr or, on Android, logcat.
+static jint fail_load(JNIEnv *env, const char *why) {
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionDescribe(env); // and clears it
+    jclass error = (*env)->FindClass(env, "java/lang/UnsatisfiedLinkError");
+    if (error != NULL) (*env)->ThrowNew(env, error, why);
+    return JNI_ERR;
+}
+
+// A global reference to class `name`, or NULL with NoClassDefFoundError pending.
+static jclass global_class(JNIEnv *env, const char *name) {
+    jclass local = (*env)->FindClass(env, name);
+    if (local == NULL) return NULL;
+    jclass global = (jclass)(*env)->NewGlobalRef(env, local);
+    (*env)->DeleteLocalRef(env, local);
+    return global;
+}
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     (void)reserved;
@@ -45,28 +72,35 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     }
 
     // Every class instantiated from C here must keep its name AND constructor
-    // in ../../../proguard-rules.pro — R8 cannot see these references, and it
-    // silently ignores keep rules whose class no longer exists. Renaming a
-    // class on the Kotlin side without updating the keep rule ships a release
-    // IME that crashes right here on its first popup.
-    jclass c;
-    c = (*env)->FindClass(env, "com/hronro/imejd/engine/EngineState");
-    g_state_cls = (jclass)(*env)->NewGlobalRef(env, c);
+    // through R8: see ../resources/META-INF/proguard/jd.pro. R8 cannot see
+    // these references, and it silently ignores keep rules whose class no
+    // longer exists, so renaming a class on the Java side without updating
+    // both this file and the rule ships a release whose library fails to load
+    // here (v0.5.0 of the Android app crashed on its first popup that way).
+    static const char missing[] =
+        "jd_jni: a class or method it builds with is missing (renamed without "
+        "updating jd_jni.c, or stripped by R8: see META-INF/proguard/jd.pro)";
+    g_state_cls = global_class(env, "com/hronro/jd/EngineState");
+    if (g_state_cls == NULL) return fail_load(env, missing);
     g_state_ctor = (*env)->GetMethodID(env, g_state_cls, "<init>",
         "(Ljava/lang/String;II)V");
+    if (g_state_ctor == NULL) return fail_load(env, missing);
 
-    c = (*env)->FindClass(env, "com/hronro/imejd/engine/Candidate");
-    g_candidate_cls = (jclass)(*env)->NewGlobalRef(env, c);
+    g_candidate_cls = global_class(env, "com/hronro/jd/Candidate");
+    if (g_candidate_cls == NULL) return fail_load(env, missing);
     g_candidate_ctor = (*env)->GetMethodID(env, g_candidate_cls, "<init>",
         "(Ljava/lang/String;Ljava/lang/String;)V");
+    if (g_candidate_ctor == NULL) return fail_load(env, missing);
 
-    c = (*env)->FindClass(env, "java/util/ArrayList");
-    g_arraylist_cls = (jclass)(*env)->NewGlobalRef(env, c);
+    g_arraylist_cls = global_class(env, "java/util/ArrayList");
+    if (g_arraylist_cls == NULL) return fail_load(env, missing);
     g_arraylist_ctor = (*env)->GetMethodID(env, g_arraylist_cls, "<init>", "(I)V");
+    if (g_arraylist_ctor == NULL) return fail_load(env, missing);
     g_arraylist_add  = (*env)->GetMethodID(env, g_arraylist_cls, "add", "(Ljava/lang/Object;)Z");
+    if (g_arraylist_add == NULL) return fail_load(env, missing);
 
-    c = (*env)->FindClass(env, "java/lang/Object");
-    g_object_cls = (jclass)(*env)->NewGlobalRef(env, c);
+    g_object_cls = global_class(env, "java/lang/Object");
+    if (g_object_cls == NULL) return fail_load(env, missing);
 
     // This file reads libjd's structs through the hand-written jd.h, so a
     // drift between the header and the compiled library would corrupt memory
@@ -79,7 +113,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
         jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_INFO) != sizeof(jd_user_dict_info) ||
         jd_abi_layout(JD_ABI_USER_DICT_MAX_ENTRIES) != JD_USER_DICT_MAX_ENTRIES ||
         jd_abi_layout(JD_ABI_USER_DICT_VALUE_MAX) != JD_USER_DICT_VALUE_MAX) {
-        return JNI_ERR;
+        return fail_load(env, "jd_jni: libjd's struct layout or limits differ from jd.h");
     }
 
     return JNI_VERSION_1_6;
@@ -185,9 +219,9 @@ static jobject build_state(JNIEnv *env, jd_context *ctx) {
     return state;
 }
 
-// ---- native methods of com.hronro.imejd.engine.Engine (member fns → jobject thiz) ----
+// ---- the engine: Engine's half of Jni ----
 
-// What Kotlin's Engine holds as its handle: the context, and the copy of the
+// What Engine holds as its handle: the context, and the copy of the
 // user-dictionary blob it was created with (NULL for the built-in dictionary
 // alone). jd_init never copies the blob and reads it until jd_deinit, so it
 // lives here and is freed only after the context.
@@ -201,10 +235,10 @@ static jd_context *ctx_of(jlong handle) {
 }
 
 // 0 on allocation failure, or when jd_init refuses the blob — which a blob
-// UserDict.nativeBuild made in this process never is.
+// that userDictBuild made, or userDictCheck passed, never is.
 JNIEXPORT jlong JNICALL
-Java_com_hronro_imejd_engine_Engine_nativeInit(JNIEnv *env, jobject thiz, jbyteArray user_dict) {
-    (void)thiz;
+Java_com_hronro_jd_Jni_init(JNIEnv *env, jclass cls, jbyteArray user_dict) {
+    (void)cls;
     engine_t *e = (engine_t *)calloc(1, sizeof(engine_t));
     if (e == NULL) return 0;
     size_t len = 0;
@@ -228,8 +262,8 @@ Java_com_hronro_imejd_engine_Engine_nativeInit(JNIEnv *env, jobject thiz, jbyteA
 }
 
 JNIEXPORT void JNICALL
-Java_com_hronro_imejd_engine_Engine_nativeDeinit(JNIEnv *env, jobject thiz, jlong handle) {
-    (void)env; (void)thiz;
+Java_com_hronro_jd_Jni_deinit(JNIEnv *env, jclass cls, jlong handle) {
+    (void)env; (void)cls;
     engine_t *e = (engine_t *)(intptr_t)handle;
     jd_deinit(e->ctx);
     free(e->blob); // only now: the context read it until jd_deinit
@@ -237,50 +271,50 @@ Java_com_hronro_imejd_engine_Engine_nativeDeinit(JNIEnv *env, jobject thiz, jlon
 }
 
 JNIEXPORT jobject JNICALL
-Java_com_hronro_imejd_engine_Engine_nativePressKey(JNIEnv *env, jobject thiz, jlong ctx, jbyte key) {
-    (void)thiz;
-    jd_context *c = ctx_of(ctx);
+Java_com_hronro_jd_Jni_pressKey(JNIEnv *env, jclass cls, jlong handle, jbyte key) {
+    (void)cls;
+    jd_context *c = ctx_of(handle);
     jd_press_key(c, (char)key);
     return build_state(env, c);
 }
 
 JNIEXPORT jobject JNICALL
-Java_com_hronro_imejd_engine_Engine_nativeBackspace(JNIEnv *env, jobject thiz, jlong ctx) {
-    (void)thiz;
-    jd_context *c = ctx_of(ctx);
+Java_com_hronro_jd_Jni_backspace(JNIEnv *env, jclass cls, jlong handle) {
+    (void)cls;
+    jd_context *c = ctx_of(handle);
     jd_backspace(c);
     return build_state(env, c);
 }
 
 JNIEXPORT jobject JNICALL
-Java_com_hronro_imejd_engine_Engine_nativeReset(JNIEnv *env, jobject thiz, jlong ctx) {
-    (void)thiz;
-    jd_context *c = ctx_of(ctx);
+Java_com_hronro_jd_Jni_reset(JNIEnv *env, jclass cls, jlong handle) {
+    (void)cls;
+    jd_context *c = ctx_of(handle);
     jd_reset(c);
     return build_state(env, c);
 }
 
 JNIEXPORT jobject JNICALL
-Java_com_hronro_imejd_engine_Engine_nativeSetAnchor(JNIEnv *env, jobject thiz, jlong ctx, jint index) {
-    (void)thiz;
-    jd_context *c = ctx_of(ctx);
+Java_com_hronro_jd_Jni_setAnchor(JNIEnv *env, jclass cls, jlong handle, jint index) {
+    (void)cls;
+    jd_context *c = ctx_of(handle);
     jd_set_anchor(c, (unsigned int)index);
     return build_state(env, c);
 }
 
 JNIEXPORT jobject JNICALL
-Java_com_hronro_imejd_engine_Engine_nativeState(JNIEnv *env, jobject thiz, jlong ctx) {
-    (void)thiz;
-    return build_state(env, ctx_of(ctx));
+Java_com_hronro_jd_Jni_state(JNIEnv *env, jclass cls, jlong handle) {
+    (void)cls;
+    return build_state(env, ctx_of(handle));
 }
 
 // Read up to READ_CHUNK candidates starting at `start` and return them as a
 // List<Candidate>. Strings are built only for what was asked for.
 JNIEXPORT jobject JNICALL
-Java_com_hronro_imejd_engine_Engine_nativeReadRange(
-    JNIEnv *env, jobject thiz, jlong ctx, jint start, jint count) {
-    (void)thiz;
-    jd_context *c = ctx_of(ctx);
+Java_com_hronro_jd_Jni_readRange(
+    JNIEnv *env, jclass cls, jlong handle, jint start, jint count) {
+    (void)cls;
+    jd_context *c = ctx_of(handle);
 
     unsigned int want = (count < 0) ? 0u : (unsigned int)count;
     if (want > READ_CHUNK) want = READ_CHUNK;
@@ -305,14 +339,14 @@ Java_com_hronro_imejd_engine_Engine_nativeReadRange(
     return list;
 }
 
-// The chunk size the Kotlin side must loop against for larger windows.
+// The chunk size the Java side must loop against for larger windows.
 JNIEXPORT jint JNICALL
-Java_com_hronro_imejd_engine_Engine_nativeReadChunk(JNIEnv *env, jobject thiz) {
-    (void)env; (void)thiz;
+Java_com_hronro_jd_Jni_readChunk(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
     return (jint)READ_CHUNK;
 }
 
-// ---- native methods of com.hronro.imejd.engine.UserDict (static → jclass) ----
+// ---- the user dictionary: UserDict's half of Jni ----
 
 static void throw_oom(JNIEnv *env, const char *what) {
     jclass oom = (*env)->FindClass(env, "java/lang/OutOfMemoryError");
@@ -325,7 +359,7 @@ static void throw_oom(JNIEnv *env, const char *what) {
 // is how a client reads the tag that says whether the cache is still its
 // text's before using it.
 JNIEXPORT jlongArray JNICALL
-Java_com_hronro_imejd_engine_UserDict_nativeCheck(JNIEnv *env, jclass cls, jbyteArray blob) {
+Java_com_hronro_jd_Jni_userDictCheck(JNIEnv *env, jclass cls, jbyteArray blob) {
     (void)cls;
     const jsize len = (*env)->GetArrayLength(env, blob);
     void *copy = malloc(len > 0 ? (size_t)len : 1); // malloc's alignment covers the 4 asked for
@@ -351,7 +385,7 @@ Java_com_hronro_imejd_engine_UserDict_nativeCheck(JNIEnv *env, jclass cls, jbyte
 // Every verdict is libjd's; this only moves it across. Throws
 // OutOfMemoryError when the buffer cannot be had.
 JNIEXPORT jobjectArray JNICALL
-Java_com_hronro_imejd_engine_UserDict_nativeBuild(
+Java_com_hronro_jd_Jni_userDictBuild(
     JNIEnv *env, jclass cls, jbyteArray text, jlong source_tag) {
     (void)cls;
     const jsize text_len = (*env)->GetArrayLength(env, text);

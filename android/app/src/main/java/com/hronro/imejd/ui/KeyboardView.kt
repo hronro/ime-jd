@@ -10,9 +10,9 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import com.hronro.imejd.engine.Candidate
 import com.hronro.imejd.engine.KeyAction
 import com.hronro.imejd.engine.SessionSnapshot
+import com.hronro.jd.Candidate
 
 @SuppressLint("ViewConstructor")
 class KeyboardView(

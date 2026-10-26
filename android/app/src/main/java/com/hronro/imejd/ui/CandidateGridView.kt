@@ -16,7 +16,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import com.hronro.imejd.engine.Candidate
+import com.hronro.jd.Candidate
 import kotlin.math.max
 
 @SuppressLint("ViewConstructor")

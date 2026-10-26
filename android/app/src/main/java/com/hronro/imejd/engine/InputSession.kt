@@ -7,6 +7,10 @@
 // tests with a mock host.
 package com.hronro.imejd.engine
 
+import com.hronro.jd.Candidate
+import com.hronro.jd.Engine
+import com.hronro.jd.UserDict
+
 /**
  * The host text field, abstracted to what the session needs. The IME service
  * implements this by forwarding to the InputConnection; tests use a mock.

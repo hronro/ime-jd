@@ -4,9 +4,9 @@
 // as the macOS and iOS lists.
 package com.hronro.imejd.userdict
 
-import com.hronro.imejd.engine.UserDict
-import com.hronro.imejd.engine.UserDictNote
-import com.hronro.imejd.engine.UserDictReport
+import com.hronro.jd.UserDict
+import com.hronro.jd.UserDictNote
+import com.hronro.jd.UserDictReport
 
 sealed interface UserDictProblem {
     /** In the file, but libjd skips it: it does not parse. [flags] say why. */

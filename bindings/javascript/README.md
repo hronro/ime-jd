@@ -1,6 +1,6 @@
 # jd (WebAssembly / JavaScript bindings)
 
-Ergonomic JavaScript wrapper for the libjd core engine, driving the `wasm32-freestanding` reactor module the core builds (`core/zig-out/bin/jd.wasm`). It exposes the same engine as the Rust (`bindings/rust`) and Swift (`bindings/swift`) wrappers — you work with strings and plain objects, never pointers.
+Ergonomic JavaScript wrapper for the libjd core engine, driving the `wasm32-freestanding` reactor module the core builds (`core/zig-out/bin/jd.wasm`). It exposes the same engine as the Rust (`bindings/rust`), Swift (`bindings/swift`) and Java (`bindings/java`) wrappers — you work with strings and plain objects, never pointers.
 
 ```js
 import { JdModule } from "jd";

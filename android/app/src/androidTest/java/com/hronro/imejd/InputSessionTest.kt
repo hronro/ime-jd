@@ -8,7 +8,7 @@ import com.hronro.imejd.engine.InputSession
 import com.hronro.imejd.engine.KeyAction
 import com.hronro.imejd.engine.KeyboardHost
 import com.hronro.imejd.engine.SessionSnapshot
-import com.hronro.imejd.engine.UserDict
+import com.hronro.jd.UserDict
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull

@@ -2,6 +2,7 @@
 # Build the native libraries for the Android app, one slice per ABI:
 #   1. zig cross-compiles the shared engine  -> libjd.so      (per ABI)
 #   2. NDK clang links the C JNI shim against -> libjdjni.so   (per ABI, NEEDED: libjd.so)
+#      (the jd binding's, ../bindings/java/src/main/c/jd_jni.c)
 # Both land in app/src/main/jniLibs/<abi>/, which Gradle packages as-is (no
 # CMake / externalNativeBuild). Mirrors ios/scripts/build-libjd.sh.
 #
@@ -9,7 +10,7 @@
 # built PIE with local-exec TLS (std.heap.smp_allocator's thread_index), whose
 # R_AARCH64_TLSLE_* relocations ld.lld rejects inside a -shared object. The
 # dynamic lib uses a shared-compatible TLS model, so we link against it and ship
-# both .so files (Engine loads libjd first, then libjdjni).
+# both .so files (the binding loads libjdjni alone; its DT_NEEDED brings libjd).
 #
 # Usage: scripts/build-libjd.sh [abi ...]   (default: arm64-v8a x86_64)
 # Env:   ANDROID_HOME / ANDROID_NDK_HOME, MIN_SDK (default 24), OPT (default small)
@@ -18,17 +19,29 @@
 #                        of invoking zig (the CI fast-path, like iOS's LIBJD_A
 #                        — the `build-libs` bundles are `fast` builds). The NDK
 #                        is still required: the JNI shim is always linked here.
+#        JNI_HEADERS  -> javac -h's declarations of the binding's natives, which
+#                        the shim compiles against (default:
+#                        ../bindings/java/build/generated/jni, written by the
+#                        binding's compileJava, which the Gradle task runs first)
 
 set -eu
 
 ANDROID_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CORE_DIR=$(CDPATH= cd -- "$ANDROID_DIR/../core" && pwd)
+JAVA_DIR=$(CDPATH= cd -- "$ANDROID_DIR/../bindings/java" && pwd)
 JNILIBS_DIR="$ANDROID_DIR/app/src/main/jniLibs"
-SHIM="$ANDROID_DIR/app/src/main/cpp/jd_jni.c"
+SHIM="$JAVA_DIR/src/main/c/jd_jni.c"
+JNI_HEADERS="${JNI_HEADERS:-$JAVA_DIR/build/generated/jni}"
 
 ABIS="${*:-arm64-v8a x86_64}"
 MIN_SDK="${MIN_SDK:-24}"
 OPT="-Doptimize=${OPT:-small}"
+
+if [ ! -f "$JNI_HEADERS/com_hronro_jd_Jni.h" ]; then
+    echo "error: no $JNI_HEADERS/com_hronro_jd_Jni.h — build through Gradle" \
+        "(./gradlew :app:buildLibjd), or run the binding's compileJava first" >&2
+    exit 1
+fi
 
 # --- locate zig (Gradle's daemon may not inherit an interactive PATH) ---
 # Not needed at all when every engine comes prebuilt via LIBJD_SO_DIR.
@@ -104,9 +117,12 @@ for abi in $ABIS; do
     out="$JNILIBS_DIR/$abi"
     mkdir -p "$out"
     cp "$libjd_so" "$out/libjd.so"
+    # -Werror=missing-prototypes: every JNI function must match a declaration
+    # javac -h wrote, or the build fails here (see jd_jni.c's header).
     "$CLANG" --target="$clang_target" -shared -fPIC -O2 \
+        -Werror=missing-prototypes \
         -Wl,-z,max-page-size=16384 \
-        -I"$CORE_DIR/include" \
+        -I"$CORE_DIR/include" -I"$JNI_HEADERS" \
         "$SHIM" -L"$(dirname "$libjd_so")" -ljd \
         -o "$out/libjdjni.so"
 
