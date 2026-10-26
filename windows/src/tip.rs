@@ -9,14 +9,14 @@ use windows::Win32::UI::TextServices::{
     ITfCompositionSink_Impl, ITfContext, ITfDisplayAttributeInfo, ITfDisplayAttributeProvider,
     ITfDisplayAttributeProvider_Impl, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr,
     ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
-    ITfTextInputProcessorEx_Impl, ITfThreadMgr,
+    ITfTextInputProcessorEx_Impl, ITfThreadMgr, TF_TMAE_SECUREMODE,
 };
 use windows::core::{BOOL, ComObjectInner, GUID, IUnknownImpl, Interface, Ref, Result, implement};
 
 use crate::candidate_window::{self, CandidateItem};
 use crate::display_attribute::{DisplayAttributeEnum, DisplayAttributeInfo};
 use crate::guids::GUID_JD_DISPLAY_ATTRIBUTE;
-use crate::{composition, jd, ui_element};
+use crate::{composition, jd, mode_icon, ui_element};
 
 #[implement(
     ITfTextInputProcessorEx,
@@ -47,6 +47,7 @@ impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
             if let Ok(keystroke_mgr) = thread_mgr.cast::<ITfKeystrokeMgr>() {
                 let _ = unsafe { keystroke_mgr.UnadviseKeyEventSink(state.client_id) };
             }
+            mode_icon::remove(thread_mgr);
         }
         drop(state);
         *self.state.borrow_mut() = TipState::default();
@@ -59,7 +60,7 @@ impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
 }
 
 impl ITfTextInputProcessorEx_Impl for TextInputProcessor_Impl {
-    fn ActivateEx(&self, ptim: Ref<'_, ITfThreadMgr>, tid: u32, _dwflags: u32) -> Result<()> {
+    fn ActivateEx(&self, ptim: Ref<'_, ITfThreadMgr>, tid: u32, dwflags: u32) -> Result<()> {
         jd::activate();
         // Daily release-feed check (a registry read when nothing is due) and
         // the cached "new version" notice the candidate window shows.
@@ -71,6 +72,8 @@ impl ITfTextInputProcessorEx_Impl for TextInputProcessor_Impl {
         let keystroke_mgr: ITfKeystrokeMgr = thread_mgr.cast()?;
         let key_sink: ITfKeyEventSink = self.to_interface();
         unsafe { keystroke_mgr.AdviseKeyEventSink(tid, &key_sink, true) }?;
+        // The taskbar's mode icon and its menu.
+        mode_icon::add(&thread_mgr, dwflags & TF_TMAE_SECUREMODE != 0);
 
         *self.state.borrow_mut() = TipState {
             thread_mgr: Some(thread_mgr),

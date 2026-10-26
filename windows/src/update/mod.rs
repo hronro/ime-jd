@@ -29,9 +29,9 @@
 //! The check sends nothing but the request itself (no identifiers beyond a
 //! `User-Agent` naming this IME and its version). It is skipped inside
 //! AppContainer (UWP) hosts, which can neither reach the network on our
-//! behalf nor write the registry state, and it can be switched off with the
-//! `CheckForUpdates` value under `HKCU\Software\hronro\ime-jd` (see
-//! windows/README.md).
+//! behalf nor write the registry state, and it can be switched off — 自动检查
+//! 更新 in the menu of the IME's mode icon, the `CheckForUpdates` value under
+//! `HKCU\Software\hronro\ime-jd` (jd_userdict::switch).
 
 mod feed;
 
@@ -43,7 +43,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Networking::WinHttp::{
     INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ADDREQ_FLAG_ADD,
     WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
@@ -56,18 +55,17 @@ use windows::Win32::Security::Cryptography::{
     BCRYPT_SHA256_ALGORITHM, BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash,
     BCryptFinishHash, BCryptHashData, BCryptOpenAlgorithmProvider,
 };
-use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TokenIsAppContainer};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_QWORD, REG_SZ,
-    RRF_RT_REG_DWORD, RRF_RT_REG_QWORD, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegGetValueW,
-    RegSetValueExW,
+    RRF_RT_REG_QWORD, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegGetValueW, RegSetValueExW,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{PCWSTR, w};
 
 pub use feed::Version;
+
+use crate::host;
 
 /// This build's version, baked in by build.rs from core/build.zig.zon.
 pub const CURRENT_VERSION: &str = env!("JD_VERSION");
@@ -93,10 +91,9 @@ static NOTICE: Mutex<Option<Notice>> = Mutex::new(None);
 static CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 // HKCU state, shared by every host process. The key is created on first
-// write; reads of a missing value fall back to defaults.
+// write; reads of a missing value fall back to defaults. The user's opt-out
+// is a switch beside it (jd_userdict::switch).
 const REG_KEY: PCWSTR = w!(r"Software\hronro\ime-jd");
-/// DWORD; anything but 0 (and absent) means "check". The user's opt-out.
-const REG_CHECK_FOR_UPDATES: PCWSTR = w!("CheckForUpdates");
 /// QWORD, Unix seconds of the last check (attempted, not necessarily successful).
 const REG_LAST_CHECK: PCWSTR = w!("LastUpdateCheck");
 /// SZ, the newest tag the feed reported.
@@ -110,7 +107,7 @@ const REG_SEEN: PCWSTR = w!("SeenVersion");
 pub fn on_activate() {
     refresh_notice();
 
-    if !checks_enabled() || is_app_container() {
+    if !jd_userdict::switch::checks_for_updates() || host::is_app_container() {
         return;
     }
     match Version::parse(CURRENT_VERSION) {
@@ -158,7 +155,7 @@ pub fn pending_notice() -> Option<Notice> {
 pub fn open_notice(notice: &Notice) {
     write_sz(REG_SEEN, &notice.tag);
     *NOTICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    if is_app_container() {
+    if host::is_app_container() {
         open_url(&notice.url);
         return;
     }
@@ -189,38 +186,11 @@ fn refresh_notice() {
     *NOTICE.lock().unwrap_or_else(|e| e.into_inner()) = notice;
 }
 
-fn checks_enabled() -> bool {
-    read_dword(REG_CHECK_FOR_UPDATES).unwrap_or(1) != 0
-}
-
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-/// AppContainer (UWP / sandboxed Store app) hosts: no network on our behalf,
-/// no writable HKCU — skip the check there; desktop hosts cover the user.
-fn is_app_container() -> bool {
-    unsafe {
-        let mut token = HANDLE::default();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
-            return false;
-        }
-        let mut flag: u32 = 0;
-        let mut len: u32 = 0;
-        let ok = GetTokenInformation(
-            token,
-            TokenIsAppContainer,
-            Some(&mut flag as *mut u32 as *mut c_void),
-            std::mem::size_of::<u32>() as u32,
-            &mut len,
-        )
-        .is_ok();
-        let _ = CloseHandle(token);
-        ok && flag != 0
-    }
 }
 
 fn open_url(url: &str) {
@@ -587,24 +557,6 @@ fn run_elevated(bat: &Path, dir: &Path) -> bool {
 
 fn wide_z(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-fn read_dword(name: PCWSTR) -> Option<u32> {
-    let mut data: u32 = 0;
-    let mut size = std::mem::size_of::<u32>() as u32;
-    unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            REG_KEY,
-            name,
-            RRF_RT_REG_DWORD,
-            None,
-            Some(&mut data as *mut u32 as *mut c_void),
-            Some(&mut size),
-        )
-    }
-    .is_ok()
-    .then_some(data)
 }
 
 fn read_qword(name: PCWSTR) -> Option<u64> {

@@ -12,8 +12,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, GUID_TFCAT_CATEGORY_OF_TIP,
     GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, GUID_TFCAT_TIP_KEYBOARD,
-    GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, GUID_TFCAT_TIPCAP_UIELEMENTENABLED, ITfCategoryMgr,
-    ITfInputProcessorProfileMgr,
+    GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+    GUID_TFCAT_TIPCAP_UIELEMENTENABLED, ITfCategoryMgr, ITfInputProcessorProfileMgr,
 };
 
 // Categories we declare. Each one corresponds to a feature we actually
@@ -21,12 +21,14 @@ use windows::Win32::UI::TextServices::{
 //   TIP_KEYBOARD             — keyboard TIP
 //   CATEGORY_OF_TIP          — generic "this CLSID is a TIP"
 //   IMMERSIVESUPPORT         — works in UWP/Store apps
+//   SYSTRAYSUPPORT           — shows its mode icon in the taskbar (mode_icon.rs)
 //   UIELEMENTENABLED         — supports the UIElement API (candidate list)
 //   DISPLAYATTRIBUTEPROVIDER — provides the composition underline
 const REGISTERED_CATEGORIES: &[windows::core::GUID] = &[
     GUID_TFCAT_TIP_KEYBOARD,
     GUID_TFCAT_CATEGORY_OF_TIP,
     GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
+    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
     GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
     GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
 ];

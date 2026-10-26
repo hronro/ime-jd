@@ -126,8 +126,9 @@ const ANSWER_DELETE: i32 = 100;
 const ANSWER_SELECT: i32 = 101;
 const ANSWER_OPEN: i32 = 102;
 
-/// Posted by the folder watcher.
+/// Posted by the watcher: the folder changed, or a switch was set.
 const WM_APP_FILE_CHANGED: u32 = WM_APP + 1;
+const WM_APP_SWITCH_CHANGED: u32 = WM_APP + 2;
 /// One save is a burst of change events; the list reloads once they settle.
 const TIMER_RELOAD: usize = 1;
 const RELOAD_DELAY_MS: u32 = 300;
@@ -318,7 +319,8 @@ impl Window {
         let dir = self.table.borrow().store().path.parent().map(|dir| dir.to_path_buf());
         if let Some(dir) = dir {
             let _ = std::fs::create_dir_all(&dir);
-            *self.watcher.borrow_mut() = Watcher::start(&dir, self.hwnd, WM_APP_FILE_CHANGED);
+            *self.watcher.borrow_mut() =
+                Watcher::start(&dir, self.hwnd, WM_APP_FILE_CHANGED, WM_APP_SWITCH_CHANGED);
         }
     }
 
@@ -819,6 +821,18 @@ impl Window {
         self.update_status();
     }
 
+    /// A switch was set — in the mode icon's menu, from another process.
+    fn sync_switch(&self) {
+        let on = switch::is_enabled();
+        if on != self.is_switched_on() {
+            // SAFETY: a plain call on this dialog's check box.
+            unsafe {
+                let _ = CheckDlgButton(self.hwnd, IDC_ENABLE, if on { BST_CHECKED } else { BST_UNCHECKED });
+            }
+            self.update_status();
+        }
+    }
+
     fn search_changed(&self) {
         let text = window_text(self.search);
         self.table.borrow_mut().set_filter(&text);
@@ -1296,6 +1310,10 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 SetTimer(Some(hwnd), TIMER_RELOAD, RELOAD_DELAY_MS, None);
                 1
             }
+            WM_APP_SWITCH_CHANGED => {
+                window.sync_switch();
+                1
+            }
             // A dialog of ours that is open — 编辑…, a question — disables
             // this window and acts on rows by index when it closes, so the
             // reload waits until it has.
@@ -1319,4 +1337,9 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
 /// Shown when the window cannot come up at all.
 pub fn report_startup_failure(message: &str) {
     prompt::tell(HWND::default(), prompt::Icon::Error, "无法打开用户自造词", message);
+}
+
+/// Shown when a switch the mode icon's menu set could not be written.
+pub fn report_setting_failure(message: &str) {
+    prompt::tell(HWND::default(), prompt::Icon::Error, "无法更改设置", message);
 }
