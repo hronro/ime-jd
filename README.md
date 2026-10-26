@@ -35,7 +35,6 @@
 如果你需要以下功能：
 - 单键 / 并击模式
 - 自定义主题 / 皮肤
-- 自定义词库 / 用户词库扩展
 - 复杂的 Lua 脚本、挂件等高级扩展能力
 
 **推荐使用基于 RIME 的方案**：[xkinput/KeyTao](https://github.com/xkinput/KeyTao)。
