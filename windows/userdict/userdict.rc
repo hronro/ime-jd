@@ -1,0 +1,70 @@
+// The 用户自造词 window's dialogs. build.rs wraps this file with the
+// executable's manifest, icon and version, and compiles it. The IDs are
+// mirrored in src/window/mod.rs and src/window/entry.rs.
+//
+// The font is named rather than DS_SHELLFONT's "MS Shell Dlg 2": that maps to
+// Tahoma, whose fallback draws Chinese in Japanese or Traditional faces on a
+// Windows that is not Chinese. Microsoft YaHei UI ships with every Windows
+// 10 and 11, and the candidate window uses it too. Positions are only the
+// starting point: the main window lays itself out on every resize
+// (Window::layout), in the same dialog units.
+
+#pragma code_page(65001)
+
+#define IDD_MAIN            100
+#define IDD_ENTRY           101
+
+#define IDC_ENABLE          1001
+#define IDC_SEARCH_LABEL    1002
+#define IDC_SEARCH          1003
+#define IDC_LIST            1004
+#define IDC_STATUS          1005
+#define IDC_NEW             1010
+#define IDC_EDIT            1011
+#define IDC_DELETE          1012
+#define IDC_UP              1013
+#define IDC_DOWN            1014
+#define IDC_DEDUPE          1015
+#define IDC_OPEN            1018
+
+#define IDC_ENTRY_VALUE     1101
+#define IDC_ENTRY_KEYS      1102
+#define IDC_ENTRY_HINT      1103
+#define IDC_ENTRY_NOTE      1104
+
+IDD_MAIN DIALOGEX 0, 0, 400, 250
+STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME | WS_CLIPCHILDREN
+EXSTYLE WS_EX_APPWINDOW
+CAPTION "键道用户自造词"
+CLASS "JdUserDictWindow"
+FONT 9, "Microsoft YaHei UI", 400, 0, 0x86
+BEGIN
+    AUTOCHECKBOX    "启用用户自造词(&Y)", IDC_ENABLE, 7, 8, 120, 12
+    RTEXT           "搜索(&S)：", IDC_SEARCH_LABEL, 174, 9, 38, 10
+    EDITTEXT        IDC_SEARCH, 218, 7, 90, 14, ES_AUTOHSCROLL
+    CONTROL         "", IDC_LIST, "SysListView32", LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 7, 25, 301, 197
+    PUSHBUTTON      "新建(&N)...", IDC_NEW, 314, 25, 79, 14
+    PUSHBUTTON      "编辑(&E)...", IDC_EDIT, 314, 43, 79, 14
+    PUSHBUTTON      "删除(&D)", IDC_DELETE, 314, 61, 79, 14
+    PUSHBUTTON      "上移(&U)", IDC_UP, 314, 85, 79, 14
+    PUSHBUTTON      "下移(&O)", IDC_DOWN, 314, 103, 79, 14
+    PUSHBUTTON      "移除重复词条(&R)...", IDC_DEDUPE, 314, 127, 79, 14
+    PUSHBUTTON      "用文本编辑器打开(&T)", IDC_OPEN, 314, 151, 79, 14
+    LTEXT           "", IDC_STATUS, 7, 231, 301, 10, SS_ENDELLIPSIS | SS_NOPREFIX
+    PUSHBUTTON      "关闭", IDCANCEL, 314, 229, 79, 14
+END
+
+IDD_ENTRY DIALOGEX 0, 0, 240, 92
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "新建词条"
+FONT 9, "Microsoft YaHei UI", 400, 0, 0x86
+BEGIN
+    LTEXT           "词(&W)：", -1, 7, 10, 38, 10
+    EDITTEXT        IDC_ENTRY_VALUE, 48, 8, 185, 14, ES_AUTOHSCROLL
+    LTEXT           "编码(&C)：", -1, 7, 30, 38, 10
+    EDITTEXT        IDC_ENTRY_KEYS, 48, 28, 64, 14, ES_AUTOHSCROLL | ES_LOWERCASE
+    LTEXT           "", IDC_ENTRY_HINT, 118, 30, 115, 10, SS_NOPREFIX
+    LTEXT           "", IDC_ENTRY_NOTE, 7, 50, 226, 18, SS_NOPREFIX
+    DEFPUSHBUTTON   "确定", IDOK, 129, 71, 50, 14
+    PUSHBUTTON      "取消", IDCANCEL, 183, 71, 50, 14
+END

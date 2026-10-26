@@ -232,19 +232,22 @@ jobs:
           name: libjd-windows-${{ matrix.arch }}
           path: prebuilt-libs
 
+      # The workspace's default members: the IME DLL and the user-dictionary
+      # window (windows/userdict).
       - name: Build IME
         working-directory: windows
         env:
           LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs/lib
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Stage IME DLL
+      - name: Stage IME bundle
         shell: bash
         run: |
           set -euo pipefail
           out="dist/jd-ime-windows-${{ matrix.arch }}"
           mkdir -p "$out"
           cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/"
+          cp windows/target/${{ matrix.target }}/release/ime_jd_userdict.exe "$out/"
           cp windows/register.bat   "$out/"
           cp windows/unregister.bat "$out/"
 

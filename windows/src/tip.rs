@@ -1,10 +1,12 @@
 use std::cell::RefCell;
 
 use windows::Win32::Foundation::{E_INVALIDARG, LPARAM, WPARAM};
+use windows::Win32::System::Variant::{VT_I4, VariantClear};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, GetKeyboardState, ToUnicode};
 use windows::Win32::UI::TextServices::{
-    IEnumTfDisplayAttributeInfo, ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl,
-    ITfContext, ITfDisplayAttributeInfo, ITfDisplayAttributeProvider,
+    GUID_COMPARTMENT_EMPTYCONTEXT, GUID_COMPARTMENT_KEYBOARD_DISABLED,
+    IEnumTfDisplayAttributeInfo, ITfCompartmentMgr, ITfComposition, ITfCompositionSink,
+    ITfCompositionSink_Impl, ITfContext, ITfDisplayAttributeInfo, ITfDisplayAttributeProvider,
     ITfDisplayAttributeProvider_Impl, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr,
     ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
     ITfTextInputProcessorEx_Impl, ITfThreadMgr,
@@ -103,10 +105,13 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
 
     fn OnTestKeyDown(
         &self,
-        _pic: Ref<'_, ITfContext>,
+        pic: Ref<'_, ITfContext>,
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
+        if pic.as_ref().is_some_and(keyboard_disabled) {
+            return Ok(BOOL(0));
+        }
         Ok(BOOL(if should_consume(wparam.0 as u16) {
             1
         } else {
@@ -129,6 +134,9 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
             return Ok(BOOL(0));
         };
         let ctx = ctx_ref;
+        if keyboard_disabled(ctx) {
+            return Ok(BOOL(0));
+        }
         let tid = self.state.borrow().client_id;
         let sink: ITfCompositionSink = self.to_interface();
 
@@ -222,6 +230,12 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
 
         // -- Translated byte drives the engine forward ----------------------
         if let Some(byte) = translated {
+            // Nothing is in flight at the first key of a composition — the
+            // one moment the engine may be replaced, so this is where an
+            // edited user dictionary is adopted.
+            if !composition::is_active() {
+                jd::sync_user_dict();
+            }
             let result = jd::press_key(byte);
 
             // Engine-driven commit: the engine returned a commit string —
@@ -387,6 +401,36 @@ fn should_consume(vk: u16) -> bool {
     // authoritative pass-through decision happens there when the engine
     // returns neither a commit nor options (see tip.rs:257).
     translate(vk).is_some()
+}
+
+/// Whether the application has switched keyboard input methods off for this
+/// context — a password box, the 编码 field of 键道's own phrase dialog, any
+/// window that calls `ImmAssociateContextEx(hwnd, NULL, …)` — or the context
+/// is the empty stand-in TSF gives a window with no text store. Keys then
+/// reach the application as typed. Both flags are VT_I4 compartments of the
+/// context object (TSF's predefined compartments, msctf.h).
+fn keyboard_disabled(ctx: &ITfContext) -> bool {
+    let Ok(compartments) = ctx.cast::<ITfCompartmentMgr>() else {
+        return false;
+    };
+    [GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_COMPARTMENT_EMPTYCONTEXT]
+        .iter()
+        .any(|guid| {
+            // SAFETY: a compartment's value is a VARIANT this call owns and
+            // clears; these two hold VT_I4, or nothing when never set.
+            unsafe {
+                let Ok(mut value) = compartments
+                    .GetCompartment(guid)
+                    .and_then(|compartment| compartment.GetValue())
+                else {
+                    return false;
+                };
+                let inner = &value.Anonymous.Anonymous;
+                let on = inner.vt == VT_I4 && inner.Anonymous.lVal != 0;
+                let _ = VariantClear(&mut value);
+                on
+            }
+        })
 }
 
 /// Snapshot of the standalone-modifier state at the moment of the keystroke.

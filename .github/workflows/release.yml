@@ -316,7 +316,8 @@ jobs:
         run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
 
   # One IME build per Windows Rust target. Shipped as a .zip containing the
-  # IME DLL plus the register/unregister .bat helpers.
+  # IME DLL, the user-dictionary window, and the register/unregister .bat
+  # helpers.
   build-windows-ime:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -359,6 +360,7 @@ jobs:
           out="dist/jd-ime-windows-${{ matrix.arch }}"
           mkdir -p "$out"
           cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/"
+          cp windows/target/${{ matrix.target }}/release/ime_jd_userdict.exe "$out/"
           cp windows/register.bat   "$out/"
           cp windows/unregister.bat "$out/"
 

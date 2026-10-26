@@ -9,11 +9,19 @@ edition = "2024"
 name = "ime_jd"
 crate-type = ["cdylib", "rlib"]
 
+# This package is the IME DLL; userdict/ is the user dictionary — its file and
+# switch, shared with the DLL as a library, and the 用户自造词 window, its
+# binary. `cargo build` / `cargo test` here cover both.
+[workspace]
+members = ["userdict"]
+default-members = [".", "userdict"]
+
 [build-dependencies]
 embed-resource = "3"
 
 [dependencies]
 jd = { path = "../bindings/rust" }
+jd-userdict = { path = "userdict" }
 # The `#[implement]` macro expands to code that references `windows_core` by
 # name, so we keep it as a direct dependency even though `windows::core` is
 # a re-export of the same crate.

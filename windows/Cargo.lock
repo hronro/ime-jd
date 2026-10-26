@@ -65,11 +65,21 @@ name = "jd"
 version = "0.0.0"
 
 [[package]]
+name = "jd-userdict"
+version = "0.0.0"
+dependencies = [
+ "embed-resource",
+ "jd",
+ "windows",
+]
+
+[[package]]
 name = "jd-windows"
 version = "0.0.0"
 dependencies = [
  "embed-resource",
  "jd",
+ "jd-userdict",
  "windows",
  "windows-core",
 ]

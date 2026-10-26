@@ -1,0 +1,40 @@
+[package]
+name = "jd-userdict"
+# Placeholder, like the IME crate's: the real version lives in
+# core/build.zig.zon, and build.rs stamps it into the window's executable.
+version = "0.0.0"
+edition = "2024"
+
+# The library is what the IME DLL shares with the window: where the phrases
+# file lives, its format, the switch, and the sandbox grants.
+[lib]
+name = "jd_userdict"
+
+# The 用户自造词 window.
+[[bin]]
+name = "ime_jd_userdict"
+path = "src/main.rs"
+
+[build-dependencies]
+embed-resource = "3"
+
+[dependencies]
+jd = { path = "../../bindings/rust" }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

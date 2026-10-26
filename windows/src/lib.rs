@@ -12,6 +12,7 @@ mod registration;
 mod tip;
 mod ui_element;
 mod update;
+mod user_dict;
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};

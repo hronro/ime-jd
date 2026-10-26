@@ -144,7 +144,7 @@ jobs:
         working-directory: bindings/rust
         run: cargo test
 
-      - name: Test windows IME crate
+      - name: Test windows IME and user-dictionary window
         working-directory: windows
         run: cargo test
 
