@@ -100,6 +100,13 @@ fn map_file(path: &Path) -> io::Result<Option<Mmap>> {
     Ok(Some(map))
 }
 
+/// The phrases file's text, minus a leading byte-order mark: libjd reads
+/// the text as given, so a BOM would become part of line 1 (see `jd.h`).
+fn decode(bytes: &[u8]) -> Result<&str, std::str::Utf8Error> {
+    let text = std::str::from_utf8(bytes)?;
+    Ok(text.strip_prefix('\u{feff}').unwrap_or(text))
+}
+
 /// Write via a sibling temp file and a rename, so a concurrent reader never
 /// sees a half-written blob.
 fn write_cache(cache: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -147,7 +154,7 @@ pub fn load(path: &str) -> Result<Loaded, String> {
 
     let text_map = map_file(&canonical).map_err(|e| format!("{path}: {e}"))?;
     let text: &str = match &text_map {
-        Some(map) => std::str::from_utf8(map).map_err(|_| format!("{path}: not valid UTF-8"))?,
+        Some(map) => decode(map).map_err(|_| format!("{path}: not valid UTF-8"))?,
         None => "",
     };
     let (dict, report) = jd::UserDict::build(text, tag).map_err(|e| format!("{path}: {e}"))?;
@@ -202,6 +209,17 @@ mod tests {
         assert_ne!(a, cache_path(Path::new("/some/where/other.txt")));
         assert!(a.starts_with(env::temp_dir().join("jd-cli")));
         assert_eq!(a.extension().and_then(|e| e.to_str()), Some("jdud"));
+    }
+
+    #[test]
+    fn decode_drops_a_leading_byte_order_mark_only() {
+        assert_eq!(decode("\u{feff}甲\ta\n".as_bytes()).unwrap(), "甲\ta\n");
+        assert_eq!(decode("甲\ta\n".as_bytes()).unwrap(), "甲\ta\n");
+        assert_eq!(
+            decode("甲\ta\n\u{feff}".as_bytes()).unwrap(),
+            "甲\ta\n\u{feff}"
+        );
+        assert!(decode(b"\xff\ta\n").is_err());
     }
 
     #[test]
