@@ -1,7 +1,7 @@
 .{
     // Single source of truth for the project version. Bump it here only.
     .name = .jd,
-    .version = "0.9.1",
+    .version = "0.9.2",
     .fingerprint = 0x94143493696fbd65,
     .minimum_zig_version = "0.17.0",
     .paths = .{
