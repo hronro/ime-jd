@@ -79,13 +79,14 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
         val opts = info?.imeOptions ?: 0
         keyboard?.applyTheme(KeyboardTheme.resolve(this, opts))
         keyboard?.returnLabel = KeyboardTheme.returnLabel(KeyboardTheme.effectiveAction(opts))
-        // The field's inputType decides how the keyboard opens (FieldPolicy):
-        // numeric fields on ?123, password fields with letters going straight
-        // to the host. A restart on the same field — apps call restartInput
-        // after programmatic edits, mid-typing — keeps the user's plane; only
-        // a new field (or a fresh show) re-picks it.
+        // The field's EditorInfo decides how the keyboard opens (FieldPolicy):
+        // numeric fields on ?123, password fields and fields that ask for
+        // ASCII with letters going straight to the host. A restart on the
+        // same field — apps call restartInput after programmatic edits,
+        // mid-typing — keeps the user's plane; only a new field (or a fresh
+        // show) re-picks it.
         val inputType = info?.inputType ?: 0
-        keyboard?.directInput = FieldPolicy.isPassword(inputType)
+        keyboard?.directInput = FieldPolicy.isDirectInput(inputType, opts)
         if (!restarting) keyboard?.showLayer(FieldPolicy.openingLayer(inputType))
         // The daily update check rides on the keyboard appearing — the one
         // moment the IME is certainly in use. It is a prefs read when nothing

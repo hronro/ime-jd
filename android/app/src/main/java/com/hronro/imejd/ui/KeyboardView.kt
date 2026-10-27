@@ -29,10 +29,11 @@ class KeyboardView(
         set(value) { field = value; keyGrid.returnLabel = value }
 
     /**
-     * Password fields (FieldPolicy.isPassword): letters and space bypass the
-     * engine and land in the host exactly as typed (case per shift) — nothing
-     * composes, so the candidate bar stays empty and nothing but what the user
-     * tapped reaches a masked field. Set by the owner per field.
+     * Password fields, and fields that ask for ASCII
+     * (FieldPolicy.isDirectInput): letters and space bypass the engine and
+     * land in the host exactly as typed (case per shift) — nothing composes,
+     * so the candidate bar stays empty and nothing but what the user tapped
+     * reaches a masked field. Set by the owner per field.
      */
     var directInput = false
 

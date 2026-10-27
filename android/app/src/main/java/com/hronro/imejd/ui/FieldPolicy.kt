@@ -1,10 +1,12 @@
-// What a host field asks of the keyboard, read off EditorInfo.inputType — the
-// counterpart of iOS's KeyboardLayer.initial(for:), plus the password rule
-// Android needs and iOS doesn't (iOS hands secure fields to the system
-// keyboard; Android shows third-party IMEs there).
+// What a host field asks of the keyboard, read off its EditorInfo — the
+// counterpart of iOS's KeyboardLayer.initial(for:), plus the password and
+// ASCII rules Android needs and iOS doesn't (iOS hands secure and
+// ASCII-capable fields to the system keyboard; Android shows third-party
+// IMEs there).
 package com.hronro.imejd.ui
 
 import android.text.InputType
+import android.view.inputmethod.EditorInfo
 
 object FieldPolicy {
     /**
@@ -15,8 +17,8 @@ object FieldPolicy {
      * its own (unlike iOS, which gives numeric fields its own pads), and a
      * number field's key listener silently drops every Chinese character
      * committed into it, so on letters the user would type into the void.
-     * Text classes open on letters, email / URI / ASCII variations included:
-     * this keyboard is Chinese-only, and non-Chinese text belongs to another
+     * Text classes open on letters, email / URI variations included: this
+     * keyboard is Chinese-only, and non-Chinese text belongs to another
      * keyboard (see the README).
      */
     fun openingLayer(inputType: Int): KeyboardLayer =
@@ -44,4 +46,14 @@ object FieldPolicy {
             else -> false
         }
     }
+
+    /**
+     * Whether letters bypass the engine: in a password field ([isPassword]),
+     * and in one whose imeOptions carry IME_FLAG_FORCE_ASCII — an account ID,
+     * the 编码 field of the container app's phrase dialog. Android asks a
+     * keyboard that cannot type ASCII by default to honour the flag, and on
+     * this one every letter composes.
+     */
+    fun isDirectInput(inputType: Int, imeOptions: Int): Boolean =
+        isPassword(inputType) || (imeOptions and EditorInfo.IME_FLAG_FORCE_ASCII) != 0
 }

@@ -29,6 +29,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -336,10 +337,13 @@ class UserDictActivity : AppCompatActivity() {
             helperText = getString(R.string.user_dict_keys_helper)
         }
         val keysField = TextInputEditText(keysLayout.context).apply {
-            // A visible-password field: 键道 types into it directly instead of
-            // composing (FieldPolicy), and other keyboards offer no
-            // suggestions or capitals — a code is letters, not words.
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            // A code is letters, not words: the field asks for ASCII with no
+            // suggestions or capitals, as iOS's field does, so 键道 types into
+            // it directly instead of composing (FieldPolicy). Not a password
+            // field: phones with a secure keyboard of their own would swap
+            // it in.
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            imeOptions = EditorInfo.IME_FLAG_FORCE_ASCII
             setText(entry.keys)
         }
         keysLayout.addView(keysField)

@@ -1,11 +1,12 @@
 // The field policy (FieldPolicy): which plane a field opens on and when
-// letters bypass the engine, both read off EditorInfo.inputType. Pins that
-// numeric classes open on ?123 whatever flags ride along, that text classes —
-// email / URI / ASCII included — stay on letters, and that every password
-// variation, and only those, gets direct input.
+// letters bypass the engine, read off EditorInfo. Pins that numeric classes
+// open on ?123 whatever flags ride along, that text classes — email / URI
+// included — stay on letters, and that every password variation gets direct
+// input, as does a field that asks for ASCII, and nothing else.
 package com.hronro.imejd
 
 import android.text.InputType
+import android.view.inputmethod.EditorInfo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.hronro.imejd.ui.FieldPolicy
 import com.hronro.imejd.ui.KeyboardLayer
@@ -70,5 +71,27 @@ class FieldPolicyTest {
         )) {
             assertFalse("inputType $type", FieldPolicy.isPassword(type))
         }
+    }
+
+    @Test
+    fun asciiFieldsGetDirectInput() {
+        val text = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        for (options in listOf(
+            EditorInfo.IME_FLAG_FORCE_ASCII,
+            // The phrase dialog's 编码 field, as TextView fills in the rest.
+            EditorInfo.IME_FLAG_FORCE_ASCII or EditorInfo.IME_FLAG_NAVIGATE_PREVIOUS or EditorInfo.IME_ACTION_DONE,
+        )) {
+            assertTrue("imeOptions $options", FieldPolicy.isDirectInput(text, options))
+        }
+        for (options in listOf(
+            EditorInfo.IME_NULL,
+            EditorInfo.IME_ACTION_DONE,
+            EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_ENTER_ACTION,
+        )) {
+            assertFalse("imeOptions $options", FieldPolicy.isDirectInput(text, options))
+        }
+        // A password gets it with no flag.
+        val password = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        assertTrue(FieldPolicy.isDirectInput(password, EditorInfo.IME_NULL))
     }
 }

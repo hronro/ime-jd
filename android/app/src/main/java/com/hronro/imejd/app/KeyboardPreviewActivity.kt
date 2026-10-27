@@ -131,7 +131,7 @@ class KeyboardPreviewActivity : AppCompatActivity() {
         field.requestFocus()
 
         // Mirror JdInputMethodService.onStartInputView for the field's type.
-        keyboard.directInput = FieldPolicy.isPassword(fieldType)
+        keyboard.directInput = FieldPolicy.isDirectInput(fieldType, field.imeOptions)
         keyboard.showLayer(FieldPolicy.openingLayer(fieldType))
         when (intent.getStringExtra(EXTRA_PLANE)) {
             "numbers" -> keyboard.showLayer(KeyboardLayer.NUMBERS)
