@@ -199,8 +199,14 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
     }
 
     override fun onDestroy() {
+        // super first: it finishes the input in progress, and when the system
+        // swaps in another keyboard while ours is up — as a phone's own
+        // secure keyboard does for a password field — that is a call to
+        // onFinishInputView, which resets the session. Closed before it, the
+        // engine threw there and took down the whole process, the container
+        // app with it.
+        super.onDestroy()
         userDict.removeListener(userDictListener)
         session.close()
-        super.onDestroy()
     }
 }
