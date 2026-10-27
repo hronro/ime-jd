@@ -336,8 +336,8 @@ fn install_update(page: &str) {
     }
 }
 
-/// Re-fetch the feed, download the release zip for this arch, verify it, and
-/// run the bundled `register.bat` elevated. `None` at the first failure.
+/// Re-fetch the feed, download the release zip for this machine, verify it,
+/// and run the bundled `register.bat` elevated. `None` at the first failure.
 fn try_install() -> Option<()> {
     let json = fetch_feed()?;
     let tag = feed::extract_tag(&json)?;
@@ -345,7 +345,8 @@ fn try_install() -> Option<()> {
     if Version::parse(&tag)? <= current {
         return None;
     }
-    let asset = feed::extract_asset(&json, &feed::installer_name(&tag, feed::HOST_ARCH))?;
+    let arch = feed::installer_arch(host::native_machine()?)?;
+    let asset = feed::extract_asset(&json, &feed::installer_name(&tag, arch))?;
 
     let bytes = download(&asset.url)?;
     if asset.size != 0 && bytes.len() as u64 != asset.size {
@@ -519,8 +520,10 @@ fn sha256_hex(data: &[u8]) -> Option<String> {
 /// ships in System32 from Windows 10 1803, and our floor is 1809). No console.
 fn extract_zip(zip: &Path, dir: &Path) -> bool {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // The 32-bit DLL's System32 is SysWOW64; Sysnative is the real one.
+    let system = if cfg!(target_arch = "x86") { "Sysnative" } else { "System32" };
     let tar = Path::new(&std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into()))
-        .join("System32")
+        .join(system)
         .join("tar.exe");
     Command::new(tar)
         .arg("-xf")
@@ -535,7 +538,9 @@ fn extract_zip(zip: &Path, dir: &Path) -> bool {
 
 /// Launch `bat` elevated (the `runas` verb → one UAC prompt), with `dir` as
 /// its working directory. True if the shell accepted the launch (the elevated
-/// script then reports its own success or failure in its console).
+/// script then reports its own success or failure in its console). From a
+/// 32-bit host the script may start in the 32-bit cmd, and hands itself over
+/// to the 64-bit one.
 fn run_elevated(bat: &Path, dir: &Path) -> bool {
     let file = wide_z(&bat.to_string_lossy());
     let cwd = wide_z(&dir.to_string_lossy());

@@ -79,6 +79,9 @@ jobs:
           - platform: windows
             arch: arm64
             zig_target: aarch64-windows-msvc
+          - platform: windows
+            arch: x86
+            zig_target: x86-windows-msvc
           # iOS device slice — consumed by build-ios to link the .ipa. (iOS only
           # produces a static lib; the simulator slice is a build-on-push concern.)
           - platform: ios
@@ -316,8 +319,8 @@ jobs:
         run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
 
   # One IME build per Windows Rust target. Shipped as a .zip containing the
-  # IME DLL, the user-dictionary window, and the register/unregister .bat
-  # helpers.
+  # IME DLL, the 32-bit one for 32-bit applications, the user-dictionary
+  # window, and the register/unregister .bat helpers.
   build-windows-ime:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -339,7 +342,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.99
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},i686-pc-windows-msvc
 
       - name: Download prebuilt libs
         uses: actions/download-artifact@v8
@@ -347,11 +350,23 @@ jobs:
           name: libjd-windows-${{ matrix.arch }}
           path: prebuilt-libs
 
+      - name: Download prebuilt 32-bit libs
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-windows-x86
+          path: prebuilt-libs-x86
+
       - name: Build IME
         working-directory: windows
         env:
           LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs/lib
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build 32-bit IME DLL
+        working-directory: windows
+        env:
+          LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs-x86/lib
+        run: cargo build --release --target i686-pc-windows-msvc -p jd-windows
 
       - name: Stage IME bundle
         shell: bash
@@ -360,6 +375,7 @@ jobs:
           out="dist/jd-ime-windows-${{ matrix.arch }}"
           mkdir -p "$out"
           cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/"
+          cp windows/target/i686-pc-windows-msvc/release/ime_jd.dll "$out/ime_jd_x86.dll"
           cp windows/target/${{ matrix.target }}/release/ime_jd_userdict.exe "$out/"
           cp windows/register.bat   "$out/"
           cp windows/unregister.bat "$out/"

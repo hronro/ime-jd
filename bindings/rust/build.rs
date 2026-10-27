@@ -26,7 +26,7 @@ fn main() {
 
     // Where the libs live. Either supplied via LIBJD_PATH (CI hands us a
     // prebuilt bundle), or we build the core ourselves with zig and use
-    // core/zig-out/lib.
+    // core/zig-out/lib — or, cross-compiling, a zig-out of this build's own.
     let libs_dir: PathBuf = if let Ok(libjd_path) = env::var("LIBJD_PATH") {
         PathBuf::from(libjd_path)
     } else {
@@ -48,13 +48,25 @@ fn main() {
         } else {
             "-Doptimize=fast"
         };
-        if !Command::new("zig")
-            .args(["build", optimize_flag])
-            .current_dir(&core_dir)
-            .status()
-            .unwrap()
-            .success()
-        {
+        let mut zig = Command::new("zig");
+        zig.args(["build", optimize_flag]).current_dir(&core_dir);
+        // A cross build (`--target`, as for the Windows IME's 32-bit DLL)
+        // needs the core built for that target, and installed apart from the
+        // native build's core/zig-out.
+        let target = env::var("TARGET").unwrap();
+        let install_dir = if target == env::var("HOST").unwrap() {
+            core_dir.join("zig-out")
+        } else {
+            let zig_target = zig_target(&target).unwrap_or_else(|| {
+                panic!("Can't build core for {target}; point LIBJD_PATH at a libjd built for it.")
+            });
+            let prefix = PathBuf::from(env::var("OUT_DIR").unwrap()).join("zig-out");
+            zig.arg(format!("-Dtarget={zig_target}"))
+                .arg("--prefix")
+                .arg(&prefix);
+            prefix
+        };
+        if !zig.status().unwrap().success() {
             panic!("Failed to build core");
         }
 
@@ -65,7 +77,7 @@ fn main() {
         println!("cargo:rerun-if-changed=../../core/tables");
         println!("cargo:rerun-if-changed=../../core/punctuation-marks");
 
-        core_dir.join("zig-out").join("lib")
+        install_dir.join("lib")
     };
 
     // Cargo release → static link. Cargo debug → dynamic link on Unix
@@ -108,4 +120,15 @@ fn main() {
 
     println!("cargo:libdir={}", libs_dir.display());
     println!("cargo:rerun-if-env-changed=LIBJD_PATH");
+}
+
+/// The zig target for a cargo target this script cross-builds the core for:
+/// the Windows ones, which CI otherwise hands a prebuilt bundle for.
+fn zig_target(rust_target: &str) -> Option<&'static str> {
+    match rust_target {
+        "x86_64-pc-windows-msvc" => Some("x86_64-windows-msvc"),
+        "i686-pc-windows-msvc" => Some("x86-windows-msvc"),
+        "aarch64-pc-windows-msvc" => Some("aarch64-windows-msvc"),
+        _ => None,
+    }
 }

@@ -140,15 +140,23 @@ fn read_string(s: &str) -> Option<String> {
     None
 }
 
-/// This build's Windows arch as it appears in a release-asset name.
-#[cfg(target_arch = "x86_64")]
-pub const HOST_ARCH: &str = "x86_64";
-#[cfg(target_arch = "aarch64")]
-pub const HOST_ARCH: &str = "arm64";
+/// The arch in the name of the release zip for a machine whose own
+/// architecture is `machine`, an `IMAGE_FILE_MACHINE_*` value. The zip
+/// carries the 64-bit DLL and the 32-bit one that 32-bit applications load,
+/// so the machine picks it, whichever of the two DLLs is asking. `None` for
+/// a machine no zip is built for.
+pub fn installer_arch(machine: u16) -> Option<&'static str> {
+    match machine {
+        0x8664 => Some("x86_64"), // IMAGE_FILE_MACHINE_AMD64
+        0xAA64 => Some("arm64"),  // IMAGE_FILE_MACHINE_ARM64
+        _ => None,
+    }
+}
 
 /// The IME release zip for one arch, `jd-ime-<tag>-windows-<arch>.zip`,
 /// exactly as release.yml names it (its `build-windows-ime` job). The zip
-/// holds the DLL plus `register.bat` / `unregister.bat`.
+/// holds the DLLs and the user-dictionary window, plus `register.bat` /
+/// `unregister.bat`.
 pub fn installer_name(tag: &str, arch: &str) -> String {
     format!("jd-ime-{tag}-windows-{arch}.zip")
 }
@@ -446,7 +454,14 @@ mod tests {
             installer_name("v1.2.3", "arm64"),
             "jd-ime-v1.2.3-windows-arm64.zip"
         );
-        assert!(HOST_ARCH == "x86_64" || HOST_ARCH == "arm64");
+    }
+
+    #[test]
+    fn picks_the_installer_arch_by_the_machine() {
+        assert_eq!(installer_arch(0x8664), Some("x86_64"));
+        assert_eq!(installer_arch(0xAA64), Some("arm64"));
+        // A 32-bit Windows: no zip is built for one.
+        assert_eq!(installer_arch(0x014C), None);
     }
 
     #[test]

@@ -18,16 +18,25 @@ cargo build --release
 
 This builds the workspace's two parts: the DLL at `windows\target\release\ime_jd.dll` and the user-dictionary window at `windows\target\release\ime_jd_userdict.exe`. The build script invokes the Zig core build automatically.
 
+The 32-bit DLL, for 32-bit applications (see [Install](#install)), is a build of its own, at `windows\target\i686-pc-windows-msvc\release\ime_jd.dll`; the core is built for it too:
+
+```
+rustup target add i686-pc-windows-msvc
+cargo build --release --target i686-pc-windows-msvc -p jd-windows
+```
+
 ## Install
 
 `register.bat` does the full install:
 
 1. Right-click `register.bat` → **Run as administrator**.
-2. The script copies the DLL and the user-dictionary window to `C:\Program Files\ime-jd\`, grants AppContainer read access (so UWP apps can load the DLL), runs `regsvr32`, and adds **键道用户自造词** to the Start menu for all users.
+2. The script copies the DLL, the 32-bit DLL (as `ime_jd_x86.dll`) and the user-dictionary window to `C:\Program Files\ime-jd\`, grants AppContainer read access (so UWP apps can load the DLLs), registers both DLLs with `regsvr32` — the 32-bit one with SysWOW64's — and adds **键道用户自造词** to the Start menu for all users.
 3. Add 键道 to your keyboard list: **Settings → Time & language → Language → Chinese (Simplified) → Options → Add a keyboard → 键道**.
 
+Windows loads an IME into each application in the application's own architecture: 64-bit applications load `ime_jd.dll`, and 32-bit ones — WPS Office, for one — load `ime_jd_x86.dll`, which the 32-bit `regsvr32` registers in the registry they read. Both DLLs register the one input profile, which 32-bit and 64-bit applications share, so 键道 is listed in every application; without the 32-bit DLL, a 32-bit application lists it but cannot switch to it. Started from a 32-bit process (the [update](#updates), clicked in a 32-bit application), the script hands itself over to the 64-bit `cmd`, which sees the real `Program Files` and `System32`.
+
 `register.bat` works in two layouts:
-- Run from the repo (uses `target\release\` next to itself).
+- Run from the repo (uses `target\release\` next to itself, and `target\i686-pc-windows-msvc\release\` for the 32-bit DLL; without that build it installs for 64-bit applications only).
 - Bundled for distribution (uses the files in the same directory as the script).
 
 ## Uninstall
@@ -38,7 +47,7 @@ The script unregisters the COM/TSF entries, removes the Start menu entry, and tr
 
 ## Updating during development
 
-`cargo build --release` rebuilds the DLL and the window. Re-running `register.bat` handles the rest — it unregisters the old copy, renames the locked files out of the way (Windows allows rename-while-loaded, and rename-while-running for the window), copies the new ones, and re-registers.
+`cargo build --release` rebuilds the DLL and the window, and the i686 build above rebuilds the 32-bit DLL. Re-running `register.bat` handles the rest — it unregisters the old copy, renames the locked files out of the way (Windows allows rename-while-loaded, and rename-while-running for the window), copies the new ones, and re-registers.
 
 If you've selected 键道 in a running app (Notepad, browser, etc.) you'll need to **close that app and reopen it** before the new code takes effect: Windows doesn't reload a DLL inside a process that already mapped it.
 
@@ -46,7 +55,7 @@ If you've selected 键道 in a running app (Notepad, browser, etc.) you'll need 
 
 Whenever 键道 is activated in an application, the IME asks GitHub for the latest release at most once a day — shared across all applications through `HKCU\Software\hronro\ime-jd`, and skipped inside AppContainer (Store) apps. When that release is newer than the running DLL, the candidate window shows one extra line, **键道有新版本 vX.Y.Z，点击下载并安装**, until you click it.
 
-Clicking it downloads that release's zip in the background, verifies it against the SHA-256 the feed reports, extracts it, and runs the bundled `register.bat` **elevated** — so you get one UAC prompt, then the update installs itself (the same in-place DLL swap `register.bat` does for a manual upgrade). Applications you already have open keep running the old DLL until you next launch them (Windows can't reload a DLL a process has already mapped), so the new version takes effect in apps started afterwards, or after you sign out and back in. If any step fails, the click falls back to opening the release page so you can upgrade by hand. The notice is retired for that version once clicked, here and in every other application.
+Clicking it downloads that release's zip for the machine's architecture in the background (the 32-bit DLL picks the same one), verifies it against the SHA-256 the feed reports, extracts it, and runs the bundled `register.bat` **elevated** — so you get one UAC prompt, then the update installs itself (the same in-place DLL swap `register.bat` does for a manual upgrade). Applications you already have open keep running the old DLL until you next launch them (Windows can't reload a DLL a process has already mapped), so the new version takes effect in apps started afterwards, or after you sign out and back in. If any step fails, the click falls back to opening the release page so you can upgrade by hand. The notice is retired for that version once clicked, here and in every other application.
 
 To turn the check off, untick **自动检查更新** in the [mode icon](#mode-icon)'s menu, which sets the DWORD `CheckForUpdates` under `HKCU\Software\hronro\ime-jd` to `0`. The other update values there are state: `LastUpdateCheck` (QWORD, Unix seconds), `LatestVersion`, `SeenVersion` — delete `LastUpdateCheck` to force a check on the next activation. The request carries no identifying data beyond a `User-Agent` with the IME version. Implementation: `src/update/` (`feed.rs` is the host-independent model — version/asset parsing — with unit tests, `mod.rs` the WinHTTP download + SHA-256 + extract + registry + elevated-launch side); the notice row lives in `candidate_window.rs`.
 

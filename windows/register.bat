@@ -2,8 +2,23 @@
 setlocal enableextensions
 chcp 65001 >nul
 
+REM Started from a 32-bit process — the IME's update, clicked in a 32-bit
+REM application — this script runs in the 32-bit cmd, which sees Program
+REM Files (x86) as %ProgramFiles% and SysWOW64 as System32. Hand it over to
+REM the 64-bit cmd, which the 32-bit one reaches as Sysnative.
+if not defined PROCESSOR_ARCHITEW6432 goto :Native
+if not exist "%SystemRoot%\Sysnative\cmd.exe" goto :Native
+"%SystemRoot%\Sysnative\cmd.exe" /c ""%~f0" %*"
+exit /b %ERRORLEVEL%
+:Native
+
 set "SCRIPT_DIR=%~dp0"
 set "DLL_NAME=ime_jd.dll"
+REM Windows loads an IME into each application in the application's own
+REM architecture, so 32-bit applications (WPS Office, for one) load this
+REM one, registered by the 32-bit regsvr32 where they look.
+set "DLL32_NAME=ime_jd_x86.dll"
+set "REGSVR32_32=%SystemRoot%\SysWOW64\regsvr32.exe"
 set "EXE_NAME=ime_jd_userdict.exe"
 set "INSTALL_DIR=%ProgramFiles%\ime-jd"
 set "SHORTCUT=%ProgramData%\Microsoft\Windows\Start Menu\Programs\键道用户自造词.lnk"
@@ -24,6 +39,12 @@ if not defined SOURCE_DIR (
     pause
     exit /b 1
 )
+
+REM The 32-bit DLL: next to this script, or in dev the i686 build, under the
+REM DLL's own name in windows\target\i686-pc-windows-msvc\release\.
+set "SOURCE32="
+if exist "%SCRIPT_DIR%%DLL32_NAME%" set "SOURCE32=%SCRIPT_DIR%%DLL32_NAME%"
+if not defined SOURCE32 if exist "%SCRIPT_DIR%target\i686-pc-windows-msvc\release\%DLL_NAME%" set "SOURCE32=%SCRIPT_DIR%target\i686-pc-windows-msvc\release\%DLL_NAME%"
 
 REM Require Administrator. regsvr32 auto-elevates, but writing to Program
 REM Files and running icacls need admin up-front; if we're not elevated the
@@ -64,6 +85,10 @@ if exist "%INSTALL_DIR%\%DLL_NAME%" (
     regsvr32 /s /u "%INSTALL_DIR%\%DLL_NAME%" >nul 2>&1
     call :RenameOld %DLL_NAME%
 )
+if exist "%INSTALL_DIR%\%DLL32_NAME%" (
+    "%REGSVR32_32%" /s /u "%INSTALL_DIR%\%DLL32_NAME%" >nul 2>&1
+    call :RenameOld %DLL32_NAME%
+)
 
 copy /Y "%SOURCE_DIR%%DLL_NAME%" "%INSTALL_DIR%\" >nul
 if errorlevel 1 (
@@ -71,6 +96,15 @@ if errorlevel 1 (
     echo 注销并重新登录（或重启）后再运行本脚本。
     pause
     exit /b 1
+)
+
+REM Without the 32-bit DLL in the source the IME still installs, for 64-bit
+REM applications only.
+if defined SOURCE32 (
+    copy /Y "%SOURCE32%" "%INSTALL_DIR%\%DLL32_NAME%" >nul
+    if errorlevel 1 echo 复制 %DLL32_NAME% 失败，键道将无法在 32 位程序中使用。
+) else (
+    echo 未找到 32 位的 %DLL32_NAME%，键道将无法在 32 位程序中使用。
 )
 
 REM The user-dictionary window. A running copy is renamed out of the way
@@ -86,6 +120,15 @@ REM AppContainer ACL so UWP/Store apps can load the DLL. Without this the
 REM IME shows up as "(desktop only)" in Settings and can't be selected.
 icacls "%INSTALL_DIR%" /grant "*S-1-15-2-1:(OI)(CI)(RX)" /T >nul
 icacls "%INSTALL_DIR%" /grant "*S-1-15-2-2:(OI)(CI)(RX)" /T >nul
+
+REM The 32-bit DLL registers first. Both DLLs register the one input
+REM profile, which 32-bit and 64-bit applications share, and the last to
+REM register leaves its own path there for the profile's icon: the 64-bit
+REM DLL's, which is always installed.
+if exist "%INSTALL_DIR%\%DLL32_NAME%" (
+    "%REGSVR32_32%" /s "%INSTALL_DIR%\%DLL32_NAME%"
+    if errorlevel 1 echo %DLL32_NAME% 注册失败，键道将无法在 32 位程序中使用。
+)
 
 regsvr32 /s "%INSTALL_DIR%\%DLL_NAME%"
 if errorlevel 1 (

@@ -2,8 +2,17 @@
 setlocal enableextensions
 chcp 65001 >nul
 
+REM As in register.bat: started from a 32-bit process, hand over to the
+REM 64-bit cmd, which sees the real Program Files and System32.
+if not defined PROCESSOR_ARCHITEW6432 goto :Native
+if not exist "%SystemRoot%\Sysnative\cmd.exe" goto :Native
+"%SystemRoot%\Sysnative\cmd.exe" /c ""%~f0" %*"
+exit /b %ERRORLEVEL%
+:Native
+
 set "INSTALL_DIR=%ProgramFiles%\ime-jd"
 set "DLL_NAME=ime_jd.dll"
+set "DLL32_NAME=ime_jd_x86.dll"
 set "EXE_NAME=ime_jd_userdict.exe"
 set "SHORTCUT=%ProgramData%\Microsoft\Windows\Start Menu\Programs\键道用户自造词.lnk"
 
@@ -13,7 +22,8 @@ if errorlevel 1 goto :not_admin
 
 if not exist "%INSTALL_DIR%" goto :nothing_to_do
 
-REM Unregister from COM/TSF first.
+REM Unregister from COM/TSF first, the 32-bit DLL with the 32-bit regsvr32.
+if exist "%INSTALL_DIR%\%DLL32_NAME%" "%SystemRoot%\SysWOW64\regsvr32.exe" /s /u "%INSTALL_DIR%\%DLL32_NAME%"
 if exist "%INSTALL_DIR%\%DLL_NAME%" regsvr32 /s /u "%INSTALL_DIR%\%DLL_NAME%"
 
 REM The user-dictionary window's Start menu entry. The phrases themselves,
@@ -25,6 +35,7 @@ REM processes that picked up the IME, and the window may be open; those hold
 REM their files until they exit. Anything we can't delete now stays in the
 REM directory.
 del /Q "%INSTALL_DIR%\%DLL_NAME%" >nul 2>&1
+del /Q "%INSTALL_DIR%\%DLL32_NAME%" >nul 2>&1
 del /Q "%INSTALL_DIR%\%EXE_NAME%" >nul 2>&1
 del /Q "%INSTALL_DIR%\*.old-*" >nul 2>&1
 

@@ -33,6 +33,9 @@ jobs:
           - platform: windows
             arch: arm64
             zig_target: aarch64-windows-msvc
+          - platform: windows
+            arch: x86
+            zig_target: x86-windows-msvc
           # iOS device slice, consumed by build-ios to link the .ipa.
           - platform: ios
             arch: arm64
@@ -224,13 +227,19 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.99
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},i686-pc-windows-msvc
 
       - name: Download prebuilt libs
         uses: actions/download-artifact@v8
         with:
           name: libjd-windows-${{ matrix.arch }}
           path: prebuilt-libs
+
+      - name: Download prebuilt 32-bit libs
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-windows-x86
+          path: prebuilt-libs-x86
 
       # The workspace's default members: the IME DLL and the user-dictionary
       # window (windows/userdict).
@@ -240,6 +249,12 @@ jobs:
           LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs/lib
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Build 32-bit IME DLL
+        working-directory: windows
+        env:
+          LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs-x86/lib
+        run: cargo build --release --target i686-pc-windows-msvc -p jd-windows
+
       - name: Stage IME bundle
         shell: bash
         run: |
@@ -247,6 +262,7 @@ jobs:
           out="dist/jd-ime-windows-${{ matrix.arch }}"
           mkdir -p "$out"
           cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/"
+          cp windows/target/i686-pc-windows-msvc/release/ime_jd.dll "$out/ime_jd_x86.dll"
           cp windows/target/${{ matrix.target }}/release/ime_jd_userdict.exe "$out/"
           cp windows/register.bat   "$out/"
           cp windows/unregister.bat "$out/"
