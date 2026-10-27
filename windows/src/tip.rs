@@ -288,10 +288,18 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
             // Engine-driven commit: the engine returned a commit string —
             // common for Chinese-punctuation auto-commit, space-commit, or
             // when the typed key jumped to a different root child (drilled
-            // in). Replace the composition with `commit` text, then
-            // optionally restart with the just-pressed key if it also
-            // triggered new options.
+            // in). Replace the composition with `commit` text; when the
+            // just-pressed key also triggered new options, go on composing
+            // with it.
             if let Some(commit) = &result.commit {
+                if !result.options.is_empty() {
+                    // Drilled in: the composition carries on with the typed
+                    // key rather than ending and restarting (see
+                    // composition::commit_and_continue).
+                    let _ = composition::commit_and_continue(ctx, tid, &sink, commit, byte as char);
+                    self.show_candidates_from_engine(ctx, tid, &result);
+                    return Ok(BOOL(1));
+                }
                 if composition::is_active() {
                     let _ = composition::commit_text(ctx, tid, commit);
                 } else {
@@ -302,14 +310,8 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
                     let _ = composition::append_key(ctx, tid, &sink, ' ');
                     let _ = composition::commit_text(ctx, tid, commit);
                 }
-                if result.options.is_empty() {
-                    candidate_window::hide();
-                    ui_element::end();
-                } else {
-                    // Drilled-in: start a fresh composition with the typed key.
-                    let _ = composition::append_key(ctx, tid, &sink, byte as char);
-                    self.show_candidates_from_engine(ctx, tid, &result);
-                }
+                candidate_window::hide();
+                ui_element::end();
                 return Ok(BOOL(1));
             }
 

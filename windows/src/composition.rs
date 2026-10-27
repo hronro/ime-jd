@@ -101,6 +101,51 @@ pub fn commit_text(ctx: &ITfContext, tid: u32, text: &str) -> Result<()> {
     request_session(ctx, tid, session)
 }
 
+/// The engine's commit-and-jump: commit `text` and go on composing `ch`, the
+/// key that began the next code — on the same composition, in one edit
+/// session. The committed text leaves the composition from the front
+/// (`ShiftStart` past it), so the host sees text committed while the
+/// composition carries on, never a composition ending and another starting
+/// in the same keystroke: Excel's cell editor finalizes, as typed, a
+/// composition started right after one ended, so `nkhze` put `你好e` in the
+/// cell and left nothing composing. Starts the composition if none is in
+/// flight.
+pub fn commit_and_continue(
+    ctx: &ITfContext,
+    tid: u32,
+    sink: &ITfCompositionSink,
+    text: &str,
+    ch: char,
+) -> Result<()> {
+    let ctx_for_session = ctx.clone();
+    let sink_for_session = sink.clone();
+    let text_owned = text.to_string();
+    let session = EditSession::new(move |ec| {
+        STATE.with(|s| -> Result<()> {
+            let mut state = s.borrow_mut();
+            if state.composition.is_none() {
+                state.composition =
+                    Some(start_composition(&ctx_for_session, ec, &sink_for_session)?);
+            }
+            state.buffer.clear();
+            state.buffer.push(ch);
+            let comp = state.composition.as_ref().unwrap();
+            let range = unsafe { comp.GetRange() }?;
+            let wide: Vec<u16> = text_owned.encode_utf16().collect();
+            unsafe { range.SetText(ec, 0, &wide) }?;
+            let _ = display_attribute::clear(&ctx_for_session, ec, &range);
+            // The composition now starts where the committed text ends, and
+            // is empty until the typed key goes in.
+            unsafe { range.Collapse(ec, TF_ANCHOR_END) }?;
+            unsafe { comp.ShiftStart(ec, &range) }?;
+            update_composition(&ctx_for_session, comp, ec, &state.buffer)?;
+            refresh_screen_rect(&ctx_for_session, ec, comp);
+            Ok(())
+        })
+    });
+    request_session(ctx, tid, session)
+}
+
 /// Drop the last char from the composition buffer and re-paint. If the buffer
 /// becomes empty, end the composition entirely. Caller is responsible for
 /// keeping the engine in sync (see tip.rs's VK_BACK handler).
