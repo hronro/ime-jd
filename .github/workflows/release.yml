@@ -153,9 +153,8 @@ jobs:
             cp "$bundle/lib/libjd.a" "$stage/"
             tar -cf - -C "$stage" libjd.a include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-ios-$arch.a.tar.xz"
           elif [[ "$platform" == "android" ]]; then
-            # Android ships only the dynamic lib: the static archive is built
-            # with local-exec TLS that ld.lld rejects inside a shared object
-            # (see android/scripts/build-libjd.sh), so it's a footgun there.
+            # Android ships only the dynamic lib, the one the app links its
+            # JNI library against (see android/scripts/build-libjd.sh).
             cp "$bundle/lib/libjd.so" "$stage/"
             tar -cf - -C "$stage" libjd.so include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-android-$arch.so.tar.xz"
           elif [[ "$platform" == "wasm" ]]; then
@@ -718,3 +717,59 @@ jobs:
             release/*.apk \
             "release/jd-ime-${GITHUB_REF_NAME}-android-mapping.txt" \
             --clobber
+
+  # The Linux IME, one build per libc and arch, each in the oldest distro it
+  # targets so it runs on every newer one: Ubuntu 22.04 for glibc (a .deb, an
+  # .rpm and an Arch package per framework, and the generic tarball), Alpine
+  # 3.22 for musl (an .apk per framework). linux/packaging/build.sh builds,
+  # runs the shared layer's tests, and packages; build-on-push.yml installs
+  # each package on a clean system and runs it end to end.
+  build-linux-ime:
+    name: linux-ime ${{ matrix.libc }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    needs: build-libs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - libc: glibc
+            arch: x86_64
+            runner: ubuntu-latest
+            image: docker.io/library/ubuntu:22.04
+          - libc: glibc
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            image: docker.io/library/ubuntu:22.04
+          - libc: musl
+            arch: x86_64
+            runner: ubuntu-latest
+            image: docker.io/library/alpine:3.22
+          - libc: musl
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            image: docker.io/library/alpine:3.22
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download prebuilt libs
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-linux-${{ matrix.arch }}
+          path: prebuilt-libs
+
+      - name: Install nfpm
+        run: linux/scripts/install-nfpm.sh "$RUNNER_TEMP/bin"
+
+      - name: Build packages
+        run: |
+          mkdir -p release
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/prebuilt-libs:/libjd:ro" -v "$PWD/release:/dist" \
+            -v "$RUNNER_TEMP/bin/nfpm:/usr/local/bin/nfpm:ro" ${{ matrix.image }} sh -euc '
+              /src/linux/scripts/install-deps.sh build
+              /src/linux/packaging/build.sh /dist /libjd/lib/libjd.a'
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber

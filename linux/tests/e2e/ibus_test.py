@@ -32,6 +32,17 @@ def connect():
 IBus.init()
 BUS = connect()
 
+# What the input context's signals hand over, kept for the rest of the run.
+# libibus emits them floating and unrefs any still floating once the handlers
+# return, but newer PyGObject sinks such an argument and lets go of it with
+# its Python wrapper: libibus then checks a freed object — a warning under
+# glibc, a crash under musl. Holding on keeps them alive past that check.
+_received = []
+
+
+def keep(*objects):
+    _received.extend(objects)
+
 
 def describe(prop):
     symbol = prop.get_symbol()
@@ -71,12 +82,15 @@ class Context:
             check(wait_for(lambda: self.mode() == '中'), 'the InputMode item switches back to 中')
 
     def _commit(self, ic, text):
+        keep(text)
         self.committed += text.get_text()
 
     def _preedit(self, ic, text, cursor, visible):
+        keep(text)
         self.preedit = text.get_text() if visible else ''
 
     def _table(self, ic, table, visible):
+        keep(table)
         count = table.get_number_of_candidates() if visible else 0
         self.candidates = [value(table.get_candidate(i).get_text()) for i in range(count)]
 
@@ -85,6 +99,7 @@ class Context:
     # every change as one.
 
     def _properties(self, ic, props):
+        keep(props)
         if self.properties or props.get(0) is None:
             return
         i = 0
@@ -93,6 +108,7 @@ class Context:
             i += 1
 
     def _property(self, ic, prop):
+        keep(prop)
         if prop.get_key() in self.properties:
             self.properties[prop.get_key()] = describe(prop)
 

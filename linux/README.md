@@ -7,8 +7,11 @@
 - Fcitx 5.0.14 or newer, or IBus 1.5.26 or newer — the versions in Ubuntu 22.04, the oldest release builds target.
 - For building: Meson 0.61+, Ninja, GCC with C++20 (Fcitx 5.1's headers need it; Ubuntu 22.04's GCC 11 will do), pkg-config, [Zig](https://ziglang.org/) (used to build the `libjd` core), and the frameworks' development files:
   - Debian/Ubuntu: `libfcitx5core-dev fcitx5-modules-dev libibus-1.0-dev`
-  - Fedora: `fcitx5-devel ibus-devel`
+  - Fedora and openSUSE: `fcitx5-devel ibus-devel`
   - Arch: `fcitx5 ibus`
+  - Alpine: `fcitx5-dev ibus-dev`
+
+  `scripts/install-deps.sh build` installs them, and a toolchain, with the distro's package manager.
 
 Build with GCC's C++ library, not `zig c++`: the Fcitx 5 addon runs inside the fcitx5 process and exchanges `std::string` and friends with it, so it must use the same libstdc++. `zig c++` builds against LLVM's libc++, and the addon would not load.
 
@@ -58,6 +61,31 @@ sudo ninja -C linux/build uninstall
 
 Each user's phrases and settings, in `~/.config/ime-jd/`, are left alone.
 
+## Packages
+
+Each release carries a package of each frontend for each distro family, and a tarball for the rest. `packaging/build.sh` makes them, in the oldest distro of each libc, so that they run on every newer one:
+
+| Built on | Assets |
+|---|---|
+| Ubuntu 22.04 (glibc) | `jd-ime-v{version}-linux-{arch}-{fcitx5,ibus}.deb`, `.rpm` and `.pkg.tar.zst`, and the tarball `jd-ime-v{version}-linux-{arch}.tar.xz` |
+| Alpine 3.22 (musl) | `jd-ime-v{version}-alpine-{arch}-{fcitx5,ibus}.apk` |
+
+Each package, `ime-jd-fcitx5` or `ime-jd-ibus`, depends on its framework, which the package manager installs with it. The Fcitx 5 addon goes to the distro's addon directory: `/usr/lib/<multiarch>/fcitx5` in the `.deb`, `/usr/lib64/fcitx5` in the `.rpm`, and `/usr/lib/fcitx5` in the Arch package and the `.apk`. The IBus engine goes to `/usr/libexec` in all of them. The two packages share no files, so both can be installed. The tarball holds both frontends at the same paths on every distro, with the programs in `/usr/lib/ime-jd`, from where Fcitx 5 loads the addon by its absolute path. Its `install.sh` keeps a list of what it installed, for `/usr/lib/ime-jd/uninstall.sh`.
+
+To build them as CI does — here for glibc on x86_64; [nfpm](https://nfpm.goreleaser.com) comes in from outside the container:
+
+```
+zig build --build-file core/build.zig -Doptimize=fast -Dtarget=x86_64-linux --prefix /tmp/libjd
+linux/scripts/install-nfpm.sh /tmp/nfpm
+mkdir -p dist
+podman run --rm -v "$PWD:/src:ro" -v /tmp/libjd/lib:/libjd:ro -v /tmp/nfpm/nfpm:/usr/local/bin/nfpm:ro \
+    -v "$PWD/dist:/dist" docker.io/library/ubuntu:22.04 sh -euc '
+    /src/linux/scripts/install-deps.sh build
+    /src/linux/packaging/build.sh /dist /libjd/libjd.a'
+```
+
+CI (`.github/workflows/build-on-push.yml`) then installs the packages on clean Ubuntu 22.04, Debian 13, Fedora, openSUSE Tumbleweed, Arch and Alpine systems, the way a user would (`scripts/install-packages.sh`), and the tarball on Fedora, and runs both frontends end to end on each.
+
 ## 中 and 英
 
 Each frontend switches the way its framework does, and 键道 types no English of its own where the framework already switches:
@@ -85,16 +113,15 @@ Enabled=true
 `tests/e2e/run.sh` runs both frontends end to end: it starts fcitx5 and ibus-daemon, each in a D-Bus session of its own, and drives the installed frontend through the same D-Bus interfaces applications' input method modules use — keys in, committed text, preedit and candidates out. It needs 键道 installed to `/usr`, the frameworks, `dbus` and PyGObject (`python3-gi` and IBus's GObject introspection data), and it rewrites `~/.config`, so it is meant for a container:
 
 ```
-zig build --build-file core/build.zig -Doptimize=fast -Dtarget=x86_64-linux -Dcpu=baseline --prefix /tmp/libjd
-podman run --rm -v "$PWD:/src:ro" -v /tmp/libjd/lib:/libjd:ro docker.io/library/ubuntu:22.04 sh -c '
-    apt-get update && apt-get install -y --no-install-recommends \
-        g++ meson ninja-build pkg-config libfcitx5core-dev fcitx5-modules-dev libibus-1.0-dev \
-        fcitx5 ibus dbus python3-gi gir1.2-ibus-1.0 &&
-    meson setup /build /src/linux --prefix=/usr -Dlibjd=/libjd/libjd.a &&
-    meson install -C /build && /src/linux/tests/e2e/run.sh'
+zig build --build-file core/build.zig -Doptimize=fast -Dtarget=x86_64-linux --prefix /tmp/libjd
+podman run --rm -v "$PWD:/src:ro" -v /tmp/libjd/lib:/libjd:ro docker.io/library/ubuntu:22.04 sh -euc '
+    /src/linux/scripts/install-deps.sh build test
+    meson setup /build /src/linux --prefix=/usr -Dlibjd=/libjd/libjd.a
+    meson install -C /build
+    /src/linux/tests/e2e/run.sh'
 ```
 
-Ubuntu 22.04 has no Zig package, so the archive is built outside.
+Ubuntu 22.04 has no Zig package, so the archive is built outside. CI runs this on Ubuntu 22.04 and on Arch, the oldest and the newest frameworks (`.github/workflows/test-on-push.yml`).
 
 ## Layout
 
@@ -108,3 +135,5 @@ Ubuntu 22.04 has no Zig package, so the archive is built outside.
 | `ibus/` | The IBus engine, its process and its component file. |
 | `tests/` | Tests for `common/`, run against the real engine. |
 | `tests/e2e/` | Both frontends in real fcitx5 and ibus-daemon. |
+| `packaging/` | `build.sh`, which makes the release assets, and the tarball's `install.sh` and `uninstall.sh`. |
+| `scripts/` | What CI's containers run: each distro's build and test dependencies, nfpm, and installing the built packages. |

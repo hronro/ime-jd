@@ -7,6 +7,7 @@
 - 🪟 **Windows** — 基于 Text Services Framework (TSF) 的原生输入法
 - 📱 **iOS / iPadOS** — 基于 Keyboard Extension 的原生输入法，**无需「完全访问权限」（Full Access）**
 - 🤖 **Android** — 基于 InputMethodService 的原生输入法
+- 🐧 **Linux** — Fcitx 5 和 IBus 两种输入法框架下的原生输入法
 - 💻 **CLI** — 用于快速调试与方案体验的终端前端
 
 ## 💡 设计原则
@@ -33,7 +34,7 @@
 
 * **专注中文输入**
 
-  不考虑支持非中文的输入（如英文），因为这些语言往往有更出色的原生输入法。得益于极速的架构设计，本项目在切换输入法（冷启动）时几乎瞬时就绪，多输入法混用切换毫无割裂感。Windows 版遵循 Windows 中文输入法的习惯，另有「中 / 英」两种模式：单独按一下 Shift，或单击任务栏上的「中 / 英」图标即可切换，英文模式下按键原样输入。
+  不考虑支持非中文的输入（如英文），因为这些语言往往有更出色的原生输入法。得益于极速的架构设计，本项目在切换输入法（冷启动）时几乎瞬时就绪，多输入法混用切换毫无割裂感。Windows 版遵循 Windows 中文输入法的习惯，另有「中 / 英」两种模式：单独按一下 Shift，或单击任务栏上的「中 / 英」图标即可切换，英文模式下按键原样输入。Linux 版沿用各输入法框架的习惯：Fcitx 5 版交给 Fcitx 5 自带的切换（默认是左 Shift，在键盘布局和键道之间切换）；IBus 版和 Windows 版一样，单独按一下 Shift 切换「中 / 英」，GNOME 顶栏或 IBus 自带面板的托盘图标会显示当前模式。
 
 ## 🚫 本项目不适合的人群
 
@@ -53,6 +54,7 @@ iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法
 - **Windows**: 下载 `jd-ime-{版本号}-windows-{架构}.zip`（大多数电脑选 `x86_64`，搭载骁龙等 ARM 处理器的电脑选 `arm64`），然后按照下方的 [Windows 安装步骤](#windows-安装步骤) 完成安装
 - **macOS**: 下载 `jd-ime-{版本号}-macos-{架构}.pkg`（搭载 Apple 芯片的 Mac 选 `arm64`，Intel 芯片的 Mac 选 `x86_64`）
 - **Android**: 下载 `jd-ime-{版本号}-android-{架构}.apk`（绝大多数手机选 `arm64`）
+- **Linux**: 先确认所用的输入法框架：GNOME 默认使用 IBus，KDE 以及 Sway、Hyprland、niri 等窗口管理器通常使用 Fcitx 5。然后按发行版下载对应的软件包，文件名中的 `{框架}` 为 `fcitx5` 或 `ibus`：Debian / Ubuntu 下载 `jd-ime-{版本号}-linux-{架构}-{框架}.deb`，Fedora / openSUSE 下载 `.rpm`，Arch Linux 下载 `.pkg.tar.zst`，Alpine Linux 下载 `jd-ime-{版本号}-alpine-{架构}-{框架}.apk`，其它发行版下载通用压缩包 `jd-ime-{版本号}-linux-{架构}.tar.xz`（大多数电脑选 `x86_64`）。然后按照下方的 [Linux 安装步骤](#linux-安装步骤) 完成安装
 - **iOS**: 我们在 GitHub Releases 页面亦分发未签名的 `jd-ime-{版本号}-ios.ipa` 文件，有需求的用户可以使用 Sideload 工具进行自签安装
 
 ### Windows 安装步骤
@@ -64,6 +66,23 @@ Windows 版目前没有安装程序，下载的压缩包需要手动解压，再
 3. **添加键盘**：在「设置 → 时间和语言 → 语言」（Windows 11 中为「语言和区域」）里找到「中文（简体）」，打开它的语言选项，点击「添加键盘」并选择「键道」。
 
 如果解压出的文件夹中没有 `register.bat`，说明下载的不是输入法安装包，请确认文件名以 `jd-ime-` 开头。安装脚本会把输入法复制到 `C:\Program Files\ime-jd\`，所以安装完成后，解压出的文件夹可以删除。以后有新版本时，点击输入法给出的提示即可升级，无需重复以上步骤（详见[版本更新](#-版本更新)）。如需卸载，以管理员身份运行压缩包中的 `unregister.bat` 即可。
+
+### Linux 安装步骤
+
+在下载目录中用发行版的软件包管理器安装，它会同时装好所需的输入法框架。以 Fcitx 5 版为例（IBus 版把文件名中的 `fcitx5` 换成 `ibus`）：
+
+- **Debian / Ubuntu**: `sudo apt install ./jd-ime-{版本号}-linux-{架构}-fcitx5.deb`
+- **Fedora**: `sudo dnf install ./jd-ime-{版本号}-linux-{架构}-fcitx5.rpm`；openSUSE 用 `sudo zypper install --allow-unsigned-rpm ./jd-ime-{版本号}-linux-{架构}-fcitx5.rpm`
+- **Arch Linux**: `sudo pacman -U jd-ime-{版本号}-linux-{架构}-fcitx5.pkg.tar.zst`
+- **Alpine Linux**: `sudo apk add --allow-untrusted jd-ime-{版本号}-alpine-{架构}-fcitx5.apk`（软件包没有签名，所以需要 `--allow-untrusted`）
+- **其它发行版**: 先用发行版自己的软件包管理器装好 Fcitx 5 或 IBus，再解压通用压缩包，在解压出的文件夹中运行 `sudo ./install.sh`。它会同时装上 Fcitx 5 版和 IBus 版，两者各自只会被对应的框架加载，互不影响。
+
+装好后重启输入法框架（Fcitx 5：`fcitx5 -r`；IBus：`ibus restart`），或注销后重新登录，再添加「键道」：
+
+- **Fcitx 5**: 在「Fcitx 5 配置 → 输入法」中添加「键道」。
+- **GNOME（IBus）**: 在「设置 → 键盘 → 输入源」中点击「添加输入源」，选择「汉语（中国）」中的「键道」。
+
+如需卸载，用软件包管理器卸载 `ime-jd-fcitx5` 或 `ime-jd-ibus` 即可；用通用压缩包安装的，运行 `sudo /usr/lib/ime-jd/uninstall.sh`。注意 `.apk` 结尾、文件名中带 `alpine` 的是 Alpine Linux 的软件包，Android 手机请下载文件名中带 `android` 的那个。
 
 ### Releases 页面上的其它文件
 
@@ -85,6 +104,8 @@ Windows 版目前没有安装程序，下载的压缩包需要手动解压，再
 
 只有当发布版本的版本号高于当前版本时才会提示。
 
+Linux 版目前不会自己检查更新。有新版本时，下载新的软件包，用同样的命令安装即可覆盖旧版本；用通用压缩包安装的，运行新版本压缩包中的 `install.sh`。
+
 ## 📝 用户自造词
 
 你自己的词可以随时作为「用户自造词」加入。自造词和内置词会一起出现在候选中，如果自造词和内置词同码时，自造词排在前面。
@@ -102,6 +123,7 @@ Windows 版目前没有安装程序，下载的压缩包需要手动解压，再
 - **macOS**: 菜单栏的输入法菜单中的「用户自造词…」
 - **Android**: 「键道输入法」App 中的「用户自造词」
 - **iOS**: 「键道」App 中的「用户自造词」（同样无需「完全访问权限」）
+- **Linux**: 输入法菜单（Fcitx 5 的托盘菜单，或 GNOME 顶栏的输入源菜单）中的「用户自造词…」会用文本编辑器打开 `~/.config/ime-jd/用户自造词.txt`，「启用用户自造词」开关也在这个菜单中。Linux 版暂时还没有编辑窗口，所以看不到上面的逐条检查结果，只能在菜单中看到有几条生效、几条无效或重复
 - **CLI**: 运行时加上 `--user-dict <文件路径>` 参数，加载同样格式的文件
 
 ## 🧩 libjd 核心引擎
@@ -117,7 +139,7 @@ GitHub Releases 中提供各平台预编译的 libjd，每个压缩包都附带 
 - **Android**: `libjd-{版本号}-android-{架构}.so.tar.xz`（动态库）
 - **WebAssembly**: `libjd-{版本号}-wasm.wasm.tar.xz`（`jd.wasm` 模块，导出同一套 C ABI）
 
-C API 的用法见 [core/docs/integration.md](./core/docs/integration.md)，引擎架构与从源码构建的方法见 [core/README.md](./core/README.md)。[bindings/](./bindings) 目录下还提供了 Rust、Swift、Java（JNI）和 JavaScript（WebAssembly）的封装，本项目的各平台前端正是通过这些封装调用 libjd 的。
+C API 的用法见 [core/docs/integration.md](./core/docs/integration.md)，引擎架构与从源码构建的方法见 [core/README.md](./core/README.md)。[bindings/](./bindings) 目录下还提供了 Rust、Swift、Java（JNI）和 JavaScript（WebAssembly）的封装，本项目的各平台前端正是通过这些封装调用 libjd 的（Linux 版则直接调用 C API）。
 
 ## 🤝 致谢
 

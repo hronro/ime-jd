@@ -460,3 +460,118 @@ jobs:
           name: jd-ime-android-x86_64
           path: dist/jd-ime-android-x86_64.apk
           if-no-files-found: error
+
+  # The Linux IME, one build per libc and arch, each in the oldest distro it
+  # targets so it runs on every newer one: Ubuntu 22.04 for glibc (a .deb, an
+  # .rpm and an Arch package per framework, and the generic tarball), Alpine
+  # 3.22 for musl (an .apk per framework). linux/packaging/build.sh builds,
+  # runs the shared layer's tests, and packages.
+  build-linux-ime:
+    name: linux-ime ${{ matrix.libc }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    needs: build-libs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - libc: glibc
+            arch: x86_64
+            runner: ubuntu-latest
+            image: docker.io/library/ubuntu:22.04
+          - libc: glibc
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            image: docker.io/library/ubuntu:22.04
+          - libc: musl
+            arch: x86_64
+            runner: ubuntu-latest
+            image: docker.io/library/alpine:3.22
+          - libc: musl
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            image: docker.io/library/alpine:3.22
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download prebuilt libs
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-linux-${{ matrix.arch }}
+          path: prebuilt-libs
+
+      - name: Install nfpm
+        run: linux/scripts/install-nfpm.sh "$RUNNER_TEMP/bin"
+
+      - name: Build packages
+        run: |
+          mkdir -p dist
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/prebuilt-libs:/libjd:ro" -v "$PWD/dist:/dist" \
+            -v "$RUNNER_TEMP/bin/nfpm:/usr/local/bin/nfpm:ro" ${{ matrix.image }} sh -euc '
+              /src/linux/scripts/install-deps.sh build
+              /src/linux/packaging/build.sh /dist /libjd/lib/libjd.a'
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: jd-ime-linux-${{ matrix.libc }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Each package as a user gets it: installed on a clean system by its
+  # package manager, which brings the framework, then run end to end in real
+  # fcitx5 and ibus-daemon (linux/tests/e2e), whose other needs come after.
+  # The tarball goes in by its own install.sh.
+  test-linux-packages:
+    name: linux-packages ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    needs: build-linux-ime
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu 22.04
+            image: docker.io/library/ubuntu:22.04
+            libc: glibc
+          - distro: debian 13
+            image: docker.io/library/debian:13
+            libc: glibc
+          - distro: fedora
+            image: docker.io/library/fedora:latest
+            libc: glibc
+          - distro: opensuse tumbleweed
+            image: docker.io/opensuse/tumbleweed:latest
+            libc: glibc
+          - distro: arch
+            image: docker.io/library/archlinux:latest
+            libc: glibc
+          - distro: alpine
+            image: docker.io/library/alpine:latest
+            libc: musl
+          - distro: tarball on fedora
+            image: docker.io/library/fedora:latest
+            libc: glibc
+            how: tarball
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download packages
+        uses: actions/download-artifact@v8
+        with:
+          name: jd-ime-linux-${{ matrix.libc }}-x86_64
+          path: dist
+
+      - name: Install and run end to end
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/dist:/dist:ro" ${{ matrix.image }} sh -euc '
+            if [ "${{ matrix.how }}" = tarball ]; then
+              # As its users do: the frameworks first, from the distro.
+              /src/linux/scripts/install-deps.sh test
+              /src/linux/scripts/install-packages.sh /dist tarball
+            else
+              /src/linux/scripts/install-packages.sh /dist
+              /src/linux/scripts/install-deps.sh test
+            fi
+            /src/linux/tests/e2e/run.sh'

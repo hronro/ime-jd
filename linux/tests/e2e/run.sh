@@ -34,7 +34,9 @@ Layout=
 [GroupOrder]
 0=Default
 EOF
-# No display here, and nothing that would stand in for IBus.
+# No display here, and nothing that would stand in for IBus. The session's
+# shell takes this directory as $1.
+# shellcheck disable=SC2016
 dbus-run-session -- sh -c '
     fcitx5 -d --disable=wayland,waylandim,xcb,xim,classicui,kimpanel,notificationitem,ibusfrontend,fcitx4frontend \
         >/tmp/fcitx5.log 2>&1
@@ -45,6 +47,7 @@ fresh
 # IBus names its address file after the machine ID, which containers often
 # lack; a fixed one serves the daemon, the engine it starts, and the test.
 export IBUS_ADDRESS_FILE="${TMPDIR:-/tmp}/imejd-e2e-ibus-address"
+# shellcheck disable=SC2016
 dbus-run-session -- sh -c '
     ibus-daemon --daemonize --replace --panel=disable --config=disable >/tmp/ibus.log 2>&1
     exec python3 "$1/ibus_test.py"' sh "$here" || { status=1; tail -20 /tmp/ibus.log; }
