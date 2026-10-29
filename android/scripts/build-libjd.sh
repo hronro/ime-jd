@@ -6,10 +6,11 @@
 # Both land in app/src/main/jniLibs/<abi>/, which Gradle packages as-is (no
 # CMake / externalNativeBuild). Mirrors ios/scripts/build-libjd.sh.
 #
-# Why the dynamic libjd.so and not the static libjd.a: the static archive is
-# built PIE with local-exec TLS (std.heap.smp_allocator's thread_index), whose
-# R_AARCH64_TLSLE_* relocations ld.lld rejects inside a -shared object. The
-# dynamic lib uses a shared-compatible TLS model, so we link against it and ship
+# Why the dynamic libjd.so and not the static libjd.a: the static archive used
+# to be built PIE with local-exec TLS (std.heap.smp_allocator's thread_index),
+# whose R_AARCH64_TLSLE_* relocations ld.lld rejects inside a -shared object.
+# ELF archives are PIC now (core/build.zig), so linking it into libjdjni would
+# work too; until that switch is made, we link against the dynamic lib and ship
 # both .so files (the binding loads libjdjni alone; its DT_NEEDED brings libjd).
 #
 # Usage: scripts/build-libjd.sh [abi ...]   (default: arm64-v8a x86_64)

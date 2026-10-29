@@ -168,8 +168,18 @@ pub fn build(b: *std.Build) void {
             .root_module = lib_mod,
             .linkage = .static,
         });
-        // PIE only applies to the static lib (shared libs are PIC by definition).
-        static_lib.pie = true;
+        // Shared libs are PIC by definition; the static lib picks one of its own.
+        // On ELF targets it is PIC, so it can also be linked into a shared
+        // object — the Linux Fcitx 5 addon is one, and the PIE archive's
+        // local-exec TLS (smp_allocator's thread_index) is refused there. In an
+        // executable the linker relaxes that TLS back to local-exec, so nothing
+        // changes for the binaries already linking it. Everywhere else it stays
+        // PIE, which is what those platforms have always shipped.
+        if (target.result.ofmt == .elf) {
+            static_lib.root_module.pic = true;
+        } else {
+            static_lib.pie = true;
+        }
 
         const dynamic_lib = b.addLibrary(.{
             .name = "jd",
