@@ -1,0 +1,14 @@
+[Addon]
+Name=键道
+Category=InputMethod
+Version=@VERSION@
+Library=@LIBRARY@
+Type=SharedLibrary
+OnDemand=True
+Configurable=False
+
+[Addon/Dependencies]
+0=core:@FCITX5_MIN_VERSION@
+
+[Addon/OptionalDependencies]
+0=notifications

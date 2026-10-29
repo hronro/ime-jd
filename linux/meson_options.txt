@@ -1,0 +1,12 @@
+option('fcitx5', type: 'feature', value: 'auto',
+  description: 'Build the Fcitx 5 addon')
+option('ibus', type: 'feature', value: 'auto',
+  description: 'Build the IBus engine')
+option('tests', type: 'boolean', value: true,
+  description: 'Build the shared layer\'s tests')
+option('libjd', type: 'string', value: '',
+  description: 'A prebuilt libjd.a, position-independent as core/build.zig builds it for Linux; empty builds one with zig')
+option('fcitx5_addon_dir', type: 'string', value: '',
+  description: 'Where the Fcitx 5 addon library is installed; empty is Fcitx 5\'s own addon directory')
+option('ibus_engine_dir', type: 'string', value: '',
+  description: 'Where the IBus engine program is installed; empty is libexecdir')
