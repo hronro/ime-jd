@@ -114,6 +114,22 @@ void openExternally(const char *uri) {
     }
 }
 
+/// Starts the editor; false when its package is not installed, or it would
+/// not start.
+bool startEditor() {
+    if (!g_file_test(imejd::kEditor, G_FILE_TEST_IS_EXECUTABLE)) {
+        return false;
+    }
+    gchar *argv[] = {const_cast<gchar *>(imejd::kEditor), nullptr};
+    GError *error = nullptr;
+    if (!g_spawn_async(nullptr, argv, nullptr, G_SPAWN_DEFAULT, nullptr, nullptr, nullptr, &error)) {
+        g_warning("键道: cannot start %s: %s", imejd::kEditor, error->message);
+        g_error_free(error);
+        return false;
+    }
+    return true;
+}
+
 IBusProperty *property(const char *key, IBusPropType type, const std::string &label, gboolean sensitive = TRUE,
                        IBusPropState propState = PROP_STATE_UNCHECKED) {
     return ibus_property_new(key, type, ibus_text_new_from_string(label.c_str()), nullptr, nullptr, sensitive,
@@ -276,7 +292,7 @@ void propertyActivate(IBusEngine *engine, const gchar *name, guint propState) {
     } else if (key == kAboutProperty) {
         openExternally(imejd::kReleasesPage);
     } else if (key == kUserDictProperty) {
-        if (g_store->ensureFile()) {
+        if (!startEditor() && g_store->ensureFile()) {
             gchar *uri = g_filename_to_uri(g_store->filePath().c_str(), nullptr, nullptr);
             if (uri) {
                 openExternally(uri);

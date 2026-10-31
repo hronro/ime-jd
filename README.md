@@ -54,7 +54,7 @@ iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法
 - **Windows**: 下载 `jd-ime-{版本号}-windows-{架构}.zip`（大多数电脑选 `x86_64`，搭载骁龙等 ARM 处理器的电脑选 `arm64`），然后按照下方的 [Windows 安装步骤](#windows-安装步骤) 完成安装
 - **macOS**: 下载 `jd-ime-{版本号}-macos-{架构}.pkg`（搭载 Apple 芯片的 Mac 选 `arm64`，Intel 芯片的 Mac 选 `x86_64`）
 - **Android**: 下载 `jd-ime-{版本号}-android-{架构}.apk`（绝大多数手机选 `arm64`）
-- **Linux**: 先确认所用的输入法框架：GNOME 默认使用 IBus，KDE 以及 Sway、Hyprland、niri 等窗口管理器通常使用 Fcitx 5。然后按发行版下载对应的软件包，文件名中的 `{框架}` 为 `fcitx5` 或 `ibus`：Debian / Ubuntu 下载 `jd-ime-{版本号}-linux-{架构}-{框架}.deb`，Fedora / openSUSE 下载 `.rpm`，Arch Linux 下载 `.pkg.tar.zst`，Alpine Linux 下载 `jd-ime-{版本号}-alpine-{架构}-{框架}.apk`，其它发行版下载通用压缩包 `jd-ime-{版本号}-linux-{架构}.tar.xz`（大多数电脑选 `x86_64`）。然后按照下方的 [Linux 安装步骤](#linux-安装步骤) 完成安装
+- **Linux**: 先确认所用的输入法框架：GNOME 默认使用 IBus，KDE 以及 Sway、Hyprland、niri 等窗口管理器通常使用 Fcitx 5。然后按发行版下载对应的软件包，文件名中的 `{框架}` 为 `fcitx5` 或 `ibus`，再下载一个 `{框架}` 为 `userdict` 的同类软件包，它是编辑[用户自造词](#-用户自造词)的窗口：Debian / Ubuntu 下载 `jd-ime-{版本号}-linux-{架构}-{框架}.deb`，Fedora / openSUSE 下载 `.rpm`，Arch Linux 下载 `.pkg.tar.zst`，Alpine Linux 下载 `jd-ime-{版本号}-alpine-{架构}-{框架}.apk`，其它发行版下载通用压缩包 `jd-ime-{版本号}-linux-{架构}.tar.xz`（大多数电脑选 `x86_64`）。然后按照下方的 [Linux 安装步骤](#linux-安装步骤) 完成安装
 - **iOS**: 我们在 GitHub Releases 页面亦分发未签名的 `jd-ime-{版本号}-ios.ipa` 文件，有需求的用户可以使用 Sideload 工具进行自签安装
 
 ### Windows 安装步骤
@@ -69,20 +69,22 @@ Windows 版目前没有安装程序，下载的压缩包需要手动解压，再
 
 ### Linux 安装步骤
 
-在下载目录中用发行版的软件包管理器安装，它会同时装好所需的输入法框架。以 Fcitx 5 版为例（IBus 版把文件名中的 `fcitx5` 换成 `ibus`）：
+在下载目录中用发行版的软件包管理器安装，它会同时装好所需的输入法框架，以及编辑窗口所需的 GTK 4。以 Fcitx 5 版为例（IBus 版把文件名中的 `fcitx5` 换成 `ibus`），连同编辑窗口一起安装：
 
-- **Debian / Ubuntu**: `sudo apt install ./jd-ime-{版本号}-linux-{架构}-fcitx5.deb`
-- **Fedora**: `sudo dnf install ./jd-ime-{版本号}-linux-{架构}-fcitx5.rpm`；openSUSE 用 `sudo zypper install --allow-unsigned-rpm ./jd-ime-{版本号}-linux-{架构}-fcitx5.rpm`
-- **Arch Linux**: `sudo pacman -U jd-ime-{版本号}-linux-{架构}-fcitx5.pkg.tar.zst`
-- **Alpine Linux**: `sudo apk add --allow-untrusted jd-ime-{版本号}-alpine-{架构}-fcitx5.apk`（软件包没有签名，所以需要 `--allow-untrusted`）
-- **其它发行版**: 先用发行版自己的软件包管理器装好 Fcitx 5 或 IBus，再解压通用压缩包，在解压出的文件夹中运行 `sudo ./install.sh`。它会同时装上 Fcitx 5 版和 IBus 版，两者各自只会被对应的框架加载，互不影响。
+- **Debian / Ubuntu**: `sudo apt install ./jd-ime-{版本号}-linux-{架构}-fcitx5.deb ./jd-ime-{版本号}-linux-{架构}-userdict.deb`
+- **Fedora**: `sudo dnf install ./jd-ime-{版本号}-linux-{架构}-fcitx5.rpm ./jd-ime-{版本号}-linux-{架构}-userdict.rpm`；openSUSE 用 `sudo zypper install --allow-unsigned-rpm`，后面同样跟这两个文件
+- **Arch Linux**: `sudo pacman -U jd-ime-{版本号}-linux-{架构}-fcitx5.pkg.tar.zst jd-ime-{版本号}-linux-{架构}-userdict.pkg.tar.zst`
+- **Alpine Linux**: `sudo apk add --allow-untrusted jd-ime-{版本号}-alpine-{架构}-fcitx5.apk jd-ime-{版本号}-alpine-{架构}-userdict.apk`（软件包没有签名，所以需要 `--allow-untrusted`）
+- **其它发行版**: 先用发行版自己的软件包管理器装好 Fcitx 5 或 IBus，以及 GTK 4，再解压通用压缩包，在解压出的文件夹中运行 `sudo ./install.sh`。它会同时装上 Fcitx 5 版和 IBus 版，两者各自只会被对应的框架加载，互不影响；系统中有 GTK 4 时，还会装上编辑窗口。
+
+编辑窗口也可以不装，那样输入法菜单中的「用户自造词…」会用文本编辑器打开词库文件。
 
 装好后重启输入法框架（Fcitx 5：`fcitx5 -r`；IBus：`ibus restart`），或注销后重新登录，再添加「键道」：
 
 - **Fcitx 5**: 在「Fcitx 5 配置 → 输入法」中添加「键道」。
 - **GNOME（IBus）**: 在「设置 → 键盘 → 输入源」中点击「添加输入源」，选择「汉语（中国）」中的「键道」。
 
-如需卸载，用软件包管理器卸载 `ime-jd-fcitx5` 或 `ime-jd-ibus` 即可；用通用压缩包安装的，运行 `sudo /usr/lib/ime-jd/uninstall.sh`。注意 `.apk` 结尾、文件名中带 `alpine` 的是 Alpine Linux 的软件包，Android 手机请下载文件名中带 `android` 的那个。
+如需卸载，用软件包管理器卸载 `ime-jd-fcitx5` 或 `ime-jd-ibus`，以及 `ime-jd-userdict` 即可；用通用压缩包安装的，运行 `sudo /usr/lib/ime-jd/uninstall.sh`。注意 `.apk` 结尾、文件名中带 `alpine` 的是 Alpine Linux 的软件包，Android 手机请下载文件名中带 `android` 的那个。
 
 ### Releases 页面上的其它文件
 
@@ -123,7 +125,7 @@ Linux 版目前不会自己检查更新。有新版本时，下载新的软件�
 - **macOS**: 菜单栏的输入法菜单中的「用户自造词…」
 - **Android**: 「键道输入法」App 中的「用户自造词」
 - **iOS**: 「键道」App 中的「用户自造词」（同样无需「完全访问权限」）
-- **Linux**: 输入法菜单（Fcitx 5 的托盘菜单，或 GNOME 顶栏的输入源菜单）中的「用户自造词…」会用文本编辑器打开 `~/.config/ime-jd/用户自造词.txt`，「启用用户自造词」开关也在这个菜单中。Linux 版暂时还没有编辑窗口，所以看不到上面的逐条检查结果，只能在菜单中看到有几条生效、几条无效或重复
+- **Linux**: 输入法菜单（Fcitx 5 的托盘菜单，或 GNOME 顶栏的输入源菜单）中的「用户自造词…」，或应用列表中的「键道用户自造词」；「启用用户自造词」开关在这个菜单中也有。编辑窗口在单独的 `ime-jd-userdict` 软件包中，没有安装时，「用户自造词…」会用文本编辑器打开 `~/.config/ime-jd/用户自造词.txt`，这时看不到上面的逐条检查结果，只能在菜单中看到有几条生效、几条无效或重复
 - **CLI**: 运行时加上 `--user-dict <文件路径>` 参数，加载同样格式的文件
 
 ## 🧩 libjd 核心引擎

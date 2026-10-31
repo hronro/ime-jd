@@ -291,11 +291,11 @@ jobs:
           working-directory: android
           script: ./gradlew connectedAndroidTest
 
-  # Linux: the Fcitx 5 addon and the IBus engine, built in the oldest distro
-  # the release targets and in the newest, with the shared layer's tests, then
-  # run end to end in real fcitx5 and ibus-daemon (linux/tests/e2e). Each
-  # container installs its own toolchain and frameworks; libjd is built once,
-  # out here, with Zig.
+  # Linux: the Fcitx 5 addon, the IBus engine and the user-dictionary editor,
+  # built in the oldest distro the release targets and in the newest, with
+  # the shared layer's and the editor's tests, then run end to end in real
+  # fcitx5 and ibus-daemon (linux/tests/e2e). Each container installs its own
+  # toolchain and frameworks; libjd is built once, out here, with Zig.
   test-linux:
     name: linux (${{ matrix.distro }})
     runs-on: ubuntu-latest
@@ -325,7 +325,7 @@ jobs:
           docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/libjd/lib:/libjd:ro" ${{ matrix.image }} sh -euc '
             /src/linux/scripts/install-deps.sh build test
             meson setup /build /src/linux --prefix=/usr --buildtype=release \
-              -Dlibjd=/libjd/libjd.a -Dfcitx5=enabled -Dibus=enabled
+              -Dlibjd=/libjd/libjd.a -Dfcitx5=enabled -Dibus=enabled -Deditor=enabled
             meson compile -C /build
             meson test -C /build --print-errorlogs
             meson install -C /build --quiet

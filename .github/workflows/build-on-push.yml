@@ -463,9 +463,10 @@ jobs:
 
   # The Linux IME, one build per libc and arch, each in the oldest distro it
   # targets so it runs on every newer one: Ubuntu 22.04 for glibc (a .deb, an
-  # .rpm and an Arch package per framework, and the generic tarball), Alpine
-  # 3.22 for musl (an .apk per framework). linux/packaging/build.sh builds,
-  # runs the shared layer's tests, and packages.
+  # .rpm and an Arch package per framework and for the user-dictionary
+  # editor, and the generic tarball), Alpine 3.22 for musl (an .apk for
+  # each). linux/packaging/build.sh builds, runs the shared layer's and the
+  # editor's tests, and packages.
   build-linux-ime:
     name: linux-ime ${{ matrix.libc }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -519,9 +520,10 @@ jobs:
           if-no-files-found: error
 
   # Each package as a user gets it: installed on a clean system by its
-  # package manager, which brings the framework, then run end to end in real
-  # fcitx5 and ibus-daemon (linux/tests/e2e), whose other needs come after.
-  # The tarball goes in by its own install.sh.
+  # package manager, which brings the framework and GTK 4, then run end to end
+  # in real fcitx5 and ibus-daemon (linux/tests/e2e), whose other needs come
+  # after. The tarball goes in by its own install.sh, which installs the
+  # editor because GTK 4 came first.
   test-linux-packages:
     name: linux-packages ${{ matrix.distro }}
     runs-on: ubuntu-latest

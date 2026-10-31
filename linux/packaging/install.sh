@@ -1,8 +1,9 @@
 #!/bin/sh
 # Installs 键道 from this tarball: the Fcitx 5 addon and the IBus engine
 # both, at the same fixed paths on every distro, since each is loaded only by
-# its own framework. The list of what went where is kept with them, for
-# uninstall.sh. Run as root.
+# its own framework; and the user-dictionary editor, where GTK 4 is there for
+# it. The list of what went where is kept with them, for uninstall.sh. Run as
+# root.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -14,7 +15,7 @@ fi
 
 # A package of 键道 owns the same files; mixing the two leaves one of them
 # broken on removal.
-for package in ime-jd-fcitx5 ime-jd-ibus; do
+for package in ime-jd-fcitx5 ime-jd-ibus ime-jd-userdict; do
     if { command -v dpkg-query >/dev/null && dpkg-query -W -f '${Status}' "$package" 2>/dev/null | grep -q '^install ok'; } ||
         { command -v rpm >/dev/null && rpm -q "$package" >/dev/null 2>&1; } ||
         { command -v pacman >/dev/null && pacman -Q "$package" >/dev/null 2>&1; }; then
@@ -23,21 +24,41 @@ for package in ime-jd-fcitx5 ime-jd-ibus; do
     fi
 done
 
+install_files() {
+    while IFS= read -r path; do
+        if [ -x "$here/files/$path" ]; then mode=0755; else mode=0644; fi
+        install -D -m "$mode" "$here/files/$path" "/$path"
+    done < "$1"
+}
+
 echo "正在安装键道输入法……"
-while IFS= read -r path; do
-    if [ -x "$here/files/$path" ]; then mode=0755; else mode=0644; fi
-    install -D -m "$mode" "$here/files/$path" "/$path"
-done < "$here/files.txt"
-install -m 0644 "$here/files.txt" /usr/lib/ime-jd/files.txt
+install_files "$here/files.txt"
+installed=$(cat "$here/files.txt")
+
+# The editor runs where the libraries it links to are found: GTK 4, and what
+# it brings.
+editor=$here/files/usr/bin/ime-jd-userdict
+if ldd "$editor" >/dev/null 2>&1 && ! ldd "$editor" | grep -q 'not found'; then
+    install_files "$here/editor.txt"
+    installed=$(printf '%s\n%s' "$installed" "$(cat "$here/editor.txt")")
+    editor_note=
+else
+    editor_note="
+
+没有安装用户自造词编辑器：它需要 GTK 4。从发行版装上 GTK 4 后重新运行本安装包即可；
+在此之前，输入法菜单中的「用户自造词…」会用文本编辑器打开词库文件。"
+fi
+printf '%s\n' "$installed" > /usr/lib/ime-jd/files.txt
+chmod 0644 /usr/lib/ime-jd/files.txt
 install -m 0755 "$here/uninstall.sh" /usr/lib/ime-jd/uninstall.sh
 
 if command -v gtk-update-icon-cache >/dev/null && [ -e /usr/share/icons/hicolor/index.theme ]; then
     gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
 fi
 
-cat <<'EOF'
+cat <<EOF
 
-键道输入法安装成功。
+键道输入法安装成功。$editor_note
 
 请重启输入法框架（Fcitx 5：fcitx5 -r；IBus：ibus restart），或注销后重新登录，
 然后添加「键道」：

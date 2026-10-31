@@ -4,6 +4,8 @@
 #include <utility>
 #include <vector>
 
+#include <unistd.h>
+
 #include <fcitx-module/notifications/notifications_public.h>
 #include <fcitx-utils/key.h>
 #include <fcitx-utils/log.h>
@@ -118,6 +120,9 @@ private:
 /// Opens `target`, a URL or a file, the way the desktop opens it.
 void openExternally(const std::string &target) { fcitx::startProcess({"xdg-open", target}); }
 
+/// Whether the editor's package is installed.
+bool hasEditor() { return access(kEditor, X_OK) == 0; }
+
 } // namespace
 
 FcitxEngine::FcitxEngine(fcitx::Instance *instance)
@@ -152,7 +157,9 @@ FcitxEngine::FcitxEngine(fcitx::Instance *instance)
     aboutItem_.onActivate = [](fcitx::InputContext *) { openExternally(kReleasesPage); };
     userDictItem_.text = [] { return std::string(kMenuUserDict); };
     userDictItem_.onActivate = [this](fcitx::InputContext *) {
-        if (store_.ensureFile()) {
+        if (hasEditor()) {
+            fcitx::startProcess({kEditor});
+        } else if (store_.ensureFile()) {
             openExternally(store_.filePath());
         }
     };

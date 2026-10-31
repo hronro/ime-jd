@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=键道用户自造词
+Comment=编辑键道输入法的用户自造词
+Keywords=键道;输入法;自造词;jd;
+Exec=ime-jd-userdict
+Icon=io.github.hronro.ImeJd.UserDict
+Terminal=false
+Categories=Utility;GTK;
+StartupNotify=true

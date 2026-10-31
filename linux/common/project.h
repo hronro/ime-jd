@@ -8,10 +8,14 @@ namespace imejd {
 inline constexpr const char *kVersion = IMEJD_VERSION;
 inline constexpr const char *kReleasesPage = "https://github.com/hronro/ime-jd/releases";
 
+/// The user-dictionary editor, a package of its own (editor/); meson.build
+/// passes in where it installs.
+inline constexpr const char *kEditor = IMEJD_EDITOR;
+
 /// The menu's first item, followed by kVersion; it opens kReleasesPage.
 inline constexpr const char *kMenuAbout = "键道输入法 ";
-/// Opens the phrases file. On macOS it opens the editing window, which
-/// Linux does not have yet, so a text editor stands in.
+/// Opens kEditor, as macOS opens its window; without it, the phrases file
+/// in a text editor.
 inline constexpr const char *kMenuUserDict = "用户自造词…";
 inline constexpr const char *kMenuUserDictEnabled = "启用用户自造词";
 

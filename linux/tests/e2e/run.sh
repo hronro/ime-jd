@@ -1,9 +1,11 @@
 #!/bin/sh
 # Runs the end-to-end tests against the installed frontends: each framework
-# in a D-Bus session of its own, with a daemon of its own.
+# in a D-Bus session of its own, with a daemon of its own. The editor, whose
+# window needs a display, is only started.
 #
-# For a disposable environment — a container — with 键道 installed to /usr,
-# fcitx5, ibus, dbus and python3-gi: it writes the user's ~/.config.
+# For a disposable environment — a container — with 键道 and its editor
+# installed to /usr, fcitx5, ibus, dbus and python3-gi: it writes the user's
+# ~/.config.
 set -eu
 
 here=$(dirname "$(readlink -f "$0")")
@@ -51,5 +53,9 @@ export IBUS_ADDRESS_FILE="${TMPDIR:-/tmp}/imejd-e2e-ibus-address"
 dbus-run-session -- sh -c '
     ibus-daemon --daemonize --replace --panel=disable --config=disable >/tmp/ibus.log 2>&1
     exec python3 "$1/ibus_test.py"' sh "$here" || { status=1; tail -20 /tmp/ibus.log; }
+
+echo "== Editor"
+# That it runs at all: the libraries it links to, GTK 4 among them, found.
+ime-jd-userdict --version || status=1
 
 exit $status

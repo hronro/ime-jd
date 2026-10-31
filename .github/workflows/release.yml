@@ -720,10 +720,11 @@ jobs:
 
   # The Linux IME, one build per libc and arch, each in the oldest distro it
   # targets so it runs on every newer one: Ubuntu 22.04 for glibc (a .deb, an
-  # .rpm and an Arch package per framework, and the generic tarball), Alpine
-  # 3.22 for musl (an .apk per framework). linux/packaging/build.sh builds,
-  # runs the shared layer's tests, and packages; build-on-push.yml installs
-  # each package on a clean system and runs it end to end.
+  # .rpm and an Arch package per framework and for the user-dictionary
+  # editor, and the generic tarball), Alpine 3.22 for musl (an .apk for
+  # each). linux/packaging/build.sh builds, runs the shared layer's and the
+  # editor's tests, and packages; build-on-push.yml installs each package on
+  # a clean system and runs it end to end.
   build-linux-ime:
     name: linux-ime ${{ matrix.libc }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}

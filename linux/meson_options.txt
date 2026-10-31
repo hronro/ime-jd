@@ -2,6 +2,8 @@ option('fcitx5', type: 'feature', value: 'auto',
   description: 'Build the Fcitx 5 addon')
 option('ibus', type: 'feature', value: 'auto',
   description: 'Build the IBus engine')
+option('editor', type: 'feature', value: 'auto',
+  description: 'Build the user-dictionary editor (Vala, GTK 4)')
 option('tests', type: 'boolean', value: true,
   description: 'Build the shared layer\'s tests')
 option('libjd', type: 'string', value: '',
