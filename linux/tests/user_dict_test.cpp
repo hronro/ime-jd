@@ -175,6 +175,10 @@ TEST(theWatchSeesSavesToOurFilesOnly) {
 
     store.setEnabled(true);
     CHECK(store.drainWatch());
+
+    // The update check's record, which the menus show.
+    dir.write("update.ini", "[Update]\n");
+    CHECK(store.drainWatch());
 }
 
 TEST(ensureFileWritesTheHeaderOnce) {

@@ -2,7 +2,9 @@
 // component file says (ime-jd.xml); run without it, it registers that
 // component itself, which is how to try a build without installing it.
 #include <cstring>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include <glib-unix.h>
 #include <ibus.h>
@@ -10,6 +12,7 @@
 #include "engine.h"
 #include "ibus_engine.h"
 #include "project.h"
+#include "update.h"
 #include "user_dict.h"
 
 namespace {
@@ -21,6 +24,7 @@ constexpr const char *kEngineName = "ime-jd";
 constexpr guint kReloadDelayMs = 300;
 
 imejd::UserDictStore *g_store = nullptr;
+imejd::update::UpdateClient *g_update = nullptr;
 guint g_reloadSource = 0;
 
 /// Tells the desktop's notification service, which is how a failed rebuild
@@ -42,9 +46,27 @@ void notify(const std::string &title, const std::string &body) {
     g_object_unref(bus);
 }
 
-gboolean reloadStore(gpointer) {
+/// Starts `args` and lets it go.
+void spawn(const std::vector<std::string> &args) {
+    std::vector<gchar *> argv;
+    for (const auto &arg : args) {
+        argv.push_back(const_cast<gchar *>(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+    GError *error = nullptr;
+    if (!g_spawn_async(nullptr, argv.data(), nullptr, G_SPAWN_DEFAULT, nullptr, nullptr, nullptr, &error)) {
+        g_warning("键道: cannot start %s: %s", argv[0], error->message);
+        g_error_free(error);
+    }
+}
+
+gboolean reload(gpointer) {
     g_reloadSource = 0;
     g_store->reload();
+    if (g_update) {
+        g_update->refresh();
+    }
+    imejd_ibus_engine_update_menu();
     return G_SOURCE_REMOVE;
 }
 
@@ -53,7 +75,7 @@ gboolean onWatch(gint, GIOCondition, gpointer) {
         if (g_reloadSource) {
             g_source_remove(g_reloadSource);
         }
-        g_reloadSource = g_timeout_add(kReloadDelayMs, reloadStore, nullptr);
+        g_reloadSource = g_timeout_add(kReloadDelayMs, reload, nullptr);
     }
     return G_SOURCE_CONTINUE;
 }
@@ -105,6 +127,12 @@ int main(int argc, char **argv) {
         g_unix_fd_add(store.watchFd(), G_IO_IN, onWatch, nullptr);
     }
     imejd_ibus_engine_set_store(&store);
+    std::optional<imejd::update::UpdateClient> update;
+    if (imejd::kUpdater) {
+        update.emplace(store.directory(), imejd::kUpdater, imejd::kVersion, spawn);
+        g_update = &*update;
+        imejd_ibus_engine_set_update(g_update);
+    }
 
     IBusFactory *factory = ibus_factory_new(ibus_bus_get_connection(bus));
     ibus_factory_add_engine(factory, kEngineName, IMEJD_TYPE_IBUS_ENGINE);

@@ -146,15 +146,28 @@ FcitxEngine::FcitxEngine(fcitx::Instance *instance)
     }
     reloadTimer_ = instance_->eventLoop().addTimeEvent(CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC), 0,
                                                        [this](fcitx::EventSourceTime *, uint64_t) {
-                                                           store_.reload();
+                                                           reload();
                                                            return true;
                                                        });
     reloadTimer_->setEnabled(false);
 
-    // The menu, as macOS has it, minus the update items: Linux updates come
-    // from the package manager.
+    // The menu, as macOS has it. The update items are the generic tarball's
+    // alone: distro packages are updated by their package managers.
     aboutItem_.text = [] { return std::string(kMenuAbout) + kVersion; };
     aboutItem_.onActivate = [](fcitx::InputContext *) { openExternally(kReleasesPage); };
+    if (kUpdater) {
+        update_.emplace(store_.directory(), kUpdater, kVersion,
+                        [](const std::vector<std::string> &args) { fcitx::startProcess(args); });
+        updateItem_.text = [this] { return update_->label(); };
+        updateItem_.onActivate = [this](fcitx::InputContext *) { update_->activate(); };
+        autoCheckItem_.setCheckable(true);
+        autoCheckItem_.text = [] { return std::string(kMenuAutoCheck); };
+        autoCheckItem_.checked = [this] { return update_->autoCheck(); };
+        autoCheckItem_.onActivate = [this](fcitx::InputContext *ic) {
+            update_->setAutoCheck(!update_->autoCheck());
+            autoCheckItem_.update(ic);
+        };
+    }
     userDictItem_.text = [] { return std::string(kMenuUserDict); };
     userDictItem_.onActivate = [this](fcitx::InputContext *) {
         if (hasEditor()) {
@@ -174,6 +187,10 @@ FcitxEngine::FcitxEngine(fcitx::Instance *instance)
 
     auto &ui = instance_->userInterfaceManager();
     ui.registerAction("imejd-about", &aboutItem_);
+    if (update_) {
+        ui.registerAction("imejd-update", &updateItem_);
+        ui.registerAction("imejd-update-auto-check", &autoCheckItem_);
+    }
     ui.registerAction("imejd-user-dict", &userDictItem_);
     ui.registerAction("imejd-user-dict-enabled", &userDictEnabledItem_);
     ui.registerAction("imejd-user-dict-status", &userDictStatusItem_);
@@ -200,7 +217,13 @@ void FcitxEngine::activate(const fcitx::InputMethodEntry &, fcitx::InputContextE
     auto *ic = event.inputContext();
     ic->propertyFor(&factory_)->session.activate();
     auto &status = ic->statusArea();
-    for (auto *item : {&aboutItem_, &userDictItem_, &userDictEnabledItem_, &userDictStatusItem_}) {
+    status.addAction(fcitx::StatusGroup::InputMethod, &aboutItem_);
+    if (update_) {
+        status.addAction(fcitx::StatusGroup::InputMethod, &updateItem_);
+        status.addAction(fcitx::StatusGroup::InputMethod, &autoCheckItem_);
+        update_->checkIfDue();
+    }
+    for (auto *item : {&userDictItem_, &userDictEnabledItem_, &userDictStatusItem_}) {
         status.addAction(fcitx::StatusGroup::InputMethod, item);
     }
 }
@@ -239,6 +262,23 @@ void FcitxEngine::selectCandidate(fcitx::InputContext &ic, unsigned index) {
 void FcitxEngine::scheduleReload() {
     reloadTimer_->setTime(fcitx::now(CLOCK_MONOTONIC) + kReloadDelayUsec);
     reloadTimer_->setOneShot();
+}
+
+void FcitxEngine::reload() {
+    store_.reload();
+    if (update_) {
+        update_->refresh();
+    }
+    // The panels that keep the menu, KDE's among them, take a change only when
+    // told.
+    if (auto *ic = instance_->mostRecentInputContext()) {
+        userDictEnabledItem_.update(ic);
+        userDictStatusItem_.update(ic);
+        if (update_) {
+            updateItem_.update(ic);
+            autoCheckItem_.update(ic);
+        }
+    }
 }
 
 void FcitxEngine::notify(const std::string &title, const std::string &body) {

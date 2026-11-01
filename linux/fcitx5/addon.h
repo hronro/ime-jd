@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <fcitx-utils/event.h>
@@ -21,6 +22,7 @@
 #include <fcitx/instance.h>
 
 #include "session.h"
+#include "update.h"
 #include "user_dict.h"
 
 namespace imejd {
@@ -68,6 +70,7 @@ private:
     FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
 
     void scheduleReload();
+    void reload();
     void notify(const std::string &title, const std::string &body);
 
     fcitx::Instance *instance_;
@@ -75,8 +78,12 @@ private:
     fcitx::FactoryFor<FcitxState> factory_;
     std::unique_ptr<fcitx::EventSourceIO> watch_;
     std::unique_ptr<fcitx::EventSourceTime> reloadTimer_;
+    /// The update check, in the builds that have one.
+    std::optional<update::UpdateClient> update_;
 
     FcitxMenuItem aboutItem_;
+    FcitxMenuItem updateItem_;
+    FcitxMenuItem autoCheckItem_;
     FcitxMenuItem userDictItem_;
     FcitxMenuItem userDictEnabledItem_;
     FcitxMenuItem userDictStatusItem_;

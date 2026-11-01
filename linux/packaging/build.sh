@@ -5,7 +5,8 @@
 #   glibc — Ubuntu 22.04, the oldest release builds target, so they run on
 #   every newer distro: a .deb, an .rpm and an Arch package for each
 #   framework and for the user-dictionary editor, and the generic tarball,
-#   which installs all three at fixed paths.
+#   which installs all three at fixed paths and updates itself: it alone has
+#   the update check, as the packages are their package managers' to update.
 #
 #   musl — Alpine 3.22, likewise: an .apk for each.
 #
@@ -56,9 +57,11 @@ DESTDIR="$work/pkg" meson install -C "$work/build" --quiet
 addon=$(find "$work/pkg" -name libime-jd.so)
 
 # The tarball's: the same everywhere, so it can install without knowing the
-# distro. Fcitx 5 loads the addon from its absolute path.
+# distro. Fcitx 5 loads the addon from its absolute path. The update check's
+# updater goes beside it.
 if [ "$formats" != apk ]; then
-    meson configure "$work/build" -Dfcitx5_addon_dir=/usr/lib/ime-jd -Dibus_engine_dir=/usr/lib/ime-jd
+    meson configure "$work/build" -Dfcitx5_addon_dir=/usr/lib/ime-jd -Dibus_engine_dir=/usr/lib/ime-jd \
+        -Dlibexecdir=lib/ime-jd -Dupdate_check=true
     DESTDIR="$work/tar" meson install -C "$work/build" --quiet
 fi
 

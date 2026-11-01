@@ -1,11 +1,12 @@
 #!/bin/sh
 # Runs the end-to-end tests against the installed frontends: each framework
 # in a D-Bus session of its own, with a daemon of its own. The editor, whose
-# window needs a display, is only started.
+# window needs a display, is only started. Where the update check is built —
+# the generic tarball — its updater is run against a feed of the test's own.
 #
 # For a disposable environment — a container — with 键道 and its editor
-# installed to /usr, fcitx5, ibus, dbus and python3-gi: it writes the user's
-# ~/.config.
+# installed to /usr, fcitx5, ibus, dbus and python3-gi, and libcurl for the
+# updater: it writes the user's ~/.config and ~/.cache.
 set -eu
 
 here=$(dirname "$(readlink -f "$0")")
@@ -14,6 +15,9 @@ status=0
 
 fresh() {
     rm -rf "$config/ime-jd" "$config/fcitx5" "$config/ibus" "$HOME/.cache/ibus"
+    # As a user who switched the update check off: no test asks GitHub.
+    mkdir -p "$config/ime-jd"
+    printf '[Update]\nCheckAutomatically=false\n' > "$config/ime-jd/settings.ini"
 }
 
 echo "== Fcitx 5"
@@ -57,5 +61,15 @@ dbus-run-session -- sh -c '
 echo "== Editor"
 # That it runs at all: the libraries it links to, GTK 4 among them, found.
 ime-jd-userdict --version || status=1
+
+# Where the tarball installs it, or a build from source with the update check.
+for updater in /usr/lib/ime-jd/ime-jd-update /usr/libexec/ime-jd-update; do
+    if [ -x "$updater" ]; then
+        echo "== Updater"
+        fresh
+        dbus-run-session -- python3 "$here/update_test.py" "$updater" || status=1
+        break
+    fi
+done
 
 exit $status

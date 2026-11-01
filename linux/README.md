@@ -1,6 +1,6 @@
 # 键道输入法 for Linux
 
-键道 for the two input method frameworks Linux desktops use: a **Fcitx 5** addon and an **IBus** engine. Use the one for the framework you run — IBus is GNOME's default; Fcitx 5 is the usual choice on KDE and on window managers such as Sway, Hyprland and niri. Both are thin C++ frontends over one shared layer (`common/`) and `libjd`, linked statically. The framework draws the candidate window and the input method's menu, so 键道 looks like the rest of the desktop. How each switches between 中 and 英 follows its framework — see [中 and 英](#中-and-英). Besides the built-in dictionary it carries the user's own phrases, which a window of their own edits: `ime-jd-userdict`, in Vala over GTK 4 — see [User dictionary](#user-dictionary).
+键道 for the two input method frameworks Linux desktops use: a **Fcitx 5** addon and an **IBus** engine. Use the one for the framework you run — IBus is GNOME's default; Fcitx 5 is the usual choice on KDE and on window managers such as Sway, Hyprland and niri. Both are thin C++ frontends over one shared layer (`common/`) and `libjd`, linked statically. The framework draws the candidate window and the input method's menu, so 键道 looks like the rest of the desktop. How each switches between 中 and 英 follows its framework — see [中 and 英](#中-and-英). Besides the built-in dictionary it carries the user's own phrases, which a window of their own edits: `ime-jd-userdict`, in Vala over GTK 4 — see [User dictionary](#user-dictionary). Installed from the generic tarball, it also checks for new releases and installs them; distro packages are left to their package managers — see [Updates](#updates).
 
 ## Requirements
 
@@ -11,7 +11,8 @@
   - Arch: `fcitx5 ibus vala gtk4`
   - Alpine: `fcitx5-dev ibus-dev vala gtk4.0-dev`
 
-  `scripts/install-deps.sh build` installs them, and a toolchain, with the distro's package manager.
+  `scripts/install-deps.sh build` installs them, and a toolchain, with the distro's package manager. The update check's updater, built only with `-Dupdate_check=true`, needs GIO's development files besides, which IBus's bring.
+- At run time, the updater loads libcurl (`libcurl.so.4`, or Debian's and Ubuntu's `libcurl-gnutls.so.4`), which every distro has, and runs the tarball's `install.sh` through pkexec.
 
 Build with GCC's C++ library, not `zig c++`: the Fcitx 5 addon runs inside the fcitx5 process and exchanges `std::string` and friends with it, so it must use the same libstdc++. `zig c++` builds against LLVM's libc++, and the addon would not load.
 
@@ -35,6 +36,7 @@ Meson runs the Zig core build itself, for the target's baseline CPU. Options, se
 | `libjd` | — | A prebuilt `libjd.a` instead of running Zig. It must be position-independent, as `core/build.zig` builds it for Linux, since the Fcitx 5 addon is a shared object. |
 | `fcitx5_addon_dir` | Fcitx 5's addon directory | Elsewhere, the addon's config names the library by absolute path, which Fcitx 5 loads as is. |
 | `ibus_engine_dir` | `libexecdir` | Where the IBus engine program goes; its component file points there. |
+| `update_check` | `false` | Build the update check: the updater, `ime-jd-update` in `libexecdir`, and the menus' update items. Only the generic tarball has it; distro packages are their package managers' to update. See [Updates](#updates). |
 
 ## Install
 
@@ -47,6 +49,7 @@ sudo meson install -C linux/build
 | Fcitx 5 | `libime-jd.so` in Fcitx 5's addon directory (`/usr/lib/fcitx5`, `/usr/lib/x86_64-linux-gnu/fcitx5`, `/usr/lib64/fcitx5`, …); `addon/ime-jd.conf` and `inputmethod/ime-jd.conf` in `/usr/share/fcitx5`; the icon `fcitx-ime-jd` in the hicolor theme |
 | IBus | `ibus-engine-ime-jd`; `ime-jd.xml` in `/usr/share/ibus/component`; `/usr/share/ibus-ime-jd/icons/ime-jd.svg` |
 | Editor | `ime-jd-userdict` in `bindir`; `io.github.hronro.ImeJd.UserDict.desktop` in `/usr/share/applications`, and its icon in the hicolor theme |
+| Update check | `ime-jd-update` in `libexecdir`, with `-Dupdate_check=true` |
 
 Fcitx 5's and IBus's files go to those frameworks' own directories, wherever the prefix points, since that is the only place they look; the prefix decides where the IBus engine program, the editor and the icons go. Both frontends start the editor from where this prefix puts it, whether or not it was built with them.
 
@@ -72,7 +75,7 @@ Each release carries a package of each frontend and of the editor for each distr
 | Ubuntu 22.04 (glibc) | `jd-ime-v{version}-linux-{arch}-{fcitx5,ibus,userdict}.deb`, `.rpm` and `.pkg.tar.zst`, and the tarball `jd-ime-v{version}-linux-{arch}.tar.xz` |
 | Alpine 3.22 (musl) | `jd-ime-v{version}-alpine-{arch}-{fcitx5,ibus,userdict}.apk` |
 
-Each frontend's package, `ime-jd-fcitx5` or `ime-jd-ibus`, depends on its framework, which the package manager installs with it. The Fcitx 5 addon goes to the distro's addon directory: `/usr/lib/<multiarch>/fcitx5` in the `.deb`, `/usr/lib64/fcitx5` in the `.rpm`, and `/usr/lib/fcitx5` in the Arch package and the `.apk`. The IBus engine goes to `/usr/libexec` in all of them. The editor's package, `ime-jd-userdict`, depends on GTK 4 (and on Alpine on `mesa-gles`, the GLES library Alpine's GTK 4 leaves out, without which a GTK 4 window aborts at start), and the frontends' recommend it — an optional dependency to Arch's pacman; an `.apk` has no such field. The three packages share no files, so all can be installed. The tarball holds all three at the same paths on every distro, with the frontends' programs in `/usr/lib/ime-jd`, from where Fcitx 5 loads the addon by its absolute path. Its `install.sh` installs the editor, listed apart in `editor.txt`, only where the libraries it links to are found — where GTK 4 is installed — and keeps a list of what it installed, for `/usr/lib/ime-jd/uninstall.sh`.
+Each frontend's package, `ime-jd-fcitx5` or `ime-jd-ibus`, depends on its framework, which the package manager installs with it. The Fcitx 5 addon goes to the distro's addon directory: `/usr/lib/<multiarch>/fcitx5` in the `.deb`, `/usr/lib64/fcitx5` in the `.rpm`, and `/usr/lib/fcitx5` in the Arch package and the `.apk`. The IBus engine goes to `/usr/libexec` in all of them. The editor's package, `ime-jd-userdict`, depends on GTK 4 (and on Alpine on `mesa-gles`, the GLES library Alpine's GTK 4 leaves out, without which a GTK 4 window aborts at start), and the frontends' recommend it — an optional dependency to Arch's pacman; an `.apk` has no such field. The three packages share no files, so all can be installed. The tarball holds all three at the same paths on every distro, with the frontends' programs in `/usr/lib/ime-jd`, from where Fcitx 5 loads the addon by its absolute path, and beside them the update check's updater: the tarball alone is built with it. Its `install.sh` installs the editor, listed apart in `editor.txt`, only where the libraries it links to are found — where GTK 4 is installed — and keeps a list of what it installed, for `/usr/lib/ime-jd/uninstall.sh`. Run over an earlier install, as an update does, it removes what that had and this one has not.
 
 To build them as CI does — here for glibc on x86_64; [nfpm](https://nfpm.goreleaser.com) comes in from outside the container:
 
@@ -121,22 +124,41 @@ One window serves the session: starting the editor again brings it forward. `ime
 
 The editor is a package of its own. Where it is not installed, **用户自造词…** opens the file in the desktop's text editor instead, creating it with a one-line header if there is none.
 
+## Updates
+
+The generic tarball updates itself, as the macOS and Windows clients do (`macos/JdIME/Update/`, `windows/src/update/`); distro packages do not, being their package managers' to update. It is the build option `update_check`, which `packaging/build.sh` turns on for the tarball alone. Its menus — Fcitx 5's tray menu, GNOME's input source menu — then have macOS's two items after the version:
+
+- **检查更新…** checks now and says what it found. While a release newer than this one is known, the item is **发现新版本 v{version}，下载并安装…** instead, and installs it. While the updater works, it says what it is doing: checking, downloading, installing.
+- **自动检查更新**, on by default, has 键道 check by itself, at most once a day, when it becomes active. The switch is kept in `settings.ini`:
+
+  ```ini
+  [Update]
+  CheckAutomatically=false
+  ```
+
+The work is the updater's, `/usr/lib/ime-jd/ime-jd-update`, a process of its own that the frontends start and let go (`updater/main.cpp`):
+
+- `ime-jd-update check` reads GitHub's latest release (`https://api.github.com/repos/hronro/ime-jd/releases/latest`), sending nothing but the request and a `User-Agent` of `ime-jd-linux/{version}`, and records what it found in `~/.config/ime-jd/update.ini`, which the menus show. A newer release raises a desktop notification, once; checked from the menu, every outcome does.
+- `ime-jd-update install` downloads the release's tarball for this machine to `~/.cache/ime-jd/updates`, checks it against the size and SHA-256 GitHub publishes with it, unpacks it, and runs its `install.sh` as root through pkexec: the desktop's authentication agent asks for the password, as for any administrative task. The new version runs once the framework restarts, which the notification says how to do, and until then the menu says so too. Where the request is dismissed, or cannot be made — pkexec not installed, as on openSUSE and Debian unless the `pkexec` package is, or no authentication agent, as on some window managers — the notification gives the `sudo` command for the script it unpacked. pkexec runs the script through `/bin/sh`: SELinux, as openSUSE and Fedora enforce it, lets no file in a home directory start a root session itself. A release without a tarball for this machine, or with no digest to check it by, or 键道 not installed from the tarball, opens the release page instead.
+
+One updater runs at a time. HTTPS is the system's libcurl, loaded when needed rather than linked, since distros version its symbols each their own way; it brings the distro's certificates, and takes a proxy from the environment, as curl does.
+
 ## Tests
 
 `meson test` runs the shared layer's tests against the real engine, and the editor's for its parts that need no display: the file format, `settings.ini`, the **状态** column's words, and the store.
 
-`tests/e2e/run.sh` runs both frontends end to end: it starts fcitx5 and ibus-daemon, each in a D-Bus session of its own, and drives the installed frontend through the same D-Bus interfaces applications' input method modules use — keys in, committed text, preedit and candidates out. The editor's window needs a display, so of the editor it checks only that it starts. It needs 键道 and its editor installed to `/usr`, the frameworks, `dbus` and PyGObject (`python3-gi` and IBus's GObject introspection data), and it rewrites `~/.config`, so it is meant for a container:
+`tests/e2e/run.sh` runs both frontends end to end: it starts fcitx5 and ibus-daemon, each in a D-Bus session of its own, and drives the installed frontend through the same D-Bus interfaces applications' input method modules use — keys in, committed text, preedit and candidates out. The editor's window needs a display, so of the editor it checks only that it starts. Where the update check is built, it runs the updater against a release feed it serves on the machine, with a notification service of its own and a stand-in for pkexec: what the updater records, what it says, and an install of a tarball it builds; the frontends' tests turn the automatic check off, so none asks GitHub. It needs 键道 and its editor installed to `/usr`, the frameworks, `dbus` and PyGObject (`python3-gi` and IBus's GObject introspection data), and libcurl for the updater, and it rewrites `~/.config` and `~/.cache`, so it is meant for a container:
 
 ```
 zig build --build-file core/build.zig -Doptimize=fast -Dtarget=x86_64-linux --prefix /tmp/libjd
 podman run --rm -v "$PWD:/src:ro" -v /tmp/libjd/lib:/libjd:ro docker.io/library/ubuntu:22.04 sh -euc '
     /src/linux/scripts/install-deps.sh build test
-    meson setup /build /src/linux --prefix=/usr -Dlibjd=/libjd/libjd.a
+    meson setup /build /src/linux --prefix=/usr -Dlibjd=/libjd/libjd.a -Dupdate_check=true
     meson install -C /build
     /src/linux/tests/e2e/run.sh'
 ```
 
-Ubuntu 22.04 has no Zig package, so the archive is built outside. CI runs this on Ubuntu 22.04 and on Arch, the oldest and the newest frameworks (`.github/workflows/test-on-push.yml`).
+Ubuntu 22.04 has no Zig package, so the archive is built outside. CI runs this on Ubuntu 22.04 and on Arch, the oldest and the newest frameworks (`.github/workflows/test-on-push.yml`), and the release assets' own tests in `build-on-push.yml`: the packages, without the update check, and the tarball, with it.
 
 ## Layout
 
@@ -145,11 +167,15 @@ Ubuntu 22.04 has no Zig package, so the archive is built outside. CI runs this o
 | `common/key_gate.*` | Which keys go to the engine — the macOS client's `KeyGate.swift`, with X keysyms. |
 | `common/session.*` | One input context's composition, candidates and paging — the macOS `InputController` and `Composition`, with the framework behind a `Host` interface. |
 | `common/user_dict.*` | The phrases file and the switch — the macOS `UserDictStore`, watched with inotify. |
+| `common/files.*` | The files in `~/.config/ime-jd`: reading them, replacing them in one rename, and `settings.ini`. |
+| `common/update.*` | The update check's shared side: the release feed's rules, `update.ini`, and the menus' item, switch and daily check — the macOS `UpdateFeed` and `UpdateManager`. |
+| `common/sha256.*` | SHA-256, which the updater checks downloads with. |
 | `common/engine.*` | `libjd`'s context, and the user-dictionary blob it reads. |
 | `fcitx5/` | The Fcitx 5 addon and its config files. |
 | `ibus/` | The IBus engine, its process and its component file. |
+| `updater/` | The tarball's updater, `ime-jd-update`, and the libcurl it loads. |
 | `editor/` | The user-dictionary editor: the file, `settings.ini` and the store (`file.vala`, `ini.vala`, `store.vala`), the **状态** column's words (`problem.vala`), the table (`row.vala`, `window.vala`) and its prompts (`prompt.vala`); `jd.vapi` binds the part of `libjd` it calls. |
 | `tests/` | Tests for `common/`, run against the real engine, and for the editor's parts that need no display. |
-| `tests/e2e/` | Both frontends in real fcitx5 and ibus-daemon. |
+| `tests/e2e/` | Both frontends in real fcitx5 and ibus-daemon, and the updater against a feed of its own. |
 | `packaging/` | `build.sh`, which makes the release assets, and the tarball's `install.sh` and `uninstall.sh`. |
 | `scripts/` | What CI's containers run: each distro's build and test dependencies, nfpm, and installing the built packages. |

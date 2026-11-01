@@ -2,8 +2,10 @@
 # Installs, with the distro's package manager, what building 键道's Linux
 # frontends and user-dictionary editor needs (`build`), and what running them
 # end to end needs (`test`): the frameworks, D-Bus, PyGObject with IBus's
-# introspection data, GTK 4 for the editor, and xz for the tarball. For the
-# containers CI builds and tests in, and for reproducing them.
+# introspection data, GTK 4 for the editor, and xz for the tarball — and
+# libcurl for its update check, which the other distros' package managers
+# bring. For the containers CI builds and tests in, and for reproducing
+# them.
 #
 # Usage: linux/scripts/install-deps.sh build|test...
 set -eu
@@ -33,7 +35,7 @@ ubuntu | debian)
     # shellcheck disable=SC2046
     apt-get install -y -qq --no-install-recommends $(pick \
         "g++ meson ninja-build pkg-config libfcitx5core-dev fcitx5-modules-dev libibus-1.0-dev valac libgtk-4-dev xz-utils" \
-        "fcitx5 ibus dbus python3-gi gir1.2-ibus-1.0 libgtk-4-1 xz-utils")
+        "fcitx5 ibus dbus python3-gi gir1.2-ibus-1.0 libgtk-4-1 xz-utils curl")
     ;;
 fedora)
     # shellcheck disable=SC2046

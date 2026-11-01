@@ -148,8 +148,9 @@ public:
     /// event loop to poll; -1 when there is none.
     int watchFd() const { return watchFd_; }
     /// Reads what the descriptor has. Returns true when it concerned the
-    /// phrases file or the settings, so the caller should reload() — after a
-    /// short delay, since one save is several events.
+    /// phrases file, the settings, or the update check's record, so the
+    /// caller should reload() — after a short delay, since one save is
+    /// several events — and refresh what it shows of the others.
     bool drainWatch();
 
 private:

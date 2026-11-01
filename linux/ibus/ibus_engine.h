@@ -15,6 +15,9 @@
 
 namespace imejd {
 class UserDictStore;
+namespace update {
+class UpdateClient;
+}
 
 /// The key of the engine's 中/英 property. Panels show the mode from its
 /// symbol: GNOME's in the top bar, IBus's own as its tray icon, which the
@@ -33,3 +36,11 @@ G_END_DECLS
 /// The store every engine of this process reads; set before the first
 /// engine is created.
 void imejd_ibus_engine_set_store(imejd::UserDictStore *store);
+
+/// The update check every engine's menu has, in the builds that have one;
+/// set, when it is, before the first engine is created.
+void imejd_ibus_engine_set_update(imejd::update::UpdateClient *update);
+
+/// Brings the focused engine's menu up to date, after the files it shows
+/// changed.
+void imejd_ibus_engine_update_menu();

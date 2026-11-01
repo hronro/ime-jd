@@ -5,11 +5,15 @@
 
 #include "project.h"
 #include "session.h"
+#include "update.h"
 #include "user_dict.h"
 
 namespace {
 
 imejd::UserDictStore *g_store = nullptr;
+imejd::update::UpdateClient *g_update = nullptr;
+/// The engine with the focus, whose menu the panel shows.
+IBusEngine *g_focused = nullptr;
 
 /// One engine's state beside its GObject.
 struct EngineState {
@@ -40,10 +44,14 @@ G_DEFINE_TYPE(ImeJdIBusEngine, imejd_ibus_engine, IBUS_TYPE_ENGINE)
 
 void imejd_ibus_engine_set_store(imejd::UserDictStore *store) { g_store = store; }
 
+void imejd_ibus_engine_set_update(imejd::update::UpdateClient *update) { g_update = update; }
+
 namespace {
 
 using imejd::kInputModeProperty;
 constexpr const char *kAboutProperty = "imejd-about";
+constexpr const char *kUpdateProperty = "imejd-update";
+constexpr const char *kAutoCheckProperty = "imejd-update-auto-check";
 constexpr const char *kUserDictProperty = "imejd-user-dict";
 constexpr const char *kUserDictEnabledProperty = "imejd-user-dict-enabled";
 constexpr const char *kUserDictStatusProperty = "imejd-user-dict-status";
@@ -147,6 +155,15 @@ IBusProperty *modeProperty(const EngineState &st) {
     return mode;
 }
 
+IBusProperty *updateProperty() {
+    return property(kUpdateProperty, PROP_TYPE_NORMAL, g_update->label(), g_update->sensitive());
+}
+
+IBusProperty *autoCheckProperty() {
+    return property(kAutoCheckProperty, PROP_TYPE_TOGGLE, imejd::kMenuAutoCheck, TRUE,
+                    g_update->autoCheck() ? PROP_STATE_CHECKED : PROP_STATE_UNCHECKED);
+}
+
 IBusProperty *userDictEnabledProperty() {
     return property(kUserDictEnabledProperty, PROP_TYPE_TOGGLE, imejd::kMenuUserDictEnabled, TRUE,
                     g_store->isEnabled() ? PROP_STATE_CHECKED : PROP_STATE_UNCHECKED);
@@ -156,13 +173,18 @@ IBusProperty *userDictStatusProperty() {
     return property(kUserDictStatusProperty, PROP_TYPE_NORMAL, g_store->statusText(), FALSE);
 }
 
-/// The menu, as macOS has it minus the update items (Linux updates come from
-/// the package manager), after the 中/英 switch.
+/// The menu, as macOS has it, after the 中/英 switch. The update items are the
+/// generic tarball's alone: distro packages are updated by their package
+/// managers.
 void registerProperties(IBusEngine *engine) {
     IBusPropList *list = ibus_prop_list_new();
     ibus_prop_list_append(list, modeProperty(state(engine)));
     ibus_prop_list_append(list, property(kAboutProperty, PROP_TYPE_NORMAL, std::string(imejd::kMenuAbout) +
                                                                                 imejd::kVersion));
+    if (g_update) {
+        ibus_prop_list_append(list, updateProperty());
+        ibus_prop_list_append(list, autoCheckProperty());
+    }
     ibus_prop_list_append(list, property(kUserDictProperty, PROP_TYPE_NORMAL, imejd::kMenuUserDict));
     ibus_prop_list_append(list, userDictEnabledProperty());
     ibus_prop_list_append(list, userDictStatusProperty());
@@ -170,10 +192,14 @@ void registerProperties(IBusEngine *engine) {
 }
 
 /// Brings the changing items up to date: the mode, which is this input
-/// context's, and the user dictionary's switch and status, which a reload of
-/// the file may have changed.
+/// context's, and the rest, which a change in the files may have changed —
+/// the update check's, and the user dictionary's switch and status.
 void updateProperties(IBusEngine *engine) {
     ibus_engine_update_property(engine, modeProperty(state(engine)));
+    if (g_update) {
+        ibus_engine_update_property(engine, updateProperty());
+        ibus_engine_update_property(engine, autoCheckProperty());
+    }
     ibus_engine_update_property(engine, userDictEnabledProperty());
     ibus_engine_update_property(engine, userDictStatusProperty());
 }
@@ -239,8 +265,12 @@ gboolean processKeyEvent(IBusEngine *engine, guint keyval, guint /*keycode*/, gu
 }
 
 void focusIn(IBusEngine *engine) {
+    g_focused = engine;
     state(engine).session.activate();
     showProperties(engine);
+    if (g_update) {
+        g_update->checkIfDue();
+    }
 }
 
 // Focus out, reset and disable: IBus has just committed the preedit, the
@@ -250,6 +280,9 @@ void focusIn(IBusEngine *engine) {
 // shares one engine among all of them.
 
 void focusOut(IBusEngine *engine) {
+    if (g_focused == engine) {
+        g_focused = nullptr;
+    }
     IBusHost host(engine);
     state(engine).session.cancelComposition(host);
 }
@@ -302,15 +335,29 @@ void propertyActivate(IBusEngine *engine, const gchar *name, guint propState) {
     } else if (key == kUserDictEnabledProperty) {
         g_store->setEnabled(propState == PROP_STATE_CHECKED);
         updateProperties(engine);
+    } else if (key == kUpdateProperty && g_update) {
+        g_update->activate();
+    } else if (key == kAutoCheckProperty && g_update) {
+        g_update->setAutoCheck(propState == PROP_STATE_CHECKED);
+        updateProperties(engine);
     }
 }
 
 void finalize(GObject *object) {
+    if (g_focused == IBUS_ENGINE(object)) {
+        g_focused = nullptr;
+    }
     delete self(IBUS_ENGINE(object))->state;
     G_OBJECT_CLASS(imejd_ibus_engine_parent_class)->finalize(object);
 }
 
 } // namespace
+
+void imejd_ibus_engine_update_menu() {
+    if (g_focused) {
+        updateProperties(g_focused);
+    }
+}
 
 static void imejd_ibus_engine_init(ImeJdIBusEngine *engine) { engine->state = new EngineState(*g_store); }
 

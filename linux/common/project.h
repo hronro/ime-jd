@@ -12,8 +12,20 @@ inline constexpr const char *kReleasesPage = "https://github.com/hronro/ime-jd/r
 /// passes in where it installs.
 inline constexpr const char *kEditor = IMEJD_EDITOR;
 
+/// The update check's process, in the builds that have one: the generic
+/// tarball's (update.h). Distro packages are updated by their package
+/// managers, and their menus have no update items.
+#ifdef IMEJD_UPDATER
+inline constexpr const char *kUpdater = IMEJD_UPDATER;
+#else
+inline constexpr const char *kUpdater = nullptr;
+#endif
+
 /// The menu's first item, followed by kVersion; it opens kReleasesPage.
 inline constexpr const char *kMenuAbout = "键道输入法 ";
+/// With kUpdater, the update item follows, its text UpdateClient's, and then
+/// its switch.
+inline constexpr const char *kMenuAutoCheck = "自动检查更新";
 /// Opens kEditor, as macOS opens its window; without it, the phrases file
 /// in a text editor.
 inline constexpr const char *kMenuUserDict = "用户自造词…";

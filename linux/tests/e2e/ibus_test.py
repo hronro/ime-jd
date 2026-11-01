@@ -50,6 +50,7 @@ def describe(prop):
         'label': prop.get_label().get_text(),
         'symbol': symbol.get_text() if symbol else '',
         'state': prop.get_state(),
+        'sensitive': prop.get_sensitive(),
     }
 
 
@@ -301,10 +302,43 @@ def the_user_dictionary_is_read_live_and_switched_from_the_menu():
     c.ic.property_activate('imejd-user-dict-enabled', IBus.PropState.CHECKED)
     check(wait_for(lambda: c.properties['imejd-user-dict-enabled']['state'] == IBus.PropState.CHECKED),
           'the switch shows as on')
+    # Beside the update check's switch, which run.sh turned off.
     with open(os.path.join(CONFIG_DIR, 'settings.ini'), encoding='utf-8') as f:
-        check_eq(f.read(), '[UserDict]\nEnabled=true\n', 'settings.ini')
+        check_eq(f.read(), '[Update]\nCheckAutomatically=false\n\n[UserDict]\nEnabled=true\n', 'settings.ini')
     c.type('z')
     check(c.candidates and c.candidates[0] == '键道', f'switched on, the phrase comes first: {c.candidates[:3]}')
+
+
+@test
+def the_tarballs_menu_shows_the_update_check():
+    c = Context()
+    if 'imejd-update' not in c.properties:
+        print('   a build without the update check: no update items', flush=True)
+        return
+    check_eq(c.properties['imejd-update']['label'], '检查更新…', 'the update item')
+    check(c.properties['imejd-update']['sensitive'], 'the update item can be chosen')
+    check_eq(c.properties['imejd-update-auto-check']['state'], IBus.PropState.UNCHECKED,
+             'the switch, off as run.sh left it')
+
+    # What the updater records shows at once.
+    state = os.path.join(CONFIG_DIR, 'update.ini')
+    with open(state, 'w', encoding='utf-8') as f:
+        f.write('[Update]\nLatest=v99.0.0\n')
+    check(wait_for(lambda: c.properties['imejd-update']['label'] == '发现新版本 v99.0.0，下载并安装…'),
+          f'a newer release, offered: {c.properties["imejd-update"]}')
+    os.remove(state)
+    check(wait_for(lambda: c.properties['imejd-update']['label'] == '检查更新…'),
+          f'and no longer: {c.properties["imejd-update"]}')
+
+    c.ic.property_activate('imejd-update-auto-check', IBus.PropState.CHECKED)
+    check(wait_for(lambda: c.properties['imejd-update-auto-check']['state'] == IBus.PropState.CHECKED),
+          'the switch shows as on')
+    with open(os.path.join(CONFIG_DIR, 'settings.ini'), encoding='utf-8') as f:
+        check('CheckAutomatically=true\n' in f.read(), 'settings.ini has it on')
+    # Off again before anything is focused, which would start a check.
+    c.ic.property_activate('imejd-update-auto-check', IBus.PropState.UNCHECKED)
+    check(wait_for(lambda: c.properties['imejd-update-auto-check']['state'] == IBus.PropState.UNCHECKED),
+          'the switch shows as off')
 
 
 run()

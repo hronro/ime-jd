@@ -4,6 +4,8 @@ option('ibus', type: 'feature', value: 'auto',
   description: 'Build the IBus engine')
 option('editor', type: 'feature', value: 'auto',
   description: 'Build the user-dictionary editor (Vala, GTK 4)')
+option('update_check', type: 'boolean', value: false,
+  description: 'Check for new releases and install them from the menu: the generic tarball\'s updates. Distro packages leave it off, for their package managers to update them')
 option('tests', type: 'boolean', value: true,
   description: 'Build the shared layer\'s tests')
 option('libjd', type: 'string', value: '',

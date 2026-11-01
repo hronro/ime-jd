@@ -2,11 +2,13 @@
 # Installs 键道 from this tarball: the Fcitx 5 addon and the IBus engine
 # both, at the same fixed paths on every distro, since each is loaded only by
 # its own framework; and the user-dictionary editor, where GTK 4 is there for
-# it. The list of what went where is kept with them, for uninstall.sh. Run as
-# root.
+# it. The list of what went where is kept with them, for uninstall.sh. Over
+# an earlier install — an update, by hand or by the update check — what that
+# had and this has not is removed. Run as root.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+list=/usr/lib/ime-jd/files.txt
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "此脚本需要以 root 身份运行：sudo $0" >&2
@@ -31,6 +33,8 @@ install_files() {
     done < "$1"
 }
 
+previous=$(cat "$list" 2>/dev/null || true)
+
 echo "正在安装键道输入法……"
 install_files "$here/files.txt"
 installed=$(cat "$here/files.txt")
@@ -48,9 +52,15 @@ else
 没有安装用户自造词编辑器：它需要 GTK 4。从发行版装上 GTK 4 后重新运行本安装包即可；
 在此之前，输入法菜单中的「用户自造词…」会用文本编辑器打开词库文件。"
 fi
-printf '%s\n' "$installed" > /usr/lib/ime-jd/files.txt
-chmod 0644 /usr/lib/ime-jd/files.txt
+printf '%s\n' "$installed" > "$list"
+chmod 0644 "$list"
 install -m 0755 "$here/uninstall.sh" /usr/lib/ime-jd/uninstall.sh
+
+printf '%s\n' "$previous" | while IFS= read -r path; do
+    if [ -n "$path" ] && ! printf '%s\n' "$installed" | grep -qxF "$path"; then
+        rm -f "/$path"
+    fi
+done
 
 if command -v gtk-update-icon-cache >/dev/null && [ -e /usr/share/icons/hicolor/index.theme ]; then
     gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
