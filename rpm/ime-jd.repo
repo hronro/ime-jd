@@ -1,0 +1,7 @@
+[ime-jd]
+name=ime-jd (键道输入法)
+baseurl=https://ime-jd-repo.hronro.com/rpm
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://ime-jd-repo.hronro.com/ime-jd.asc
