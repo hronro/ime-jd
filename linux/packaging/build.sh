@@ -16,6 +16,13 @@
 # is $NFPM, or the one on PATH. Each framework's package is its frontend and
 # depends on that framework; the editor's depends on GTK 4, and the two
 # recommend it. The package managers install the rest from there.
+#
+# A release signs its packages with the package repositories' keys
+# (linux/repo): the .rpm with the OpenPGP key in the file $IMEJD_RPM_KEY,
+# whose passphrase nfpm reads from $NFPM_RPM_PASSPHRASE, and the .apk with the
+# RSA key in $IMEJD_APK_KEY. Without them, as on every push, they are not
+# signed. A .deb is not signed itself: apt checks it against the repository's
+# signed index.
 set -eu
 
 out=$(mkdir -p "$1" && cd "$1" && pwd)
@@ -23,6 +30,8 @@ libjd=${2:+$(cd "$(dirname "$2")" && pwd)/$(basename "$2")}
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 nfpm=${NFPM:-nfpm}
+rpm_key=${IMEJD_RPM_KEY:-}
+apk_key=${IMEJD_APK_KEY:-}
 
 version=$(sed -n 's/^[[:space:]]*\.version = "\([0-9.]*\)",$/\1/p' "$root/core/build.zig.zon")
 [ -n "$version" ] || { echo "no version in core/build.zig.zon" >&2; exit 1; }
@@ -206,6 +215,12 @@ deb:
   compression: xz
 rpm:
   compression: xz
+${rpm_key:+  signature:
+    key_file: $rpm_key}
+${apk_key:+apk:
+  signature:
+    key_file: $apk_key
+    key_name: ime-jd}
 EOF
 }
 

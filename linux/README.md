@@ -1,6 +1,6 @@
 # 键道输入法 for Linux
 
-键道 for the two input method frameworks Linux desktops use: a **Fcitx 5** addon and an **IBus** engine. Use the one for the framework you run — IBus is GNOME's default; Fcitx 5 is the usual choice on KDE and on window managers such as Sway, Hyprland and niri. Both are thin C++ frontends over one shared layer (`common/`) and `libjd`, linked statically. The framework draws the candidate window and the input method's menu, so 键道 looks like the rest of the desktop. How each switches between 中 and 英 follows its framework — see [中 and 英](#中-and-英). Besides the built-in dictionary it carries the user's own phrases, which a window of their own edits: `ime-jd-userdict`, in Vala over GTK 4 — see [User dictionary](#user-dictionary). Installed from the generic tarball, it also checks for new releases and installs them; distro packages are left to their package managers — see [Updates](#updates).
+键道 for the two input method frameworks Linux desktops use: a **Fcitx 5** addon and an **IBus** engine. Use the one for the framework you run — IBus is GNOME's default; Fcitx 5 is the usual choice on KDE and on window managers such as Sway, Hyprland and niri. Both are thin C++ frontends over one shared layer (`common/`) and `libjd`, linked statically. The framework draws the candidate window and the input method's menu, so 键道 looks like the rest of the desktop. How each switches between 中 and 英 follows its framework — see [中 and 英](#中-and-英). Besides the built-in dictionary it carries the user's own phrases, which a window of their own edits: `ime-jd-userdict`, in Vala over GTK 4 — see [User dictionary](#user-dictionary). Its packages come from 键道's own package repositories, and the AUR on Arch, so the package managers update them — see [Repositories](#repositories); installed from the generic tarball instead, it checks for new releases and installs them itself — see [Updates](#updates).
 
 ## Requirements
 
@@ -75,6 +75,8 @@ Each release carries a package of each frontend and of the editor for each distr
 | Ubuntu 22.04 (glibc) | `jd-ime-v{version}-linux-{arch}-{fcitx5,ibus,userdict}.deb`, `.rpm` and `.pkg.tar.zst`, and the tarball `jd-ime-v{version}-linux-{arch}.tar.xz` |
 | Alpine 3.22 (musl) | `jd-ime-v{version}-alpine-{arch}-{fcitx5,ibus,userdict}.apk` |
 
+A release signs the `.rpm` and the `.apk` with the package repositories' keys (see [Repositories](#repositories)); `build.sh` takes them from `IMEJD_RPM_KEY`, its passphrase from `NFPM_RPM_PASSPHRASE`, and `IMEJD_APK_KEY`.
+
 Each frontend's package, `ime-jd-fcitx5` or `ime-jd-ibus`, depends on its framework, which the package manager installs with it. The Fcitx 5 addon goes to the distro's addon directory: `/usr/lib/<multiarch>/fcitx5` in the `.deb`, `/usr/lib64/fcitx5` in the `.rpm`, and `/usr/lib/fcitx5` in the Arch package and the `.apk`. The IBus engine goes to `/usr/libexec` in all of them. The editor's package, `ime-jd-userdict`, depends on GTK 4 (and on Alpine on `mesa-gles`, the GLES library Alpine's GTK 4 leaves out, without which a GTK 4 window aborts at start), and the frontends' recommend it — an optional dependency to Arch's pacman; an `.apk` has no such field. The three packages share no files, so all can be installed. The tarball holds all three at the same paths on every distro, with the frontends' programs in `/usr/lib/ime-jd`, from where Fcitx 5 loads the addon by its absolute path, and beside them the update check's updater: the tarball alone is built with it. Its `install.sh` installs the editor, listed apart in `editor.txt`, only where the libraries it links to are found — where GTK 4 is installed — and keeps a list of what it installed, for `/usr/lib/ime-jd/uninstall.sh`. Run over an earlier install, as an update does, it removes what that had and this one has not.
 
 To build them as CI does — here for glibc on x86_64; [nfpm](https://nfpm.goreleaser.com) comes in from outside the container:
@@ -89,7 +91,46 @@ podman run --rm -v "$PWD:/src:ro" -v /tmp/libjd/lib:/libjd:ro -v /tmp/nfpm/nfpm:
     /src/linux/packaging/build.sh /dist /libjd/libjd.a'
 ```
 
-CI (`.github/workflows/build-on-push.yml`) then installs the packages on clean Ubuntu 22.04, Debian 13, Fedora, openSUSE Tumbleweed, Arch and Alpine systems, the way a user would (`scripts/install-packages.sh`), and the tarball on Fedora, and runs both frontends end to end on each, and the editor as far as it goes without a display.
+CI (`.github/workflows/build-on-push.yml`) then installs the packages on clean Ubuntu 22.04, Debian 13, Fedora, openSUSE Tumbleweed and Alpine systems from the package repositories, the way a user would (`scripts/install-packages.sh`), the Arch package from its file, and the tarball on Fedora, and runs both frontends end to end on each, and the editor as far as it goes without a display.
+
+## Repositories
+
+The packages, and their updates, reach users through package repositories at `ime-jd-repo.hronro.com`: one for each package format, not each distro, as the packages run on every distro of their family. Arch users get them from the AUR. The README says how to add them ([Linux 安装步骤](../README.md#linux-安装步骤)):
+
+| Distros | Repository | Signed |
+|---|---|---|
+| Debian, Ubuntu | `deb [signed-by=/usr/share/keyrings/ime-jd.gpg] https://ime-jd-repo.hronro.com/apt stable main`, the key from `/ime-jd.gpg` | the index, with the OpenPGP key |
+| Fedora, openSUSE | `https://ime-jd-repo.hronro.com/rpm/ime-jd.repo` | the index and each package, with the OpenPGP key |
+| Alpine | `https://ime-jd-repo.hronro.com/alpine`, the key from `/ime-jd.rsa.pub` into `/etc/apk/keys` | the index and each package, with the RSA key |
+| Arch | the AUR's `ime-jd-fcitx5-bin`, `ime-jd-ibus-bin` and `ime-jd-userdict-bin`, from the split package `ime-jd-bin` | the release's checksums, in the PKGBUILD |
+
+The OpenPGP key's fingerprint is `47A502736436BD9C4E446949FF73C853F4DC9412`.
+
+Every published release stays in them, pre-releases left out — marked so, or tagged with a suffix such as `-rc1` — and the package managers install the newest.
+
+Nothing is stored twice. The packages are the release assets themselves. The index files, a few kilobytes a release, are committed by `.github/workflows/release.yml` to the `packages` branch, which starts from the repository's empty initial commit and holds nothing else. A Cloudflare Worker at `ime-jd-repo.hronro.com` (`repo/worker.js`) serves both: an index file from the branch, and a package — `apt/pool/<tag>/<asset>` or `rpm/packages/<tag>/<asset>` as the indexes name it, or `alpine/<arch>/<name>-<version>.apk` as apk asks for it — from its release, passed through, GitHub's own redirect followed by the Worker, so a package manager only ever talks to that host. GitHub caches the branch's files for five minutes, and Cloudflare the index files for one more; apt fetches its indexes by their hashes and dnf and zypper name theirs by checksum, and each release keeps the previous ones, so a client never mixes old index files with new ones meanwhile.
+
+A release, besides building the packages (`build-linux-ime`, which signs them):
+
+1. `publish-linux-repos` downloads every published release's packages, rebuilds and signs the index files with `repo/indexes.sh` — apt-ftparchive and createrepo_c in Debian, apk and abuild-sign in Alpine — and commits them to the branch.
+2. `publish-aur` writes the PKGBUILD with `repo/aur.sh`, which repackages the release's own Arch packages, and pushes it to the AUR.
+
+To set it up, once:
+
+- Make the keys:
+
+  ```
+  gpg --quick-generate-key 'ime-jd packages <hronro@gmail.com>' rsa4096 sign never
+  gpg --armor --export-secret-keys <fingerprint> > packages-gpg-private.asc
+  openssl genrsa -traditional -out ime-jd.rsa 4096
+  ssh-keygen -t ed25519 -C 'ime-jd AUR publishing' -N '' -f aur-ime-jd
+  ```
+
+  RSA, as every apt, rpm and zypper verifies it, and the OpenPGP key without an expiry, as apt stops trusting a repository whose key has expired and users' copies are not refreshed. `openssl genrsa -traditional` writes the PKCS#1 form nfpm reads. Keep the keys and gpg's revocation certificate (`~/.gnupg/openpgp-revocs.d/<fingerprint>.rev`) somewhere safe; the OpenPGP key's fingerprint goes in both READMEs, for users to check what dnf and zypper show them, and `aur-ime-jd.pub` on the AUR account.
+- In the repository's settings, beside Android's and iOS's signing secrets, the Actions secrets `PACKAGES_GPG_KEY`, the contents of `packages-gpg-private.asc`; `PACKAGES_GPG_PASSPHRASE`, its passphrase; `ALPINE_APK_SIGNING_KEY`, the contents of `ime-jd.rsa`; and `AUR_SSH_KEY`, the contents of `aur-ime-jd`. Each is the whole file, its `BEGIN` and `END` lines included.
+- Deploy the Worker, which changes only with `repo/worker.js`: `npx wrangler deploy --config linux/repo/wrangler.toml`, with the Cloudflare account that has `hronro.com`.
+
+CI tests all of it on every push (`build-on-push.yml`): throwaway keys sign the packages and the index files, which `build-linux-repo` builds as a release does, and the package tests install from them through the Worker, run by Node in front of a stand-in for GitHub (`tests/repo/`).
 
 ## 中 and 英
 
@@ -158,7 +199,9 @@ podman run --rm -v "$PWD:/src:ro" -v /tmp/libjd/lib:/libjd:ro docker.io/library/
     /src/linux/tests/e2e/run.sh'
 ```
 
-Ubuntu 22.04 has no Zig package, so the archive is built outside. CI runs this on Ubuntu 22.04 and on Arch, the oldest and the newest frameworks (`.github/workflows/test-on-push.yml`), and the release assets' own tests in `build-on-push.yml`: the packages, without the update check, and the tarball, with it.
+Ubuntu 22.04 has no Zig package, so the archive is built outside. CI runs this on Ubuntu 22.04 and on Arch, the oldest and the newest frameworks (`.github/workflows/test-on-push.yml`), and the release assets' own tests in `build-on-push.yml`: the packages, without the update check and installed from the package repositories, and the tarball, with it.
+
+`tests/repo/` serves the package repositories on the machine as `ime-jd-repo.hronro.com` does: `serve.sh` runs the Worker under Node (`worker.mjs`), as Cloudflare hands it requests, in front of `github.py`, which stands in for GitHub's release downloads and the branch's raw files, and `assets.sh` lays built packages out as releases have them. `scripts/install-packages.sh --repository <url>` then adds the repository the README's way, in a container with the host's network, and installs from it.
 
 ## Layout
 
@@ -177,5 +220,7 @@ Ubuntu 22.04 has no Zig package, so the archive is built outside. CI runs this o
 | `editor/` | The user-dictionary editor: the file, `settings.ini` and the store (`file.vala`, `ini.vala`, `store.vala`), the **状态** column's words (`problem.vala`), the table (`row.vala`, `window.vala`) and its prompts (`prompt.vala`); `jd.vapi` binds the part of `libjd` it calls. |
 | `tests/` | Tests for `common/`, run against the real engine, and for the editor's parts that need no display. |
 | `tests/e2e/` | Both frontends in real fcitx5 and ibus-daemon, and the updater against a feed of its own. |
+| `tests/repo/` | The package repositories served on the machine, the Worker in front of a stand-in for GitHub. |
 | `packaging/` | `build.sh`, which makes the release assets, and the tarball's `install.sh` and `uninstall.sh`. |
+| `repo/` | The package repositories: the Cloudflare Worker that serves them (`worker.js`, `wrangler.toml`), their index files (`indexes.sh`), and the AUR's PKGBUILD (`aur.sh`). |
 | `scripts/` | What CI's containers run: each distro's build and test dependencies, nfpm, and installing the built packages. |

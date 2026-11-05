@@ -724,7 +724,8 @@ jobs:
   # editor, and the generic tarball), Alpine 3.22 for musl (an .apk for
   # each). linux/packaging/build.sh builds, runs the shared layer's and the
   # editor's tests, and packages; build-on-push.yml installs each package on
-  # a clean system and runs it end to end.
+  # a clean system and runs it end to end. The .rpm and the .apk are signed
+  # with the package repositories' keys (linux/repo), repository secrets.
   build-linux-ime:
     name: linux-ime ${{ matrix.libc }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -763,14 +764,161 @@ jobs:
         run: linux/scripts/install-nfpm.sh "$RUNNER_TEMP/bin"
 
       - name: Build packages
+        env:
+          PACKAGES_GPG_KEY: ${{ secrets.PACKAGES_GPG_KEY }}
+          NFPM_RPM_PASSPHRASE: ${{ secrets.PACKAGES_GPG_PASSPHRASE }}
+          ALPINE_APK_SIGNING_KEY: ${{ secrets.ALPINE_APK_SIGNING_KEY }}
         run: |
+          set -eu
+          if [ -z "$PACKAGES_GPG_KEY" ] || [ -z "$ALPINE_APK_SIGNING_KEY" ]; then
+            echo "The repository has no package signing keys: see linux/README.md, Repositories." >&2
+            exit 1
+          fi
           mkdir -p release
+          keys=$(mktemp -d)
+          printf '%s\n' "$PACKAGES_GPG_KEY" > "$keys/gpg.asc"
+          printf '%s\n' "$ALPINE_APK_SIGNING_KEY" > "$keys/ime-jd.rsa"
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/prebuilt-libs:/libjd:ro" -v "$PWD/release:/dist" \
-            -v "$RUNNER_TEMP/bin/nfpm:/usr/local/bin/nfpm:ro" ${{ matrix.image }} sh -euc '
+            -v "$RUNNER_TEMP/bin/nfpm:/usr/local/bin/nfpm:ro" -v "$keys:/keys:ro" \
+            -e IMEJD_RPM_KEY=/keys/gpg.asc -e IMEJD_APK_KEY=/keys/ime-jd.rsa -e NFPM_RPM_PASSPHRASE \
+            ${{ matrix.image }} sh -euc '
               /src/linux/scripts/install-deps.sh build
               /src/linux/packaging/build.sh /dist /libjd/lib/libjd.a'
+          rm -rf "$keys"
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
+
+  # 键道's package repositories (linux/repo): their index files, listing every
+  # published release's packages, signed, and committed to the `packages`
+  # branch, which starts from the initial commit and so holds no code. The
+  # Worker at ime-jd-repo.hronro.com serves them, and the packages from the
+  # releases themselves. Pre-releases, marked so or tagged with a suffix such
+  # as -rc1, stay out: apt and the rest would offer them to everyone.
+  publish-linux-repos:
+    name: linux repositories
+    runs-on: ubuntu-latest
+    needs: build-linux-ime
+    concurrency:
+      group: packages-branch
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # The initial commit, and the packages branch if there is one.
+          fetch-depth: 0
+
+      - name: Download every release's packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh api "repos/${{ github.repository }}/releases" --paginate --jq '.[]
+              | select((.draft or .prerelease or (.tag_name | contains("-"))) | not)
+              | select(any(.assets[]; .name | test("^jd-ime-v.*-(linux-.*[.](deb|rpm)|alpine-.*[.]apk)$")))
+              | .tag_name' |
+            while IFS= read -r tag; do
+              gh release download "$tag" -R "${{ github.repository }}" -D "$RUNNER_TEMP/assets/$tag" \
+                -p 'jd-ime-v*-linux-*.deb' -p 'jd-ime-v*-linux-*.rpm' -p 'jd-ime-v*-alpine-*.apk'
+            done
+          find "$RUNNER_TEMP/assets" -type f | sort
+
+      - name: Build the index files
+        env:
+          PACKAGES_GPG_KEY: ${{ secrets.PACKAGES_GPG_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.PACKAGES_GPG_PASSPHRASE }}
+          ALPINE_APK_SIGNING_KEY: ${{ secrets.ALPINE_APK_SIGNING_KEY }}
+        run: |
+          set -eu
+          keys=$(mktemp -d)
+          printf '%s\n' "$PACKAGES_GPG_KEY" > "$keys/gpg.asc"
+          printf '%s\n' "$ALPINE_APK_SIGNING_KEY" > "$keys/ime-jd.rsa"
+          # The branch as the last release left it; nothing before the first.
+          mkdir "$RUNNER_TEMP/branch"
+          if git rev-parse --verify -q origin/packages >/dev/null; then
+            git archive origin/packages | tar -x -C "$RUNNER_TEMP/branch"
+          fi
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP:/work" -v "$keys:/keys:ro" \
+            -e GPG_KEY=/keys/gpg.asc -e GPG_PASSPHRASE docker.io/library/debian:13 sh -euc '
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                apt-utils createrepo-c gnupg rpm xz-utils >/dev/null
+              /src/linux/repo/indexes.sh apt /work/assets /work/branch /work/tree
+              /src/linux/repo/indexes.sh rpm /work/assets /work/branch /work/tree'
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP:/work" -v "$keys:/keys:ro" \
+            -e APK_KEY=/keys/ime-jd.rsa docker.io/library/alpine:3.22 sh -euc '
+              apk add --no-cache abuild openssl >/dev/null
+              /src/linux/repo/indexes.sh apk /work/assets /work/branch /work/tree'
+          rm -rf "$keys"
+
+      - name: Commit to the packages branch
+        run: |
+          set -eu
+          # On top of the branch, or, the first time, of the initial commit,
+          # which has no files.
+          parent=$(git rev-parse --verify -q origin/packages || git rev-list --max-parents=0 HEAD | tail -n 1)
+          export GIT_INDEX_FILE="$RUNNER_TEMP/index"
+          git --git-dir="$PWD/.git" --work-tree="$RUNNER_TEMP/tree" -C "$RUNNER_TEMP/tree" add -A .
+          tree=$(git write-tree)
+          if [ "$tree" = "$(git rev-parse "$parent^{tree}")" ]; then
+            echo "The index files have not changed."
+            exit 0
+          fi
+          commit=$(git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit-tree "$tree" -p "$parent" -m "Index files for ${GITHUB_REF_NAME}")
+          git push origin "${commit}:refs/heads/packages"
+
+  # 键道 in the AUR, where Arch users look for it: ime-jd-bin, whose split
+  # packages are this release's own Arch packages under the AUR's names
+  # (linux/repo/aur.sh), pushed with the AUR account's SSH key, a repository
+  # secret. Pre-releases, tagged with a suffix such as -rc1, stay out.
+  publish-aur:
+    name: aur
+    runs-on: ubuntu-latest
+    needs: build-linux-ime
+    if: ${{ !contains(github.ref_name, '-') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download the Arch packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${GITHUB_REF_NAME}" -R "${{ github.repository }}" -D "$RUNNER_TEMP/assets" \
+            -p 'jd-ime-*-linux-*.pkg.tar.zst'
+
+      - name: Write the PKGBUILD
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP:/work" docker.io/library/archlinux:latest \
+            /src/linux/repo/aur.sh "${GITHUB_REF_NAME}" /work/assets /work/aur
+          cat "$RUNNER_TEMP/aur/PKGBUILD"
+
+      - name: Push to the AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -eu
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          # The AUR's own host key, as it publishes it:
+          # SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4.
+          echo 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' \
+            > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND='ssh -i ~/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
+          git clone ssh://aur@aur.archlinux.org/ime-jd-bin.git "$RUNNER_TEMP/aur-git"
+          cp "$RUNNER_TEMP/aur/PKGBUILD" "$RUNNER_TEMP/aur/.SRCINFO" "$RUNNER_TEMP/aur-git/"
+          cd "$RUNNER_TEMP/aur-git"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "The AUR has this release already."
+            exit 0
+          fi
+          git -c user.name=hronro -c user.email=hronro@gmail.com commit -m "Update to ${GITHUB_REF_NAME#v}"
+          git push origin HEAD:master

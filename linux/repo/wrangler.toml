@@ -1,0 +1,10 @@
+# The Worker behind ime-jd-repo.hronro.com (worker.js), on hronro.com's
+# Cloudflare zone. It changes only when worker.js does, so it is deployed by
+# hand, not by a release:
+#
+#   npx wrangler deploy --config linux/repo/wrangler.toml
+name = "ime-jd-repo"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+routes = [{ pattern = "ime-jd-repo.hronro.com", custom_domain = true }]

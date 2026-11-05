@@ -53,8 +53,8 @@ iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法
 
 - **Windows**: 下载 `jd-ime-{版本号}-windows-{架构}.zip`（大多数电脑选 `x86_64`，搭载骁龙等 ARM 处理器的电脑选 `arm64`），然后按照下方的 [Windows 安装步骤](#windows-安装步骤) 完成安装
 - **macOS**: 下载 `jd-ime-{版本号}-macos-{架构}.pkg`（搭载 Apple 芯片的 Mac 选 `arm64`，Intel 芯片的 Mac 选 `x86_64`）
-- **Android**: 下载 `jd-ime-{版本号}-android-{架构}.apk`（绝大多数手机选 `arm64`）
-- **Linux**: 先确认所用的输入法框架：GNOME 默认使用 IBus，KDE 以及 Sway、Hyprland、niri 等窗口管理器通常使用 Fcitx 5。然后按发行版下载对应的软件包，文件名中的 `{框架}` 为 `fcitx5` 或 `ibus`，再下载一个 `{框架}` 为 `userdict` 的同类软件包，它是编辑[用户自造词](#-用户自造词)的窗口：Debian / Ubuntu 下载 `jd-ime-{版本号}-linux-{架构}-{框架}.deb`，Fedora / openSUSE 下载 `.rpm`，Arch Linux 下载 `.pkg.tar.zst`，Alpine Linux 下载 `jd-ime-{版本号}-alpine-{架构}-{框架}.apk`，其它发行版下载通用压缩包 `jd-ime-{版本号}-linux-{架构}.tar.xz`（大多数电脑选 `x86_64`）。然后按照下方的 [Linux 安装步骤](#linux-安装步骤) 完成安装
+- **Linux**: 推荐添加键道的软件源，用发行版的软件包管理器安装，以后的新版本会随系统更新一起装上，详见下方的 [Linux 安装步骤](#linux-安装步骤)
+- **Android**: 下载 `jd-ime-{版本号}-android-{架构}.apk`（绝大多数手机选 `arm64`）。注意不要下载文件名中带 `alpine` 的 `.apk`：它们是 Alpine Linux 的软件包，无法在手机上安装
 - **iOS**: 我们在 GitHub Releases 页面亦分发未签名的 `jd-ime-{版本号}-ios.ipa` 文件，有需求的用户可以使用 Sideload 工具进行自签安装
 
 ### Windows 安装步骤
@@ -69,13 +69,47 @@ Windows 版目前没有安装程序，下载的压缩包需要手动解压，再
 
 ### Linux 安装步骤
 
-在下载目录中用发行版的软件包管理器安装，它会同时装好所需的输入法框架，以及编辑窗口所需的 GTK 4。以 Fcitx 5 版为例（IBus 版把文件名中的 `fcitx5` 换成 `ibus`），连同编辑窗口一起安装：
+先确认所用的输入法框架：GNOME 默认使用 IBus，KDE 以及 Sway、Hyprland、niri 等窗口管理器通常使用 Fcitx 5。
 
-- **Debian / Ubuntu**: `sudo apt install ./jd-ime-{版本号}-linux-{架构}-fcitx5.deb ./jd-ime-{版本号}-linux-{架构}-userdict.deb`
-- **Fedora**: `sudo dnf install ./jd-ime-{版本号}-linux-{架构}-fcitx5.rpm ./jd-ime-{版本号}-linux-{架构}-userdict.rpm`；openSUSE 用 `sudo zypper install --allow-unsigned-rpm`，后面同样跟这两个文件
-- **Arch Linux**: `sudo pacman -U jd-ime-{版本号}-linux-{架构}-fcitx5.pkg.tar.zst jd-ime-{版本号}-linux-{架构}-userdict.pkg.tar.zst`
-- **Alpine Linux**: `sudo apk add --allow-untrusted jd-ime-{版本号}-alpine-{架构}-fcitx5.apk jd-ime-{版本号}-alpine-{架构}-userdict.apk`（软件包没有签名，所以需要 `--allow-untrusted`）
-- **其它发行版**: 先用发行版自己的软件包管理器装好 Fcitx 5 或 IBus，以及 GTK 4，再解压通用压缩包，在解压出的文件夹中运行 `sudo ./install.sh`。它会同时装上 Fcitx 5 版和 IBus 版，两者各自只会被对应的框架加载，互不影响；系统中有 GTK 4 时，还会装上编辑窗口。以后有新版本时，从输入法菜单即可升级，无需重复以上步骤（详见[版本更新](#-版本更新)）。
+推荐添加键道的软件源，再用发行版的软件包管理器安装：它会同时装好所需的输入法框架，以及编辑窗口所需的 GTK 4，以后的新版本也会随系统更新一起装上。以 Fcitx 5 版为例（IBus 版把 `ime-jd-fcitx5` 换成 `ime-jd-ibus`），连同编辑窗口一起安装：
+
+- **Debian / Ubuntu**:
+
+  ```sh
+  wget -qO- https://ime-jd-repo.hronro.com/ime-jd.gpg | sudo tee /usr/share/keyrings/ime-jd.gpg >/dev/null
+  echo 'deb [signed-by=/usr/share/keyrings/ime-jd.gpg] https://ime-jd-repo.hronro.com/apt stable main' | sudo tee /etc/apt/sources.list.d/ime-jd.list
+  sudo apt update
+  sudo apt install ime-jd-fcitx5 ime-jd-userdict
+  ```
+
+- **Fedora**:
+
+  ```sh
+  sudo curl -fsSLo /etc/yum.repos.d/ime-jd.repo https://ime-jd-repo.hronro.com/rpm/ime-jd.repo
+  sudo dnf install ime-jd-fcitx5 ime-jd-userdict
+  ```
+
+- **openSUSE**:
+
+  ```sh
+  sudo zypper addrepo https://ime-jd-repo.hronro.com/rpm/ime-jd.repo
+  sudo zypper install ime-jd-fcitx5 ime-jd-userdict
+  ```
+
+- **Arch Linux**: 从 AUR 安装 `ime-jd-fcitx5-bin` 和 `ime-jd-userdict-bin`，例如 `yay -S ime-jd-fcitx5-bin ime-jd-userdict-bin`。
+- **Alpine Linux**:
+
+  ```sh
+  sudo wget -qO /etc/apk/keys/ime-jd.rsa.pub https://ime-jd-repo.hronro.com/ime-jd.rsa.pub
+  echo https://ime-jd-repo.hronro.com/alpine | sudo tee -a /etc/apk/repositories
+  sudo apk add ime-jd-fcitx5 ime-jd-userdict
+  ```
+
+- **其它发行版**: 从 Releases 页面下载通用压缩包 `jd-ime-{版本号}-linux-{架构}.tar.xz`（大多数电脑选 `x86_64`）。先用发行版自己的软件包管理器装好 Fcitx 5 或 IBus，以及 GTK 4，再解压通用压缩包，在解压出的文件夹中运行 `sudo ./install.sh`。它会同时装上 Fcitx 5 版和 IBus 版，两者各自只会被对应的框架加载，互不影响；系统中有 GTK 4 时，还会装上编辑窗口。以后有新版本时，从输入法菜单即可升级，无需重复以上步骤（详见[版本更新](#-版本更新)）。注意通用压缩包不保证在每个发行版上都能用：它在 Ubuntu 22.04 上构建，需要不低于该版本的 glibc，基于 musl 的发行版无法使用；它把文件装在 `/usr` 下的固定位置，NixOS、GNU Guix 等不使用这种目录结构的发行版上，输入法框架找不到它。
+
+第一次从软件源安装时，dnf 和 zypper 会请你确认软件源的签名密钥，请核对它的指纹是 `47A502736436BD9C4E446949FF73C853F4DC9412`。
+
+也可以不添加软件源，从 Releases 页面下载软件包安装。文件名为 `jd-ime-{版本号}-linux-{架构}-{框架}.{扩展名}`，`{框架}` 为 `fcitx5`、`ibus`，或编辑窗口的 `userdict`，大多数电脑的 `{架构}` 选 `x86_64`：Debian / Ubuntu 下载 `.deb`，Fedora / openSUSE 下载 `.rpm`，Arch Linux 下载 `.pkg.tar.zst`；Alpine Linux 的是 `jd-ime-{版本号}-alpine-{架构}-{框架}.apk`。然后在下载目录中安装，例如 Debian / Ubuntu 上 `sudo apt install ./jd-ime-{版本号}-linux-{架构}-fcitx5.deb ./jd-ime-{版本号}-linux-{架构}-userdict.deb`；Fedora 用 `sudo dnf install`，openSUSE 用 `sudo zypper --no-gpg-checks install`，Arch Linux 用 `sudo pacman -U`，Alpine Linux 用 `sudo apk add --allow-untrusted`，后面跟对应的两个文件。这样装的不会随系统更新，有新版本时需要再下载安装。
 
 编辑窗口也可以不装，那样输入法菜单中的「用户自造词…」会用文本编辑器打开词库文件。
 
@@ -84,7 +118,7 @@ Windows 版目前没有安装程序，下载的压缩包需要手动解压，再
 - **Fcitx 5**: 在「Fcitx 5 配置 → 输入法」中添加「键道」。
 - **GNOME（IBus）**: 在「设置 → 键盘 → 输入源」中点击「添加输入源」，选择「汉语（中国）」中的「键道」。
 
-如需卸载，用软件包管理器卸载 `ime-jd-fcitx5` 或 `ime-jd-ibus`，以及 `ime-jd-userdict` 即可；用通用压缩包安装的，运行 `sudo /usr/lib/ime-jd/uninstall.sh`。注意 `.apk` 结尾、文件名中带 `alpine` 的是 Alpine Linux 的软件包，Android 手机请下载文件名中带 `android` 的那个。
+如需卸载，用软件包管理器卸载 `ime-jd-fcitx5` 或 `ime-jd-ibus`，以及 `ime-jd-userdict` 即可（AUR 的软件包名后面多一个 `-bin`）；用通用压缩包安装的，运行 `sudo /usr/lib/ime-jd/uninstall.sh`。不再需要软件源时，删除 `/etc/apt/sources.list.d/ime-jd.list` 或 `/etc/yum.repos.d/ime-jd.repo`；openSUSE 运行 `sudo zypper removerepo ime-jd`，Alpine 删除 `/etc/apk/repositories` 中的那一行。
 
 ### Releases 页面上的其它文件
 
@@ -103,11 +137,10 @@ Windows 版目前没有安装程序，下载的压缩包需要手动解压，再
 - **macOS**：菜单栏的输入法菜单里有「检查更新…」和「自动检查更新」这两个选项。发现新版本时会弹出系统通知，点击通知（或菜单里的「发现新版本 …，下载并安装…」）会下载对应架构的 `.pkg`、校验 SHA-256 后交给系统安装器，按安装器的提示完成安装即可。
 - **Windows**：发现新版本时，候选窗口下方会显示一行「键道有新版本 vX.Y.Z，点击下载并安装」；点击后会在后台下载对应架构的安装包、校验 SHA-256，再以管理员身份运行其中的 `register.bat` 完成升级（需确认一次 UAC）。要关闭检查，右键单击任务栏上的「中 / 英」图标，取消勾选「自动检查更新」。
 - **Android**：通过应用商店安装的版本由商店负责更新，应用本身不含更新器，也不申请任何权限。从 GitHub Releases 下载的 APK 内置更新器：键盘空闲时，候选栏会提示新版本，点击进入应用即可「下载并安装」——APK 校验后交给系统安装器确认（首次需要在系统设置里允许「键道输入法」安装应用）；应用内也有「检查更新」按钮和「自动检查更新」开关。
+- **Linux（包管理器）**：从键道的软件源或 AUR 安装的版本只随系统更新一起更新（`apt upgrade`、`dnf upgrade`、`zypper update`、`apk upgrade`，或 AUR 助手）。它不含更新器，自己从不检查更新，菜单里也没有更新相关的选项。直接用 Releases 页面的软件包文件安装的同样如此，有新版本时下载新的软件包，用同样的命令安装即可覆盖旧版本。
 - **Linux（通用压缩包）**：输入法菜单（Fcitx 5 的托盘菜单，或 GNOME 的输入源菜单）里有「检查更新…」和「自动检查更新」这两个选项。发现新版本时会弹出桌面通知，选择菜单里的「发现新版本 …，下载并安装…」会下载对应架构的压缩包、校验 SHA-256，再以管理员身份运行其中的 `install.sh`（系统会要求输入一次密码）。装好后重启输入法框架（Fcitx 5：`fcitx5 -r`；IBus：`ibus restart`），或注销后重新登录即可生效。如果系统没有弹出密码框（例如没有安装 pkexec——openSUSE 和 Debian 默认不装，可以用软件包管理器装上 `pkexec`；或者窗口管理器没有自带身份验证程序），通知里会给出在终端中运行的 `sudo` 命令。
 
 只有当发布版本的版本号高于当前版本时才会提示。
-
-用软件包安装的 Linux 版由发行版的软件包管理器负责更新，输入法本身不会检查更新：有新版本时，下载新的软件包，用同样的命令安装即可覆盖旧版本。
 
 ## 📝 用户自造词
 
