@@ -41,12 +41,19 @@ Layout=
 0=Default
 EOF
 # No display here, and nothing that would stand in for IBus. The session's
-# shell takes this directory as $1.
+# shell takes this directory as $1. fcitx5 saves its configuration on its way
+# out, so it is stopped and waited for, before the next framework's fresh
+# start removes that directory.
 # shellcheck disable=SC2016
 dbus-run-session -- sh -c '
-    fcitx5 -d --disable=wayland,waylandim,xcb,xim,classicui,kimpanel,notificationitem,ibusfrontend,fcitx4frontend \
-        >/tmp/fcitx5.log 2>&1
-    exec python3 "$1/fcitx5_test.py"' sh "$here" || { status=1; tail -20 /tmp/fcitx5.log; }
+    fcitx5 --disable=wayland,waylandim,xcb,xim,classicui,kimpanel,notificationitem,ibusfrontend,fcitx4frontend \
+        >/tmp/fcitx5.log 2>&1 &
+    fcitx5=$!
+    python3 "$1/fcitx5_test.py"
+    tested=$?
+    kill "$fcitx5" 2>/dev/null
+    wait "$fcitx5"
+    exit "$tested"' sh "$here" || { status=1; tail -20 /tmp/fcitx5.log; }
 
 echo "== IBus"
 fresh
