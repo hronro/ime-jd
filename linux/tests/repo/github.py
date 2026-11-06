@@ -6,7 +6,10 @@ the `packages` branch's raw files.
 Usage: github.py <port> <assets> <branch>
 
 <assets> holds each release's files as <tag>/<asset>, and <branch> the
-branch's tree."""
+branch's tree. While <assets>/.refuse-worker exists, it answers the Worker's
+requests, which worker.mjs marks, as GitHub answers Cloudflare's addresses
+over its limit: 429, try again in five minutes. Clients it sent here are
+served as usual."""
 
 import http.server
 import os
@@ -17,6 +20,7 @@ port, assets, branch = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 RELEASES = '/hronro/ime-jd/releases/download/'
 RAW = '/raw/hronro/ime-jd/packages/'
 STORAGE = '/storage/'
+REFUSAL = b'<!DOCTYPE html><title>Rate limit &middot; GitHub</title><h1>Access has been restricted</h1>'
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -28,7 +32,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _answer(self, body):
         path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
-        if path.startswith(RELEASES):
+        if self.headers.get('X-Imejd-Worker') and os.path.exists(os.path.join(assets, '.refuse-worker')):
+            self.send_response(429)
+            self.send_header('Retry-After', '300')
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(REFUSAL)))
+            self.end_headers()
+            if body:
+                self.wfile.write(REFUSAL)
+        elif path.startswith(RELEASES):
             self.send_response(302)
             self.send_header('Location', STORAGE + path[len(RELEASES):])
             self.send_header('Content-Length', '0')
@@ -60,7 +72,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format, *args):
-        sys.stderr.write('github: ' + format % args + '\n')
+        by = 'worker' if self.headers.get('X-Imejd-Worker') else 'client'
+        sys.stderr.write(f'github: {by}: ' + format % args + '\n')
 
 
 http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
