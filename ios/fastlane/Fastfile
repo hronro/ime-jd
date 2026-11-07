@@ -9,26 +9,21 @@
 # uses your own automatic/personal-team signing.
 
 require "base64"
-require "fileutils"
 require "tmpdir"
 
 default_platform(:ios)
 
 # Decode a base64 .mobileprovision, install it where xcodebuild looks for it, and
 # return its Name (referenced by signing/export) and UUID (the on-disk filename).
+# fastlane picks the folder: Xcode 16 moved it to ~/Library/Developer/Xcode/
+# UserData/Provisioning Profiles and no longer reads ~/Library/MobileDevice.
 def install_base64_profile(b64, label)
-  data = Base64.decode64(b64)
   src = File.join(Dir.tmpdir, "#{label}.mobileprovision")
-  File.binwrite(src, data)
-  plist = `security cms -D -i "#{src}"`
-  name = plist[%r{<key>Name</key>\s*<string>([^<]+)</string>}, 1]
-  uuid = plist[%r{<key>UUID</key>\s*<string>([^<]+)</string>}, 1]
-  UI.user_error!("Could not read Name/UUID from the #{label} provisioning profile") unless name && uuid
-  dest_dir = File.expand_path("~/Library/MobileDevice/Provisioning Profiles")
-  FileUtils.mkdir_p(dest_dir)
-  FileUtils.cp(src, File.join(dest_dir, "#{uuid}.mobileprovision"))
-  UI.message("Installed provisioning profile '#{name}' (#{uuid}) for the #{label}")
-  { name: name, uuid: uuid }
+  File.binwrite(src, Base64.decode64(b64))
+  profile = FastlaneCore::ProvisioningProfile.parse(src)
+  dest = FastlaneCore::ProvisioningProfile.install(src)
+  UI.message("Installed provisioning profile '#{profile['Name']}' for the #{label} at #{dest}")
+  { name: profile["Name"], uuid: profile["UUID"] }
 end
 
 platform :ios do
