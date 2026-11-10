@@ -2,7 +2,8 @@ import Cocoa
 import InputMethodKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var server: IMKServer?
+    /// `private(set)` rather than private so the tests can reach the server.
+    private(set) var server: IMKServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // The fallback mirrors Info.plist's InputMethodConnectionName, which
@@ -11,6 +12,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Bundle.main.object(forInfoDictionaryKey: "InputMethodConnectionName") as? String
             ?? "com.hronro.ime-jd_Connection"
         server = IMKServer(name: connectionName, bundleIdentifier: Bundle.main.bundleIdentifier)
+
+        // The one candidate panel, created before any client connects and
+        // kept for the life of the process — never one per input controller
+        // (see Candidates).
+        if let server = server {
+            Candidates.install(server: server)
+        }
 
         // Update notifications must find their delegate before one can be
         // clicked; the daily check itself also runs on every activation

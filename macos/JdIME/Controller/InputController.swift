@@ -13,7 +13,10 @@ final class InputController: IMKInputController {
     private var engine = Engine(userDict: UserDictStore.shared.activeDictionary)
     private var engineGeneration = UserDictStore.shared.generation
     private let composition = Composition()
-    private var candidatePanel: Candidates?
+    /// The process-wide panel. Never one per controller: IMKServer keeps an
+    /// unretained pointer to the newest panel, so a panel that dies with its
+    /// controller crashes the IME — see `Candidates`.
+    private var candidatePanel: Candidates? { Candidates.shared }
 
     /// The candidates currently on screen.
     private var visible: [Candidate] = []
@@ -21,11 +24,9 @@ final class InputController: IMKInputController {
     /// `pageSize`.
     private var pageStart: UInt32 = 0
 
-    override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
-        super.init(server: server, delegate: delegate, client: inputClient)
-        if let server = server {
-            self.candidatePanel = Candidates(server: server)
-        }
+    deinit {
+        // A panel this controller left up would otherwise outlive it.
+        candidatePanel?.hide(for: self)
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
@@ -204,23 +205,23 @@ final class InputController: IMKInputController {
         guard total > 0 else {
             visible = []
             pageStart = 0
-            candidatePanel?.hide()
+            candidatePanel?.hide(for: self)
             return
         }
         if pageStart >= total { pageStart = 0 }
         engine.setAnchor(pageStart)
         visible = engine.readRange(from: pageStart, count: Int(Self.pageSize))
         if visible.isEmpty {
-            candidatePanel?.hide()
+            candidatePanel?.hide(for: self)
         } else {
-            candidatePanel?.show()
+            candidatePanel?.show(for: self)
         }
     }
 
     /// Drop the engine's composition and tear down the candidate window.
     private func endComposition() {
         engine.reset()
-        candidatePanel?.hide()
+        candidatePanel?.hide(for: self)
         visible = []
         pageStart = 0
     }

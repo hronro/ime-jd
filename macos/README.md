@@ -91,4 +91,4 @@ xcodebuild \
     test
 ```
 
-Tests cover the engine's FFI smoke contract and the user-dictionary wrapper (both mirroring `bindings/rust/tests/engine.rs`), every branch of the `NSEvent → KeyAction` gate, the update feed model, and the user-dictionary file and store. The engine wrapper under test (`Engine` / `Candidate` / `UserDict` / `KeyAction`) is shared source at `bindings/swift/`, compiled into both this project and `ios/`.
+Tests cover the engine's FFI smoke contract and the user-dictionary wrapper (both mirroring `bindings/rust/tests/engine.rs`), every branch of the `NSEvent → KeyAction` gate, the update feed model, the user-dictionary file and store, and the candidate panel's lifetime (`IMKServer` keeps an unretained pointer to the newest `IMKCandidates`, so the IME must own exactly one, for the whole process). The engine wrapper under test (`Engine` / `Candidate` / `UserDict` / `KeyAction`) is shared source at `bindings/swift/`, compiled into both this project and `ios/`.

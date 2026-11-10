@@ -24,8 +24,39 @@ enum CandidateFormatter {
     }
 }
 
+/// The process's one candidate panel, shared by every InputController.
+///
+/// There must be exactly one IMKCandidates per IMKServer, alive as long as the
+/// server. `-[IMKCandidates initWithServer:panelType:]` hands the new panel to
+/// the server (`-[_IMKServerLegacy _setIMKCandidates:]`), which stores it in
+/// an *unretained* ivar, never clears it, and messages it on every activation,
+/// deactivation and key event (`_windowIsOpen` → `isVisible`,
+/// `_serverGetsFirstShotAtWindowEvents` → `attributes`). Up to 0.10.1 each
+/// InputController built a panel of its own, so as soon as the newest
+/// client's controller went away (an app quit, a window closed) the server
+/// pointed at a freed panel and the next activate / deactivate / key crashed
+/// the IME in objc_msgSend. A string of those crashes makes macOS give up on
+/// the IME in every process running at the time ("died too many times
+/// recently"): those apps get raw keystrokes until they are relaunched.
 final class Candidates {
-    private let panel: IMKCandidates
+    /// Created once, right after the IMKServer (AppDelegate), and never
+    /// released. Nil only if the server could not be created.
+    private(set) static var shared: Candidates?
+
+    static func install(server: IMKServer) {
+        guard shared == nil else { return }
+        shared = Candidates(server: server)
+    }
+
+    /// Internal (not private) so the tests can compare it with the server's
+    /// own pointer.
+    let panel: IMKCandidates
+
+    /// The controller whose candidates are on screen. The panel is shared, so
+    /// a controller that is not (or no longer) the owner must not hide it —
+    /// e.g. a background client's late deactivateServer arriving after the
+    /// user has started composing in another app.
+    private weak var owner: AnyObject?
 
     // The panel is fed exactly one display page (≤ InputController.pageSize
     // candidates, see InputController.candidates(_:)), but it re-paginates
@@ -59,7 +90,7 @@ final class Candidates {
         return true
     }()
 
-    init(server: IMKServer) {
+    private init(server: IMKServer) {
         NSLog("JdIME: candidate line-width cap relaxed = %d", Self.lineWidthCapRelaxed ? 1 : 0)
 
         // Single-row horizontal stepping panel: native look, paging arrows on
@@ -75,9 +106,11 @@ final class Candidates {
         ])
     }
 
-    /// Show (or refresh) the panel. The caller has already loaded the visible
-    /// candidates onto the controller, which `candidates(_:)` reads back.
-    func show() {
+    /// Show (or refresh) the panel for `owner`, the controller handling the
+    /// current key. It has already loaded the visible candidates, which IMK
+    /// reads back through its `candidates(_:)`.
+    func show(for owner: AnyObject) {
+        self.owner = owner
         panel.update()
         if !panel.isVisible() {
             panel.show(kIMKLocateCandidatesBelowHint)
@@ -92,7 +125,12 @@ final class Candidates {
         }
     }
 
-    func hide() {
+    /// Hide the panel if `owner` is the controller that showed it, or if that
+    /// controller is gone (a weak reference reads nil once its deinit starts,
+    /// which is how InputController.deinit clears a panel it left up).
+    func hide(for owner: AnyObject) {
+        if let current = self.owner, current !== owner { return }
+        self.owner = nil
         if panel.isVisible() {
             panel.hide()
         }
