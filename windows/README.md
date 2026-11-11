@@ -118,7 +118,7 @@ Implementation: `userdict/` (package `jd-userdict`). Its library is shared with 
 
 In 英, and in a field where the application has switched input methods off — a password box, the user-dictionary window's 编码 field — keys reach the application as typed.
 
-A composition belongs to the field it was started in. When the focus moves to another field or window of the application — a click, Tab — the letters typed so far go into the text as they are, as with Enter, and the next key starts afresh where the focus is. When another application comes to the front, the candidates leave the screen, and they are back when this one is, if it kept the composition open. Implementation: the `ITfThreadMgrEventSink` and `ITfThreadFocusSink` halves of `src/tip.rs`.
+A composition belongs to the field it was started in. When the focus moves to another field or window of the application — a click, Tab — the letters typed so far go into the text as they are, as with Enter, and the next key starts afresh where the focus is. So they do when the application ends the composition itself — at a click elsewhere in the same text, in most — and when the user switches to another input method: either way they are left as plain text, without the dotted underline of a code in flight. When another application comes to the front, the candidates leave the screen, and they are back when this one is, if it kept the composition open. Implementation: the `ITfThreadMgrEventSink`, `ITfThreadFocusSink` and `ITfCompositionSink` halves of `src/tip.rs`.
 
 ## Project layout
 

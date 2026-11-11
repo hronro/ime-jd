@@ -80,7 +80,7 @@ impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
         drop(state);
         input_mode::cancel();
         *self.state.borrow_mut() = TipState::default();
-        composition::on_externally_terminated();
+        composition::forget();
         ui_element::destroy();
         candidate_window::destroy();
         jd::deactivate();
@@ -487,15 +487,20 @@ impl ITfThreadFocusSink_Impl for TextInputProcessor_Impl {
 }
 
 impl ITfCompositionSink_Impl for TextInputProcessor_Impl {
+    /// Someone else ended the composition: the application — its text was
+    /// clicked into, replaced, saved — or TSF, when the user switched to
+    /// another input method. The letters typed so far stay in the text;
+    /// `ecwrite` is this sink's one chance to stop them looking in flight.
     fn OnCompositionTerminated(
         &self,
-        _ecwrite: u32,
-        _pcomposition: Ref<'_, ITfComposition>,
+        ecwrite: u32,
+        pcomposition: Ref<'_, ITfComposition>,
     ) -> Result<()> {
-        composition::on_externally_terminated();
-        jd::reset();
-        candidate_window::hide();
-        ui_element::end();
+        if composition::on_externally_terminated(ecwrite, pcomposition.as_ref()) {
+            jd::reset();
+            candidate_window::hide();
+            ui_element::end();
+        }
         Ok(())
     }
 }

@@ -254,9 +254,49 @@ pub fn cancel(ctx: &ITfContext, tid: u32) -> Result<()> {
 }
 
 /// Called by ITfCompositionSink::OnCompositionTerminated when something
-/// external (focus loss, app rejection, etc.) ended our composition. Just
-/// drop our handles; the composition is already gone in TSF's eyes.
-pub fn on_externally_terminated() {
+/// external (focus loss, app rejection, etc.) ended `comp`. The composition
+/// is already gone in TSF's eyes and its text stays in the document; `ec`
+/// is the write access TSF lends the sink to finish with that text, and
+/// what is left on it is the display attribute — taken off here, as every
+/// end of our own takes it off, or the letters stay underlined as in flight
+/// for as long as they are there.
+///
+/// Returns whether that was the end of what this thread was composing, and
+/// drops our handles if so. It was not if `comp` is one `commit_as_typed`
+/// let go of and another has been started since.
+pub fn on_externally_terminated(ec: u32, comp: Option<&ITfComposition>) -> bool {
+    if let Some(comp) = comp
+        // SAFETY: plain calls on the composition TSF handed over.
+        && let Ok(range) = unsafe { comp.GetRange() }
+        && let Ok(ctx) = unsafe { range.GetContext() }
+    {
+        let _ = display_attribute::clear(&ctx, ec, &range);
+    }
+    let in_flight = STATE.with(|s| {
+        // Called from TSF's sink: never while an edit of ours holds the
+        // state.
+        let Ok(mut state) = s.try_borrow_mut() else {
+            return false;
+        };
+        if let (Some(own), Some(comp)) = (state.composition.as_ref(), comp)
+            && own != comp
+        {
+            return false;
+        }
+        state.composition = None;
+        state.buffer.clear();
+        true
+    });
+    if in_flight {
+        LAST_SCREEN_RECT.with(|c| c.set(None));
+    }
+    in_flight
+}
+
+/// Drop this thread's handles on a composition without a word to the
+/// document: for `Deactivate`, which has no access to it. TSF ends what is
+/// still open there and says so through `on_externally_terminated`.
+pub fn forget() {
     STATE.with(|s| {
         let mut state = s.borrow_mut();
         state.composition = None;
@@ -374,4 +414,70 @@ fn update_composition(ctx: &ITfContext, comp: &ITfComposition, ec: u32, text: &s
     unsafe { ctx.SetSelection(ec, &sel) }?;
     unsafe { ManuallyDrop::drop(&mut sel[0].range) };
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Foundation::E_NOTIMPL;
+    use windows::Win32::UI::TextServices::{ITfComposition_Impl, ITfRange};
+    use windows::core::{Ref, implement};
+
+    /// A composition as far as telling one from another goes: it is in no
+    /// document, so there is no text to reach through it.
+    #[implement(ITfComposition)]
+    struct Stub;
+
+    impl ITfComposition_Impl for Stub_Impl {
+        fn GetRange(&self) -> Result<ITfRange> {
+            Err(E_NOTIMPL.into())
+        }
+
+        fn ShiftStart(&self, _ecwrite: u32, _pnewstart: Ref<'_, ITfRange>) -> Result<()> {
+            Err(E_NOTIMPL.into())
+        }
+
+        fn ShiftEnd(&self, _ecwrite: u32, _pnewend: Ref<'_, ITfRange>) -> Result<()> {
+            Err(E_NOTIMPL.into())
+        }
+
+        fn EndComposition(&self, _ecwrite: u32) -> Result<()> {
+            Err(E_NOTIMPL.into())
+        }
+    }
+
+    fn stub() -> ITfComposition {
+        Stub.into_object().into_interface()
+    }
+
+    /// This thread composing `buffer` in `comp`.
+    fn compose(comp: &ITfComposition, buffer: &str) {
+        STATE.with(|s| {
+            let mut state = s.borrow_mut();
+            state.composition = Some(comp.clone());
+            state.buffer = buffer.to_owned();
+        });
+    }
+
+    #[test]
+    fn only_the_composition_in_flight_ends_with_its_termination() {
+        let (ours, another) = (stub(), stub());
+        compose(&ours, "nk");
+        // One let go of earlier, ended at last: nothing of what is being
+        // typed now goes with it.
+        assert!(!on_externally_terminated(0, Some(&another)));
+        assert!(is_active());
+        STATE.with(|s| assert_eq!(s.borrow().buffer, "nk"));
+
+        // The one in flight.
+        assert!(on_externally_terminated(0, Some(&ours)));
+        assert!(!is_active());
+        STATE.with(|s| assert!(s.borrow().buffer.is_empty()));
+
+        // With none in flight — after `Deactivate`, which TSF follows with
+        // this call — there is nothing to keep.
+        assert!(on_externally_terminated(0, Some(&another)));
+        assert!(on_externally_terminated(0, None));
+        assert!(!is_active());
+    }
 }
