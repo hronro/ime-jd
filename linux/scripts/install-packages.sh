@@ -74,7 +74,10 @@ opensuse-*)
         "$dir"/*-fcitx5.rpm "$dir"/*-ibus.rpm "$dir"/*-userdict.rpm
     ;;
 arch)
-    pacman -Sy --noconfirm
+    # The whole system brought up to date first: Arch supports no partial
+    # upgrades, and dependencies from a newer database than an image's
+    # packages can conflict with them.
+    pacman -Syu --noconfirm
     pacman -U --noconfirm "$dir"/*-fcitx5.pkg.tar.zst "$dir"/*-ibus.pkg.tar.zst "$dir"/*-userdict.pkg.tar.zst
     ;;
 alpine)
