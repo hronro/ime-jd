@@ -32,6 +32,11 @@
 //! behalf nor write the registry state, and it can be switched off — 自动检查
 //! 更新 in the menu of the IME's mode icon, the `CheckForUpdates` value under
 //! `HKCU\Software\hronro\ime-jd` (jd_userdict::switch).
+//!
+//! On the secure desktop — the sign-in screen, a UAC prompt — none of this
+//! exists: no check, no notice, nothing to click. Whoever types there has
+//! not signed in, and the host runs as SYSTEM, so a download, an installer or
+//! a browser started from it would hand them the machine (`SECURE`).
 
 mod feed;
 
@@ -89,6 +94,11 @@ impl Notice {
 /// window's per-show read is a mutex lock rather than registry I/O.
 static NOTICE: Mutex<Option<Notice>> = Mutex::new(None);
 static CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// Whether this process is one of the secure desktop's: the IME has been
+/// activated in secure mode here (`on_activate`). Set once and for the life
+/// of the process — it does not move to a user's desktop — and while it is
+/// set there is no check, no notice, and nothing is started.
+static SECURE: AtomicBool = AtomicBool::new(false);
 
 // HKCU state, shared by every host process. The key is created on first
 // write; reads of a missing value fall back to defaults. The user's opt-out
@@ -103,8 +113,15 @@ const REG_SEEN: PCWSTR = w!("SeenVersion");
 
 /// Called from `ITfTextInputProcessorEx::ActivateEx`, i.e. whenever the user
 /// switches to 键道 in some application. Refreshes the cached notice from the
-/// registry and, if a check is due, runs one in the background.
-pub fn on_activate() {
+/// registry and, if a check is due, runs one in the background. `secure`
+/// says that this is the secure desktop (tip.rs), where it does neither.
+pub fn on_activate(secure: bool) {
+    if secure {
+        SECURE.store(true, Ordering::SeqCst);
+    }
+    if SECURE.load(Ordering::SeqCst) {
+        return;
+    }
     refresh_notice();
 
     if !jd_userdict::switch::checks_for_updates() || host::is_app_container() {
@@ -142,8 +159,12 @@ pub fn on_activate() {
     }
 }
 
-/// The notice to draw, if any. Cheap; read on every candidate-window show.
+/// The notice to draw, if any — never on the secure desktop. Cheap; read on
+/// every candidate-window show.
 pub fn pending_notice() -> Option<Notice> {
+    if SECURE.load(Ordering::SeqCst) {
+        return None;
+    }
     NOTICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
@@ -151,8 +172,12 @@ pub fn pending_notice() -> Option<Notice> {
 /// every other host) and download + verify + install the new version off the
 /// UI thread. Falls back to opening the release page on any failure, or from
 /// an AppContainer host, which can neither reach the network on our behalf
-/// nor elevate.
+/// nor elevate. On the secure desktop there is no notice to click, and a
+/// click does nothing.
 pub fn open_notice(notice: &Notice) {
+    if SECURE.load(Ordering::SeqCst) {
+        return;
+    }
     write_sz(REG_SEEN, &notice.tag);
     *NOTICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if host::is_app_container() {
@@ -652,5 +677,30 @@ fn write_sz(name: PCWSTR, value: &str) {
             let _ = RegSetValueExW(hkey, name, None, REG_SZ, Some(&bytes));
             let _ = RegCloseKey(hkey);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nothing_is_offered_on_the_secure_desktop() {
+        // A newer release on record, as after a check that found one.
+        let notice = Notice {
+            tag: "v9.9.9".into(),
+            url: feed::release_page_url("v9.9.9"),
+        };
+        *NOTICE.lock().unwrap() = Some(notice.clone());
+        assert_eq!(pending_notice(), Some(notice));
+
+        // Activated in secure mode: no registry, no check — and no notice,
+        // for as long as the process lives.
+        on_activate(true);
+        assert_eq!(pending_notice(), None);
+        assert!(
+            NOTICE.lock().unwrap().is_some(),
+            "hidden, not looked up again"
+        );
     }
 }

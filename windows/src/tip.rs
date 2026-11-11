@@ -18,7 +18,7 @@ use crate::candidate_window::{self, CandidateItem};
 use crate::display_attribute::{DisplayAttributeEnum, DisplayAttributeInfo};
 use crate::guids::GUID_JD_DISPLAY_ATTRIBUTE;
 use crate::input_mode::{self, VK_SHIFT};
-use crate::{composition, jd, mode_icon, ui_element};
+use crate::{composition, host, jd, mode_icon, ui_element};
 
 #[implement(
     ITfTextInputProcessorEx,
@@ -75,9 +75,14 @@ impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
 impl ITfTextInputProcessorEx_Impl for TextInputProcessor_Impl {
     fn ActivateEx(&self, ptim: Ref<'_, ITfThreadMgr>, tid: u32, dwflags: u32) -> Result<()> {
         jd::activate();
+        // The secure desktop — the sign-in screen, a UAC prompt — where the
+        // IME may start nothing: no update, no settings. TSF says when it
+        // is; a host running as SYSTEM, as the programs there do, is taken
+        // for it too.
+        let secure = dwflags & TF_TMAE_SECUREMODE != 0 || host::is_system();
         // Daily release-feed check (a registry read when nothing is due) and
         // the cached "new version" notice the candidate window shows.
-        crate::update::on_activate();
+        crate::update::on_activate(secure);
 
         let thread_mgr: ITfThreadMgr = ptim
             .cloned()
@@ -103,7 +108,7 @@ impl ITfTextInputProcessorEx_Impl for TextInputProcessor_Impl {
         input_mode::sync(&thread_mgr);
 
         // The taskbar's mode icon and its menu.
-        mode_icon::add(&thread_mgr, tid, dwflags & TF_TMAE_SECUREMODE != 0);
+        mode_icon::add(&thread_mgr, tid, secure);
         Ok(())
     }
 }
