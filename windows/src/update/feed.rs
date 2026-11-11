@@ -155,8 +155,8 @@ pub fn installer_arch(machine: u16) -> Option<&'static str> {
 
 /// The IME release zip for one arch, `jd-ime-<tag>-windows-<arch>.zip`,
 /// exactly as release.yml names it (its `build-windows-ime` job). The zip
-/// holds the DLLs and the user-dictionary window, plus `register.bat` /
-/// `unregister.bat`.
+/// holds the DLLs and the user-dictionary window, plus `register.bat`,
+/// `unregister.bat` and `update.bat`.
 pub fn installer_name(tag: &str, arch: &str) -> String {
     format!("jd-ime-{tag}-windows-{arch}.zip")
 }

@@ -319,7 +319,7 @@ jobs:
 
   # One IME build per Windows Rust target. Shipped as a .zip containing the
   # IME DLL, the 32-bit one for 32-bit applications, the user-dictionary
-  # window, and the register/unregister .bat helpers.
+  # window, and the register/unregister/update .bat helpers.
   build-windows-ime:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -378,6 +378,7 @@ jobs:
           cp windows/target/${{ matrix.target }}/release/ime_jd_userdict.exe "$out/"
           cp windows/register.bat   "$out/"
           cp windows/unregister.bat "$out/"
+          cp windows/update.bat     "$out/"
 
       - name: Package release archive
         shell: pwsh

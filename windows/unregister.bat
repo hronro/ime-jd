@@ -38,6 +38,9 @@ del /Q "%INSTALL_DIR%\%DLL_NAME%" >nul 2>&1
 del /Q "%INSTALL_DIR%\%DLL32_NAME%" >nul 2>&1
 del /Q "%INSTALL_DIR%\%EXE_NAME%" >nul 2>&1
 del /Q "%INSTALL_DIR%\*.old-*" >nul 2>&1
+REM The update's script, and what an update cut short may have left.
+del /Q "%INSTALL_DIR%\update.bat" >nul 2>&1
+for /d %%D in ("%INSTALL_DIR%\update-*") do rmdir /s /q "%%D" >nul 2>&1
 
 REM Remove the directory if it's empty.
 rmdir "%INSTALL_DIR%" >nul 2>&1

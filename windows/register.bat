@@ -116,6 +116,11 @@ if exist "%SOURCE_DIR%%EXE_NAME%" (
     echo 未找到 %EXE_NAME%，跳过用户自造词窗口。
 )
 
+REM What the IME's own update runs elevated, on the release it downloaded
+REM (update.bat, beside this script): installed with the rest, so that the
+REM copy it runs is one only an administrator can change.
+if exist "%SCRIPT_DIR%update.bat" copy /Y "%SCRIPT_DIR%update.bat" "%INSTALL_DIR%\" >nul
+
 REM AppContainer ACL so UWP/Store apps can load the DLL. Without this the
 REM IME shows up as "(desktop only)" in Settings and can't be selected.
 icacls "%INSTALL_DIR%" /grant "*S-1-15-2-1:(OI)(CI)(RX)" /T >nul

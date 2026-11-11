@@ -12,14 +12,23 @@
 //!      candidates (candidate_window.rs).
 //!   3. Clicking the notice retires it for that version and, on a background
 //!      thread, downloads the release zip — verified against the feed's
-//!      SHA-256 — extracts it, and runs the bundled `register.bat` elevated
-//!      (one UAC prompt). `register.bat` does the in-place swap of a DLL that
-//!      every host process has mapped (rename-while-loaded), exactly as a
-//!      manual upgrade does. Anything that fails falls back to opening the
-//!      release page so the user can upgrade by hand. Applications already
-//!      running keep the old DLL until they are next launched — Windows does
-//!      not reload a DLL a process has already mapped — so the install fully
+//!      SHA-256 — and runs the installed `update.bat` elevated (one UAC
+//!      prompt), which unpacks the zip and runs its `register.bat`.
+//!      `register.bat` does the in-place swap of a DLL that every host
+//!      process has mapped (rename-while-loaded), exactly as a manual
+//!      upgrade does. Anything that fails falls back to opening the release
+//!      page so the user can upgrade by hand. Applications already running
+//!      keep the old DLL until they are next launched — Windows does not
+//!      reload a DLL a process has already mapped — so the install fully
 //!      applies to apps started afterwards (or after sign-out).
+//!
+//! Nothing that runs elevated comes from a place the user's own programs can
+//! write. The download lies in the user's temporary folder, where any of
+//! them could put another file in its place while the UAC prompt is up; so
+//! the only thing started elevated is `update.bat` beside this DLL, under
+//! Program Files, and it is told the SHA-256 of what was downloaded. It
+//! reads the zip once, and unpacks it — into a folder of its own, there —
+//! only if what it read has that SHA-256 (windows/update.bat).
 //!
 //! This mirrors the other frontends' installing half (macOS hands the `.pkg`
 //! to Installer.app, Android hands the `.apk` to the PackageInstaller): each
@@ -41,9 +50,7 @@
 mod feed;
 
 use std::ffi::c_void;
-use std::os::windows::process::CommandExt;
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -61,9 +68,11 @@ use windows::Win32::Security::Cryptography::{
     BCryptFinishHash, BCryptHashData, BCryptOpenAlgorithmProvider,
 };
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_QWORD, REG_SZ,
-    RRF_RT_REG_QWORD, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegGetValueW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_64KEY,
+    REG_OPTION_NON_VOLATILE, REG_QWORD, REG_SZ, RRF_RT_REG_QWORD, RRF_RT_REG_SZ, RegCloseKey,
+    RegCreateKeyExW, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
 };
+use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{PCWSTR, w};
@@ -362,8 +371,11 @@ fn install_update(page: &str) {
 }
 
 /// Re-fetch the feed, download the release zip for this machine, verify it,
-/// and run the bundled `register.bat` elevated. `None` at the first failure.
+/// and have the installed `update.bat` install it, elevated. `None` at the
+/// first failure.
 fn try_install() -> Option<()> {
+    // Nothing is downloaded that could not be installed.
+    let script = installed_updater()?;
     let json = fetch_feed()?;
     let tag = feed::extract_tag(&json)?;
     let current = Version::parse(CURRENT_VERSION)?;
@@ -377,26 +389,112 @@ fn try_install() -> Option<()> {
     if asset.size != 0 && bytes.len() as u64 != asset.size {
         return None;
     }
+    let sha256 = sha256_hex(&bytes)?;
     if let Some(expected) = &asset.sha256
-        && sha256_hex(&bytes)?.as_str() != expected.as_str()
+        && sha256 != *expected
     {
         return None;
     }
 
-    // Stage the zip in its own temp dir and extract it there; register.bat
-    // installs the DLL sitting next to it (its "distribution" layout).
-    let dir = std::env::temp_dir().join("ime-jd-update").join(&tag);
+    // The zip waits in the user's temporary folder, under a name of our own
+    // choosing: nothing the feed says goes into a path or a command line.
+    // What `update.bat` unpacks is what has this SHA-256, whatever lies
+    // here by the time it looks.
+    let dir = std::env::temp_dir().join("ime-jd-update");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).ok()?;
-    let zip = dir.join(&asset.name);
+    let zip = dir.join("update.zip");
     std::fs::write(&zip, &bytes).ok()?;
-    if !extract_zip(&zip, &dir) {
+    let started = updater_parameters(&script, &zip, &sha256)
+        .is_some_and(|parameters| run_elevated(&parameters, script.parent()));
+    if !started {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    started.then_some(())
+}
+
+/// The script that installs a downloaded release, installed beside this DLL
+/// (windows/update.bat).
+const UPDATER: &str = "update.bat";
+
+/// `update.bat` beside this DLL — if this DLL is where register.bat puts
+/// the two: in a folder under Program Files, which only an administrator
+/// can write. Anywhere else the script could be anyone's by now, and it is
+/// not run elevated.
+fn installed_updater() -> Option<PathBuf> {
+    let script = crate::beside_dll(UPDATER)?;
+    is_within(script.parent()?, &program_files()?).then_some(script)
+}
+
+/// The folder 64-bit programs are installed in, as the machine's registry
+/// has it: not the environment's word for it, which a user's own variables
+/// can change, and not this process's, a 32-bit application's Program Files
+/// being another folder.
+fn program_files() -> Option<PathBuf> {
+    let mut key = HKEY::default();
+    // SAFETY: plain registry calls; the key is closed, and the buffer's
+    // size is passed along with it.
+    unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            w!(r"SOFTWARE\Microsoft\Windows\CurrentVersion"),
+            None,
+            KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+            &mut key,
+        )
+        .ok()
+        .ok()?;
+        let mut buf = [0u16; 512];
+        let mut size = size_of_val(&buf) as u32;
+        let read = RegGetValueW(
+            key,
+            PCWSTR::null(),
+            w!("ProgramFilesDir"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut c_void),
+            Some(&mut size),
+        );
+        let _ = RegCloseKey(key);
+        read.ok().ok()?;
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        (end > 0).then(|| PathBuf::from(String::from_utf16_lossy(&buf[..end])))
+    }
+}
+
+/// Whether `path` is `folder` or lies in it, letter case aside.
+fn is_within(path: &Path, folder: &Path) -> bool {
+    let mut path = path.components();
+    folder.components().all(|part| {
+        path.next().is_some_and(|own| {
+            own.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&part.as_os_str().to_string_lossy())
+        })
+    })
+}
+
+/// What cmd is started with to run `script` on the downloaded `zip`:
+/// `/d /s /c ""<script>" "<zip>" <sha256>"` — `/d`, so that no AutoRun
+/// command from the user's registry runs elevated before it, and `/s`, so
+/// that the outer quotes are the ones cmd takes off. `None` if a path has a
+/// character that would not stay inside its quotes: a quote, or `%` and
+/// `!`, which cmd expands even there — and the temporary folder is wherever
+/// the user's environment says it is.
+fn updater_parameters(script: &Path, zip: &Path, sha256: &str) -> Option<String> {
+    let quoted = |path: &Path| {
+        let text = path.to_str()?;
+        let stays_quoted = !text.contains(|c: char| matches!(c, '"' | '%' | '!') || c.is_control());
+        stays_quoted.then(|| format!("\"{text}\""))
+    };
+    if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    if !dir.join("register.bat").exists() || !dir.join("ime_jd.dll").exists() {
-        return None;
-    }
-    run_elevated(&dir.join("register.bat"), &dir).then_some(())
+    Some(format!(
+        "/d /s /c \"{} {} {sha256}\"",
+        quoted(script)?,
+        quoted(zip)?
+    ))
 }
 
 /// GET a URL into memory, following GitHub's github.com → objects.github…
@@ -541,41 +639,34 @@ fn sha256_hex(data: &[u8]) -> Option<String> {
     }
 }
 
-/// Extract `zip` into `dir` with the OS's bundled tar (bsdtar reads zip; it
-/// ships in System32 from Windows 10 1803, and our floor is 1809). No console.
-fn extract_zip(zip: &Path, dir: &Path) -> bool {
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    // The 32-bit DLL's System32 is SysWOW64; Sysnative is the real one.
-    let system = if cfg!(target_arch = "x86") { "Sysnative" } else { "System32" };
-    let tar = Path::new(&std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into()))
-        .join(system)
-        .join("tar.exe");
-    Command::new(tar)
-        .arg("-xf")
-        .arg(zip)
-        .arg("-C")
-        .arg(dir)
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Launch `bat` elevated (the `runas` verb → one UAC prompt), with `dir` as
-/// its working directory. True if the shell accepted the launch (the elevated
-/// script then reports its own success or failure in its console). From a
-/// 32-bit host the script may start in the 32-bit cmd, and hands itself over
-/// to the 64-bit one.
-fn run_elevated(bat: &Path, dir: &Path) -> bool {
-    let file = wide_z(&bat.to_string_lossy());
-    let cwd = wide_z(&dir.to_string_lossy());
+/// Start cmd elevated (the `runas` verb → one UAC prompt) with `parameters`,
+/// in `dir`. True if the shell accepted the launch (the elevated script
+/// then reports its own success or failure in its console). From a 32-bit
+/// host the cmd that starts is the 32-bit one, and the script hands itself
+/// over to the 64-bit one.
+fn run_elevated(parameters: &str, dir: Option<&Path>) -> bool {
+    // The system's cmd by its full path, from the system: neither
+    // `%ComSpec%` nor a name for the shell to look up.
+    let mut system = [0u16; 260];
+    // SAFETY: the buffer's length goes with it.
+    let len = unsafe { GetSystemDirectoryW(Some(&mut system)) } as usize;
+    if len == 0 || len >= system.len() {
+        return false;
+    }
+    let cmd = wide_z(&format!(
+        "{}\\cmd.exe",
+        String::from_utf16_lossy(&system[..len])
+    ));
+    let parameters = wide_z(parameters);
+    let cwd = dir.map(|dir| wide_z(&dir.to_string_lossy()));
     let result = unsafe {
         ShellExecuteW(
             None,
             w!("runas"),
-            PCWSTR(file.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR(cwd.as_ptr()),
+            PCWSTR(cmd.as_ptr()),
+            PCWSTR(parameters.as_ptr()),
+            cwd.as_ref()
+                .map_or(PCWSTR::null(), |cwd| PCWSTR(cwd.as_ptr())),
             SW_SHOWNORMAL,
         )
     };
@@ -702,5 +793,61 @@ mod tests {
             NOTICE.lock().unwrap().is_some(),
             "hidden, not looked up again"
         );
+    }
+
+    #[test]
+    fn cmd_is_given_the_installed_script_the_zip_and_its_sha256() {
+        let script = Path::new(r"C:\Program Files\ime-jd\update.bat");
+        // Whatever a user's folder may be called, short of the three below.
+        let zip =
+            Path::new(r"C:\Users\张三 (x86) & co^\AppData\Local\Temp\ime-jd-update\update.zip");
+        let sha256 = "0123456789abcdef".repeat(4);
+        assert_eq!(
+            updater_parameters(script, zip, &sha256),
+            Some(format!(
+                r#"/d /s /c ""C:\Program Files\ime-jd\update.bat" "C:\Users\张三 (x86) & co^\AppData\Local\Temp\ime-jd-update\update.zip" {sha256}""#
+            ))
+        );
+
+        // A path cmd would read something else out of is not handed to it.
+        for odd in [
+            r#"C:\Temp\a"b\update.zip"#,
+            r"C:\Temp\%X%\update.zip",
+            r"C:\Temp\!X!\update.zip",
+            "C:\\Temp\\a\nb\\update.zip",
+        ] {
+            assert_eq!(updater_parameters(script, Path::new(odd), &sha256), None);
+            assert_eq!(updater_parameters(Path::new(odd), zip, &sha256), None);
+        }
+        // Nor is anything but a SHA-256.
+        assert_eq!(updater_parameters(script, zip, "abc"), None);
+        let padded = format!("{}&calc", &sha256[..59]);
+        assert_eq!(updater_parameters(script, zip, &padded), None);
+    }
+
+    #[test]
+    fn a_folder_holds_what_lies_in_it_whatever_the_letter_case() {
+        let program_files = Path::new(r"C:\Program Files");
+        let within = |path: &str| is_within(Path::new(path), program_files);
+        assert!(within(r"C:\Program Files\ime-jd"));
+        assert!(within(r"c:\PROGRAM FILES\ime-jd\"));
+        assert!(within(r"C:\Program Files"));
+        for elsewhere in [
+            r"C:\Program Files (x86)\ime-jd",
+            r"C:\Program Filesx\ime-jd",
+            r"C:\Users\someone\Program Files\ime-jd",
+            r"D:\Program Files\ime-jd",
+            r"C:\",
+        ] {
+            assert!(!within(elsewhere), "{elsewhere}");
+        }
+    }
+
+    #[test]
+    fn program_files_is_the_64_bit_folder_whichever_dll_asks() {
+        // On the 64-bit Windows the tests run on, in an i686 test build too.
+        let folder = program_files().expect("the registry names it");
+        assert!(folder.is_dir(), "{folder:?}");
+        assert!(!folder.to_string_lossy().contains("(x86)"), "{folder:?}");
     }
 }

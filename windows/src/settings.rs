@@ -20,12 +20,11 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use jd_userdict::switch;
-use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow, SW_SHOWNORMAL};
 use windows::core::{HSTRING, PCWSTR, w};
 
-use crate::{dll_hmodule, host};
+use crate::{beside_dll, host};
 
 /// The user dictionary's window, which also sets the switches; installed
 /// beside this DLL.
@@ -90,17 +89,5 @@ fn start_helper(args: &str) {
 
 /// `ime_jd_userdict.exe`, when it is there beside this DLL.
 fn helper() -> Option<PathBuf> {
-    let mut buf = vec![0u16; 260];
-    loop {
-        // SAFETY: the buffer's length is passed along with it.
-        let len = unsafe { GetModuleFileNameW(Some(dll_hmodule()), &mut buf) } as usize;
-        if len == 0 {
-            return None;
-        }
-        if len < buf.len() {
-            let dll = PathBuf::from(String::from_utf16_lossy(&buf[..len]));
-            return Some(dll.parent()?.join(HELPER_EXE)).filter(|exe| exe.is_file());
-        }
-        buf.resize(buf.len() * 2, 0);
-    }
+    beside_dll(HELPER_EXE)
 }

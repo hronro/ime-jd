@@ -30,7 +30,7 @@ cargo build --release --target i686-pc-windows-msvc -p jd-windows
 `register.bat` does the full install:
 
 1. Right-click `register.bat` → **Run as administrator**.
-2. The script copies the DLL, the 32-bit DLL (as `ime_jd_x86.dll`) and the user-dictionary window to `C:\Program Files\ime-jd\`, grants AppContainer read access (so UWP apps can load the DLLs), registers both DLLs with `regsvr32` — the 32-bit one with SysWOW64's — and adds **键道用户自造词** to the Start menu for all users.
+2. The script copies the DLL, the 32-bit DLL (as `ime_jd_x86.dll`), the user-dictionary window and `update.bat` (what the IME's own [update](#updates) runs) to `C:\Program Files\ime-jd\`, grants AppContainer read access (so UWP apps can load the DLLs), registers both DLLs with `regsvr32` — the 32-bit one with SysWOW64's — and adds **键道用户自造词** to the Start menu for all users.
 3. Add 键道 to your keyboard list: **Settings → Time & language → Language → Chinese (Simplified) → Options → Add a keyboard → 键道**.
 
 Windows loads an IME into each application in the application's own architecture: 64-bit applications load `ime_jd.dll`, and 32-bit ones — WPS Office, for one — load `ime_jd_x86.dll`, which the 32-bit `regsvr32` registers in the registry they read. Both DLLs register the one input profile, which 32-bit and 64-bit applications share, so 键道 is listed in every application; without the 32-bit DLL, a 32-bit application lists it but cannot switch to it. Started from a 32-bit process (the [update](#updates), clicked in a 32-bit application), the script hands itself over to the 64-bit `cmd`, which sees the real `Program Files` and `System32`.
@@ -55,11 +55,11 @@ If you've selected 键道 in a running app (Notepad, browser, etc.) you'll need 
 
 Whenever 键道 is activated in an application, the IME asks GitHub for the latest release at most once a day — shared across all applications through `HKCU\Software\hronro\ime-jd`, and skipped inside AppContainer (Store) apps. When that release is newer than the running DLL, the candidate window shows one extra line, **键道有新版本 vX.Y.Z，点击下载并安装**, until you click it.
 
-Clicking it downloads that release's zip for the machine's architecture in the background (the 32-bit DLL picks the same one), verifies it against the SHA-256 the feed reports, extracts it, and runs the bundled `register.bat` **elevated** — so you get one UAC prompt, then the update installs itself (the same in-place DLL swap `register.bat` does for a manual upgrade). Applications you already have open keep running the old DLL until you next launch them (Windows can't reload a DLL a process has already mapped), so the new version takes effect in apps started afterwards, or after you sign out and back in. If any step fails, the click falls back to opening the release page so you can upgrade by hand. The notice is retired for that version once clicked, here and in every other application.
+Clicking it downloads that release's zip for the machine's architecture in the background (the 32-bit DLL picks the same one), verifies it against the SHA-256 the feed reports, and runs the installed `update.bat` **elevated** — so you get one UAC prompt, then the update installs itself: `update.bat` unpacks the zip and runs its `register.bat` (the same in-place DLL swap `register.bat` does for a manual upgrade). Nothing that runs elevated comes from a place the user's own programs can write. The download waits in the temporary folder, where any of them could put another file in its place while the prompt is up; so what is started is `cmd` on the `update.bat` under Program Files and no other, with the SHA-256 of what was downloaded, and that script reads the zip once and unpacks — into a folder beside itself — only what has that SHA-256. Applications you already have open keep running the old DLL until you next launch them (Windows can't reload a DLL a process has already mapped), so the new version takes effect in apps started afterwards, or after you sign out and back in. If any step fails, the click falls back to opening the release page so you can upgrade by hand. The notice is retired for that version once clicked, here and in every other application.
 
 On the secure desktop — the sign-in screen, a UAC prompt — none of this happens: no check, no notice, and the [mode icon](#mode-icon)'s menu is greyed out. Whoever types there has not signed in, and the program they type into runs as SYSTEM, so nothing may be downloaded or started from it. The IME takes TSF's word for where it is (`TF_TMAE_SECUREMODE`), and takes any host that runs as SYSTEM for the secure desktop too.
 
-To turn the check off, untick **自动检查更新** in the [mode icon](#mode-icon)'s menu, which sets the DWORD `CheckForUpdates` under `HKCU\Software\hronro\ime-jd` to `0`. The other update values there are state: `LastUpdateCheck` (QWORD, Unix seconds), `LatestVersion`, `SeenVersion` — delete `LastUpdateCheck` to force a check on the next activation. The request carries no identifying data beyond a `User-Agent` with the IME version. Implementation: `src/update/` (`feed.rs` is the host-independent model — version/asset parsing — with unit tests, `mod.rs` the WinHTTP download + SHA-256 + extract + registry + elevated-launch side); the notice row lives in `candidate_window.rs`.
+To turn the check off, untick **自动检查更新** in the [mode icon](#mode-icon)'s menu, which sets the DWORD `CheckForUpdates` under `HKCU\Software\hronro\ime-jd` to `0`. The other update values there are state: `LastUpdateCheck` (QWORD, Unix seconds), `LatestVersion`, `SeenVersion` — delete `LastUpdateCheck` to force a check on the next activation. The request carries no identifying data beyond a `User-Agent` with the IME version. Implementation: `src/update/` (`feed.rs` is the host-independent model — version/asset parsing — with unit tests, `mod.rs` the WinHTTP download + SHA-256 + registry + elevated-launch side), and `update.bat`, the elevated half; the notice row lives in `candidate_window.rs`.
 
 ## 中 and 英
 
@@ -137,6 +137,9 @@ windows/
   app.manifest        embedded Win32 manifest (asInvoker, Win 10/11 supportedOS)
   register.bat        admin installer
   unregister.bat      admin uninstaller
+  update.bat          installed with the IME: checks and unpacks the release
+                      its update downloaded, and runs that release's
+                      register.bat
   src/
     lib.rs            DLL entry points (DllMain, DllGetClassObject, DllRegister/UnregisterServer)
     factory.rs        IClassFactory
