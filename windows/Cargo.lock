@@ -65,6 +65,13 @@ name = "jd"
 version = "0.0.0"
 
 [[package]]
+name = "jd-check"
+version = "0.0.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "jd-userdict"
 version = "0.0.0"
 dependencies = [

@@ -19,6 +19,13 @@ REM architecture, so 32-bit applications (WPS Office, for one) load this
 REM one, registered by the 32-bit regsvr32 where they look.
 set "DLL32_NAME=ime_jd_x86.dll"
 set "REGSVR32_32=%SystemRoot%\SysWOW64\regsvr32.exe"
+REM ARM64 Windows runs x64 applications too, and they read the registry
+REM that ARM64 ones read: the one DLL registered there has to load into
+REM both. In the ARM64 package that DLL, ime_jd.dll, is a forwarder, and the
+REM IME is the two beside it, one for each kind of application
+REM (forwarder\forwarder.c).
+set "DLL_ARM64_NAME=ime_jd_arm64.dll"
+set "DLL_X64_NAME=ime_jd_x64.dll"
 set "EXE_NAME=ime_jd_userdict.exe"
 set "INSTALL_DIR=%ProgramFiles%\ime-jd"
 set "SHORTCUT=%ProgramData%\Microsoft\Windows\Start Menu\Programs\键道用户自造词.lnk"
@@ -39,6 +46,10 @@ if not defined SOURCE_DIR (
     pause
     exit /b 1
 )
+
+REM The ARM64 package is told by the IME's ARM64 DLL beside the forwarder.
+set "ARM64_PACKAGE="
+if exist "%SOURCE_DIR%%DLL_ARM64_NAME%" set "ARM64_PACKAGE=1"
 
 REM The 32-bit DLL: next to this script, or in dev the i686 build, under the
 REM DLL's own name in windows\target\i686-pc-windows-msvc\release\.
@@ -92,8 +103,13 @@ if exist "%INSTALL_DIR%\%DLL32_NAME%" (
     "%REGSVR32_32%" /s /u "%INSTALL_DIR%\%DLL32_NAME%" >nul 2>&1
     call :RenameOld %DLL32_NAME%
 )
+REM What an ARM64 package installed behind its forwarder, which has just
+REM passed the unregistering on to it.
+if exist "%INSTALL_DIR%\%DLL_ARM64_NAME%" call :RenameOld %DLL_ARM64_NAME%
+if exist "%INSTALL_DIR%\%DLL_X64_NAME%" call :RenameOld %DLL_X64_NAME%
 
 copy /Y "%SOURCE_DIR%%DLL_NAME%" "%INSTALL_DIR%\" >nul
+if not errorlevel 1 if defined ARM64_PACKAGE copy /Y "%SOURCE_DIR%%DLL_ARM64_NAME%" "%INSTALL_DIR%\" >nul
 if errorlevel 1 (
     echo 复制 DLL 失败。可能有程序仍在占用旧版本 ——
     echo 注销并重新登录（或重启）后再运行本脚本。
@@ -108,6 +124,17 @@ if defined SOURCE32 (
     if errorlevel 1 echo 复制 %DLL32_NAME% 失败，键道将无法在 32 位程序中使用。
 ) else (
     echo 未找到 32 位的 %DLL32_NAME%，键道将无法在 32 位程序中使用。
+)
+
+REM The ARM64 package's x64 DLL. Without it the IME still installs, for
+REM ARM64 applications only.
+if defined ARM64_PACKAGE (
+    if exist "%SOURCE_DIR%%DLL_X64_NAME%" (
+        copy /Y "%SOURCE_DIR%%DLL_X64_NAME%" "%INSTALL_DIR%\" >nul
+        if errorlevel 1 echo 复制 %DLL_X64_NAME% 失败，键道将无法在 x64 程序中使用。
+    ) else (
+        echo 未找到 %DLL_X64_NAME%，键道将无法在 x64 程序中使用。
+    )
 )
 
 REM The user-dictionary window. A running copy is renamed out of the way
@@ -138,7 +165,16 @@ if exist "%INSTALL_DIR%\%DLL32_NAME%" (
     if errorlevel 1 echo %DLL32_NAME% 注册失败，键道将无法在 32 位程序中使用。
 )
 
+REM In the ARM64 package regsvr32 is given the forwarder. It passes the call
+REM on to the IME behind it, and the IME registers the path the call came
+REM by: the forwarder's. Where the forwarder does not load, or does not find
+REM the IME, the IME's ARM64 DLL registers itself, as it did before there was
+REM a forwarder: ARM64 applications get the IME, and x64 ones do not.
 regsvr32 /s "%INSTALL_DIR%\%DLL_NAME%"
+if errorlevel 1 if defined ARM64_PACKAGE (
+    echo %DLL_NAME% 注册失败，改为直接注册 %DLL_ARM64_NAME%：键道将无法在 x64 程序中使用。
+    regsvr32 /s "%INSTALL_DIR%\%DLL_ARM64_NAME%"
+)
 if errorlevel 1 (
     echo regsvr32 注册失败。
     pause

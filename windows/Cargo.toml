@@ -11,9 +11,10 @@ crate-type = ["cdylib", "rlib"]
 
 # This package is the IME DLL; userdict/ is the user dictionary — its file and
 # switch, shared with the DLL as a library, and the 用户自造词 window, its
-# binary. `cargo build` / `cargo test` here cover both.
+# binary. `cargo build` / `cargo test` here cover both. check/ is asked for
+# by name (`-p jd-check`): it tests an installed IME, not this tree.
 [workspace]
-members = ["userdict"]
+members = ["userdict", "check"]
 default-members = [".", "userdict"]
 
 [build-dependencies]

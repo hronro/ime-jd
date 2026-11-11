@@ -205,7 +205,12 @@ jobs:
 
   # One IME build per Windows Rust target. Reuses the prebuilt libjd bundle
   # matching the target arch — jd-windows links jd_static.lib the same way
-  # jd-cli does, via LIBJD_PATH.
+  # jd-cli does, via LIBJD_PATH. The ARM64 bundle has an x64 DLL as well, for
+  # the x64 applications ARM64 Windows runs, and the forwarder that hands
+  # each application the DLL of its own architecture (windows/forwarder).
+  # Each bundle is then installed on its own runner, as a user installs it,
+  # the IME created in a process of every architecture that runner runs
+  # (windows/check), and uninstalled.
   build-windows-ime:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -214,12 +219,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # processes: the kinds of application the runner runs, as the Rust
+          # targets the IME and the check are built for.
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             arch: x86_64
+            processes: x86_64-pc-windows-msvc,i686-pc-windows-msvc
           - target: aarch64-pc-windows-msvc
             runner: windows-11-arm
             arch: arm64
+            processes: aarch64-pc-windows-msvc,x86_64-pc-windows-msvc,i686-pc-windows-msvc
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -227,7 +236,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.99
         with:
-          targets: ${{ matrix.target }},i686-pc-windows-msvc
+          targets: ${{ matrix.processes }}
 
       - name: Download prebuilt libs
         uses: actions/download-artifact@v8
@@ -255,13 +264,45 @@ jobs:
           LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs-x86/lib
         run: cargo build --release --target i686-pc-windows-msvc -p jd-windows
 
+      - name: Download prebuilt x64 libs
+        if: matrix.arch == 'arm64'
+        uses: actions/download-artifact@v8
+        with:
+          name: libjd-windows-x86_64
+          path: prebuilt-libs-x64
+
+      - name: Build x64 IME DLL
+        if: matrix.arch == 'arm64'
+        working-directory: windows
+        env:
+          LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs-x64/lib
+        run: cargo build --release --target x86_64-pc-windows-msvc -p jd-windows
+
+      # ime_jd.dll of the ARM64 bundle, with the resources cargo compiled
+      # for the IME's own DLL (windows/build.rs).
+      - name: Build the forwarder
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $resources = @(Get-Item "windows/target/${{ matrix.target }}/release/build/jd-windows-*/out/ime_jd.lib")
+          if ($resources.Count -ne 1) { throw "Expected one build of the IME DLL's resources, found $($resources.Count)." }
+          & windows\forwarder\build.bat $resources[0].FullName
+
       - name: Stage IME bundle
         shell: bash
         run: |
           set -euo pipefail
           out="dist/jd-ime-windows-${{ matrix.arch }}"
           mkdir -p "$out"
-          cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/"
+          if [[ "${{ matrix.arch }}" == "arm64" ]]; then
+            # The forwarder under the IME's name, and behind it the IME for
+            # ARM64 applications and for x64 ones.
+            cp windows/target/forwarder/ime_jd.dll "$out/"
+            cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/ime_jd_arm64.dll"
+            cp windows/target/x86_64-pc-windows-msvc/release/ime_jd.dll "$out/ime_jd_x64.dll"
+          else
+            cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/"
+          fi
           cp windows/target/i686-pc-windows-msvc/release/ime_jd.dll "$out/ime_jd_x86.dll"
           cp windows/target/${{ matrix.target }}/release/ime_jd_userdict.exe "$out/"
           cp windows/register.bat   "$out/"
@@ -274,6 +315,37 @@ jobs:
           name: jd-ime-windows-${{ matrix.arch }}
           path: dist/jd-ime-windows-${{ matrix.arch }}
           if-no-files-found: error
+
+      # The bundle as a user gets it: installed by its register.bat, the IME
+      # created in a process of each kind — through COM, as TSF activates
+      # it, and by its registered path, as TSF loads it for its display
+      # attributes (windows/check) — and uninstalled by its unregister.bat.
+      - name: Install the bundle
+        shell: cmd
+        run: call dist\jd-ime-windows-${{ matrix.arch }}\register.bat < nul
+
+      - name: Create the IME in every kind of process
+        working-directory: windows
+        shell: pwsh
+        run: |
+          foreach ($target in '${{ matrix.processes }}'.Split(',')) {
+            cargo run --release --target $target -p jd-check
+            if ($LASTEXITCODE -ne 0) { throw "ime-jd was not created in a $target process." }
+          }
+
+      - name: Uninstall the bundle
+        shell: cmd
+        run: call dist\jd-ime-windows-${{ matrix.arch }}\unregister.bat < nul
+
+      - name: Find the IME gone from every kind of process
+        working-directory: windows
+        shell: pwsh
+        run: |
+          foreach ($target in '${{ matrix.processes }}'.Split(',')) {
+            cargo run --release --target $target -p jd-check -- --uninstalled
+            if ($LASTEXITCODE -ne 0) { throw "ime-jd is still there for $target processes." }
+          }
+          if (Test-Path "$env:ProgramW6432\ime-jd") { throw "unregister.bat left files in $env:ProgramW6432\ime-jd." }
 
   # One IME build per macOS arch, built natively on its own runner. Reuses the
   # prebuilt libjd matching the target arch:

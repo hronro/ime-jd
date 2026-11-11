@@ -1,0 +1,22 @@
+[package]
+name = "jd-check"
+# Placeholder, like the IME crate's.
+version = "0.0.0"
+edition = "2024"
+
+# Whether the installed IME can be created in a process of the architecture
+# this is built for: what the workflows that build the bundles ask of each,
+# installed on its own runner. Not installed itself, and not part of a plain
+# `cargo build`.
+[[bin]]
+name = "ime_jd_check"
+path = "src/main.rs"
+
+[dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_UI_TextServices",
+] }
