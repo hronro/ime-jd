@@ -79,6 +79,10 @@ const FONT_FAMILY: PCWSTR = w!("Microsoft YaHei UI");
 /// The mode icon's size at 100% scale, from Microsoft's IME guidelines; it
 /// grows with the taskbar's DPI.
 const ICON_SIZE: i32 = 16;
+/// The same on the secure desktop — a UAC prompt, the sign-in screen —
+/// whose input indicator takes a larger icon: the guidelines' 20, at the
+/// display's scale.
+const SECURE_ICON_SIZE: i32 = 20;
 /// The glyph's em size, as a share of the icon: Windows' own tray glyphs
 /// leave about a pixel either side.
 const GLYPH_SCALE: f32 = 0.875;
@@ -104,7 +108,8 @@ struct ModeIcon {
     thread_mgr: ITfThreadMgr,
     client_id: u32,
     /// The secure desktop (the sign-in screen, a UAC prompt): nothing there
-    /// may start a program, so the menu changes nothing.
+    /// may start a program, so the menu changes nothing, and its input
+    /// indicator takes the icon in another size.
     secure: bool,
 }
 
@@ -246,7 +251,7 @@ impl ITfLangBarItemButton_Impl for ModeIcon_Impl {
         } else {
             CHINESE_GLYPH
         };
-        draw_icon(icon_size(), glyph, glyph_color())
+        draw_icon(icon_size(self.secure), glyph, glyph_color())
     }
 
     fn GetText(&self) -> Result<BSTR> {
@@ -454,8 +459,10 @@ extern "system" fn owner_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
 
 // ---- The icon -------------------------------------------------------------
 
-/// The icon's size in pixels: the guidelines' 16 at the taskbar's scale.
-fn icon_size() -> i32 {
+/// The icon's size in pixels: the guidelines' 16 at the taskbar's scale —
+/// or, on the secure desktop, which has no taskbar, their 20 at the
+/// system's.
+fn icon_size(secure: bool) -> i32 {
     // SAFETY: plain window and DPI queries.
     let dpi = unsafe {
         match FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) {
@@ -469,7 +476,12 @@ fn icon_size() -> i32 {
     } else {
         dpi
     };
-    (ICON_SIZE * dpi as i32 + 48) / 96
+    scaled(if secure { SECURE_ICON_SIZE } else { ICON_SIZE }, dpi)
+}
+
+/// `size`, given for 96 DPI, at `dpi`: to the nearest pixel.
+fn scaled(size: i32, dpi: u32) -> i32 {
+    (size * dpi as i32 + 48) / 96
 }
 
 /// The colour of the taskbar's own glyphs: a high-contrast theme's text
@@ -755,6 +767,14 @@ mod tests {
     }
 
     #[test]
+    fn the_icon_is_16_pixels_in_the_tray_and_20_on_the_secure_desktop() {
+        // At 100%, 125%, 150%, 200% and 300%.
+        let sizes = |size| [96, 120, 144, 192, 288].map(|dpi| scaled(size, dpi));
+        assert_eq!(sizes(ICON_SIZE), [16, 20, 24, 32, 48]);
+        assert_eq!(sizes(SECURE_ICON_SIZE), [20, 25, 30, 40, 60]);
+    }
+
+    #[test]
     fn each_glyph_is_drawn_centred_at_every_scale() {
         let white = D2D1_COLOR_F {
             r: 1.0,
@@ -762,9 +782,10 @@ mod tests {
             b: 1.0,
             a: 1.0,
         };
+        // The tray's sizes and the secure desktop's, from 100% to 300%.
         for (glyph, size) in [CHINESE_GLYPH, ENGLISH_GLYPH]
             .into_iter()
-            .flat_map(|glyph| [16, 20, 24, 32, 40, 48].map(|size| (glyph, size)))
+            .flat_map(|glyph| [16, 20, 24, 25, 30, 32, 40, 48, 60].map(|size| (glyph, size)))
         {
             let icon = draw_icon(size, glyph, white).unwrap();
             let alpha = alpha(icon, size);
@@ -800,13 +821,15 @@ mod tests {
                 inked.iter().map(|p| p.1).max().unwrap(),
             );
             // As much room on each side as on the other, give or take the
-            // pixel an odd difference leaves.
+            // pixel an odd difference leaves — two in the largest icons,
+            // where the faint edge of a stroke is a row of its own.
+            let slack = if size > 48 { 2 } else { 1 };
             assert!(
-                (left - (size - 1 - right)).abs() <= 1,
+                (left - (size - 1 - right)).abs() <= slack,
                 "{glyph} {size}px: ink {left}..{right} across"
             );
             assert!(
-                (top - (size - 1 - bottom)).abs() <= 1,
+                (top - (size - 1 - bottom)).abs() <= slack,
                 "{glyph} {size}px: ink {top}..{bottom} down"
             );
             // And it fills the icon the way tray glyphs do.

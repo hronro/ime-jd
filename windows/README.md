@@ -69,7 +69,7 @@ Each application keeps its own mode — it is TSF's keyboard open/close switch (
 
 ## Mode icon
 
-While 键道 is the input method of the window in front, Windows shows the IME's mode icon in the taskbar, left of the input indicator — where Windows' own IMEs show their mode and keep their settings. It shows the [input mode](#中-and-英), 中 or 英, drawn in the taskbar's own glyph colour (white on a dark taskbar, black on a light one, the theme's text colour in high contrast) at the taskbar's scale, and redrawn when the mode, the theme or the scale changes. A left click switches the mode, as Shift does; a right click opens the menu:
+While 键道 is the input method of the window in front, Windows shows the IME's mode icon in the taskbar, left of the input indicator — where Windows' own IMEs show their mode and keep their settings. It shows the [input mode](#中-and-英), 中 or 英, drawn in the taskbar's own glyph colour (white on a dark taskbar, black on a light one, the theme's text colour in high contrast) at the taskbar's scale, and redrawn when the mode, the theme or the scale changes. Its size is the one Microsoft's IME requirements give: 16 pixels at 100% in the taskbar, and 20 on the secure desktop — a UAC prompt, the sign-in screen — whose input indicator takes a larger icon. A left click switches the mode, as Shift does; a right click opens the menu:
 
 - **用户自造词...** opens the [user-dictionary window](#user-dictionary).
 - **启用用户自造词** is the user dictionary's switch.
