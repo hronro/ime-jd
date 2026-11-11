@@ -524,23 +524,28 @@ impl TextInputProcessor_Impl {
                 hint: o.hint.clone(),
             })
             .collect();
-        // Under the composition, where `ITfContextView::GetTextExt` put it
-        // in the edit session just run — the TSF-native answer, which works
-        // in every TSF host (Chromium-based apps, modern Notepad, Word,
-        // etc.). The window sees to the applications that had none to give.
-        let place = composition::location();
-        candidate_window::show(place, items.clone(), ctx.clone(), tid);
         // Mirror the candidate state into the TSF UIElement so UI-less hosts
         // (games, immersive shells) can render the list in their own UI.
-        if let Some(tm) = self.state.borrow().thread_mgr.clone() {
+        // First, because the host's answer to `BeginUIElement` is whether
+        // the window is to come up at all: shown before the host was asked,
+        // it was on the screen for an instant at the start of every
+        // composition in the hosts that had asked it to keep off.
+        let thread_mgr = self.state.borrow().thread_mgr.clone();
+        if let Some(tm) = thread_mgr {
             ui_element::sync(
                 &tm,
-                items,
+                items.clone(),
                 result.current_page,
                 result.total_pages,
                 result.options_count,
             );
         }
+        // Under the composition, where `ITfContextView::GetTextExt` put it
+        // in the edit session just run — the TSF-native answer, which works
+        // in every TSF host (Chromium-based apps, modern Notepad, Word,
+        // etc.). The window sees to the applications that had none to give.
+        let place = composition::location();
+        candidate_window::show(place, items, ctx.clone(), tid);
     }
 }
 

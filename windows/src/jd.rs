@@ -103,6 +103,14 @@ pub fn activate() {
     PAGE_START.with(|p| p.set(0));
 }
 
+/// `activate`, over the built-in dictionary alone, whatever the user's
+/// switch and phrases are: what a test wants to read candidates from.
+#[cfg(test)]
+pub fn activate_builtin() {
+    ENGINE.with(|e| *e.borrow_mut() = Engine::new(None));
+    PAGE_START.with(|p| p.set(0));
+}
+
 /// Drop the per-thread engine. Called from `ITfTextInputProcessor::Deactivate`.
 /// The `Drop` impl on `JdContext` calls `jd_deinit`; the dictionary goes with
 /// it unless another thread's engine still reads it.
@@ -239,6 +247,14 @@ pub fn all_candidates() -> Vec<Candidate> {
         let total = c.state().options_count;
         c.candidates(0, total).iter().map(owned).collect()
     })
+}
+
+/// The candidate at flat index `index`, for a host that asks for one this
+/// side has not materialized (`ui_element`'s `GetString`). As pure a read as
+/// `all_candidates`; it costs the engine a walk from the start of its list
+/// only when `index` is behind the last one read.
+pub fn candidate_at(index: u32) -> Option<Candidate> {
+    with_ctx(|c| c.candidates(index, 1).first().map(owned))
 }
 
 pub fn reset() {

@@ -12,7 +12,11 @@
 //!
 //! Key handling is unchanged in either mode — `ITfKeyEventSink` still owns
 //! every keystroke. The UIElement is a read-only window onto the engine
-//! state.
+//! state: the whole list, any candidate of which `GetString` answers for,
+//! in pages of `PAGE_SIZE`, with the visible page as the current one and
+//! that page's first candidate — the one space commits — as the selection.
+//! The host hears of the element before the popup is put up (tip.rs), and
+//! of its end however the list ended, a click on the popup included.
 
 use std::cell::{Cell, RefCell};
 
@@ -51,14 +55,19 @@ struct CandidateListUIElement {
 
 struct ElementState {
     thread_mgr: Option<ITfThreadMgr>,
-    /// All candidates across every page, in order. Pre-fetched once per
-    /// `sync` so `GetString(i)` is an O(1) slice lookup — modern Win11
+    /// The candidates in hand, in order: those at the flat indices from
+    /// `first` on. Either all of them across every page, pre-fetched once
+    /// per `sync` so `GetString(i)` is an O(1) slice lookup — modern Win11
     /// Notepad iterates every index on each `UpdateUIElement` callback,
     /// and round-tripping the engine per index was visibly stalling fast
     /// typists (O(N²) BFS work per keystroke, back when a page read had to
-    /// move the engine's only cursor). Reads are flat and pure now, so the
-    /// pre-fetch is a single `jd::all_candidates()` call.
-    all_items: Vec<CandidateItem>,
+    /// move the engine's only cursor); reads are flat and pure now, so the
+    /// pre-fetch is a single `jd::all_candidates()` call. Or the visible
+    /// page alone (`should_prefetch_all_pages`), with `GetString` reading
+    /// any other candidate from the engine when a host asks for it.
+    items: Vec<CandidateItem>,
+    /// Flat index of `items[0]`.
+    first: u32,
     /// 1-based, as the engine reports.
     current_page: u32,
     total_pages: u32,
@@ -114,32 +123,47 @@ impl ITfCandidateListUIElement_Impl for CandidateListUIElement_Impl {
     }
 
     fn GetSelection(&self) -> Result<u32> {
-        // The engine has no per-candidate selection — candidate #0 is the
-        // default and what space commits.
-        Ok(0)
+        // The engine has no per-candidate selection: the first candidate of
+        // the visible page is the default, the one the popup highlights and
+        // what space commits (jd.rs keeps the engine's anchor on it).
+        let state = self.state.borrow();
+        Ok(state.current_page.saturating_sub(1) * PAGE_SIZE as u32)
     }
 
     fn GetString(&self, uindex: u32) -> Result<BSTR> {
         let state = self.state.borrow();
-        match state.all_items.get(uindex as usize) {
-            Some(item) => {
-                // TSF has no separate annotation channel on
-                // `ITfCandidateListUIElement` — only `GetString`. Concatenate
-                // the hint into the displayed string so UI-less hosts (games,
-                // immersive shells) can show it, matching the format used by
-                // our own popup. Commit is unaffected: selection flows
-                // through `ITfKeyEventSink`, which uses the engine's `value`
-                // directly.
-                let s = match &item.hint {
-                    Some(h) if !h.is_empty() => {
-                        format!("{}{}", item.value, candidate_window::format_hint(h))
-                    }
-                    _ => item.value.clone(),
-                };
-                Ok(BSTR::from(&s))
-            }
-            None => Err(E_INVALIDARG.into()),
+        if uindex >= state.total_count {
+            return Err(E_INVALIDARG.into());
         }
+        let in_hand = uindex
+            .checked_sub(state.first)
+            .and_then(|i| state.items.get(i as usize));
+        let item = match in_hand {
+            Some(item) => item.clone(),
+            // A candidate of another page than the one in hand: the engine
+            // still has the list this element describes — `end` empties the
+            // element when it has not — so it is read from there.
+            None => jd::candidate_at(uindex)
+                .map(|c| CandidateItem {
+                    value: c.value,
+                    hint: c.hint,
+                })
+                .ok_or_else(|| windows::core::Error::from_hresult(E_INVALIDARG))?,
+        };
+        // TSF has no separate annotation channel on
+        // `ITfCandidateListUIElement` — only `GetString`. Concatenate
+        // the hint into the displayed string so UI-less hosts (games,
+        // immersive shells) can show it, matching the format used by
+        // our own popup. Commit is unaffected: selection flows
+        // through `ITfKeyEventSink`, which uses the engine's `value`
+        // directly.
+        let s = match &item.hint {
+            Some(h) if !h.is_empty() => {
+                format!("{}{}", item.value, candidate_window::format_hint(h))
+            }
+            _ => item.value,
+        };
+        Ok(BSTR::from(&s))
     }
 
     fn GetPageIndex(&self, pindex: *mut u32, size: u32, pupagecnt: *mut u32) -> Result<()> {
@@ -185,22 +209,27 @@ pub fn sync(
 ) {
     let need_begin = ELEMENT.with(|e| e.borrow().is_none());
 
-    let all_items = if should_prefetch_all_pages(need_begin) {
-        collect_all_candidates(current_items, total_pages)
+    // Every candidate from the first on, or the visible page from its own
+    // first.
+    let (items, first) = if should_prefetch_all_pages(need_begin) {
+        (collect_all_candidates(current_items, total_pages), 0)
     } else {
-        current_items
+        let page_start = current_page.saturating_sub(1) * PAGE_SIZE as u32;
+        (current_items, page_start)
+    };
+    let state = ElementState {
+        thread_mgr: Some(thread_mgr.clone()),
+        items,
+        first,
+        current_page,
+        total_pages,
+        total_count,
     };
 
     if need_begin {
-        let _ = begin(
-            thread_mgr,
-            all_items,
-            current_page,
-            total_pages,
-            total_count,
-        );
+        let _ = begin(thread_mgr, state);
     } else {
-        let _ = update(all_items, current_page, total_pages, total_count);
+        let _ = update(state);
     }
 }
 
@@ -217,7 +246,9 @@ pub fn sync(
 ///   accessibility consumer) — it will iterate every index, so pre-fetch.
 ///   `IS_SHOWN == true` means our overlay popup is doing the rendering;
 ///   hosts in this mode either don't query UIElement at all, or only query
-///   the current page, so we skip materializing the whole list.
+///   the current page, so we skip materializing the whole list. One that
+///   asks for a candidate of another page all the same gets it from the
+///   engine, a read at a time (`GetString`).
 ///
 /// The pre-fetch is much cheaper than it used to be — one flat read instead of
 /// a page-by-page walk plus a jump back — but a full list can still be ~12K
@@ -252,22 +283,10 @@ fn collect_all_candidates(
         .collect()
 }
 
-fn begin(
-    thread_mgr: &ITfThreadMgr,
-    all_items: Vec<CandidateItem>,
-    current_page: u32,
-    total_pages: u32,
-    total_count: u32,
-) -> Result<()> {
+fn begin(thread_mgr: &ITfThreadMgr, state: ElementState) -> Result<()> {
     let mgr: ITfUIElementMgr = thread_mgr.cast()?;
     let elem = CandidateListUIElement {
-        state: RefCell::new(ElementState {
-            thread_mgr: Some(thread_mgr.clone()),
-            all_items,
-            current_page,
-            total_pages,
-            total_count,
-        }),
+        state: RefCell::new(state),
     };
     let iface: ITfUIElement = elem.into_object().into_interface();
     let mut pb_show = BOOL(1);
@@ -294,23 +313,12 @@ fn begin(
     Ok(())
 }
 
-fn update(
-    all_items: Vec<CandidateItem>,
-    current_page: u32,
-    total_pages: u32,
-    total_count: u32,
-) -> Result<()> {
+fn update(state: ElementState) -> Result<()> {
     let element = ELEMENT.with(|c| c.borrow().clone());
     let Some(iface) = element else { return Ok(()) };
 
     let inner = iface.cast_object::<CandidateListUIElement>()?;
-    {
-        let mut s = inner.state.borrow_mut();
-        s.all_items = all_items;
-        s.current_page = current_page;
-        s.total_pages = total_pages;
-        s.total_count = total_count;
-    }
+    *inner.state.borrow_mut() = state;
 
     let pair = MGR.with(|m| {
         let m = m.borrow();
@@ -337,7 +345,19 @@ pub fn end() {
     if let Some((mgr, id)) = pair {
         let _ = unsafe { mgr.EndUIElement(id) };
     }
-    ELEMENT.with(|c| *c.borrow_mut() = None);
+    // A host may keep the element past its end. From here on it is an empty
+    // list: `GetString` reads what is not in hand from the engine, whose
+    // next list is not this element's to describe.
+    if let Some(iface) = ELEMENT.with(|c| c.borrow_mut().take())
+        && let Ok(inner) = iface.cast_object::<CandidateListUIElement>()
+        && let Ok(mut state) = inner.state.try_borrow_mut()
+    {
+        state.items = Vec::new();
+        state.first = 0;
+        state.current_page = 0;
+        state.total_pages = 0;
+        state.total_count = 0;
+    }
     MGR.with(|c| *c.borrow_mut() = None);
     ID.with(|c| c.set(None));
     // Reset to "popup is visible by default" so the next composition opens
@@ -353,4 +373,135 @@ pub fn destroy() {
 /// Read by the candidate window to decide whether to render its popup.
 pub fn is_shown() -> bool {
     IS_SHOWN.with(|c| c.get())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Candidates named after their flat indices.
+    fn named(indices: std::ops::Range<u32>) -> Vec<CandidateItem> {
+        indices
+            .map(|i| CandidateItem {
+                value: format!("c{i}"),
+                hint: None,
+            })
+            .collect()
+    }
+
+    /// Page 3 of 5 — the visible one, and the only one in hand — of 36
+    /// candidates.
+    fn third_page() -> ITfCandidateListUIElement {
+        element(ElementState {
+            thread_mgr: None,
+            items: named(16..24),
+            first: 16,
+            current_page: 3,
+            total_pages: 5,
+            total_count: 36,
+        })
+    }
+
+    fn element(state: ElementState) -> ITfCandidateListUIElement {
+        CandidateListUIElement {
+            state: RefCell::new(state),
+        }
+        .into_object()
+        .into_interface()
+    }
+
+    /// `GetString`, as a host shows it; `None` where it fails.
+    fn string(list: &ITfCandidateListUIElement, index: u32) -> Option<String> {
+        // SAFETY: the element's own method.
+        unsafe { list.GetString(index) }.ok().map(|s| s.to_string())
+    }
+
+    #[test]
+    fn the_page_in_hand_answers_for_its_own_indices() {
+        let list = third_page();
+        // SAFETY: the element's own methods.
+        unsafe {
+            assert_eq!(list.GetCount().unwrap(), 36);
+            assert_eq!(list.GetCurrentPage().unwrap(), 2);
+            // The candidate space commits: the visible page's first.
+            assert_eq!(list.GetSelection().unwrap(), 16);
+            let mut starts = [u32::MAX; 8];
+            let mut pages = 0;
+            list.GetPageIndex(&mut starts, &mut pages).unwrap();
+            assert_eq!(pages, 5);
+            assert_eq!(starts[..5], [0, 8, 16, 24, 32]);
+        }
+        assert_eq!(string(&list, 16).as_deref(), Some("c16"));
+        assert_eq!(string(&list, 23).as_deref(), Some("c23"));
+        // Another page's, on a thread with no engine to read it from: no
+        // string, rather than the string of a candidate in hand.
+        assert_eq!(string(&list, 0), None);
+        assert_eq!(string(&list, 24), None);
+        // Past the end of the list.
+        assert_eq!(string(&list, 36), None);
+    }
+
+    #[test]
+    fn candidates_of_other_pages_are_read_from_the_engine() {
+        jd::activate_builtin();
+        jd::press_key(b'n');
+        let all = jd::all_candidates();
+        let shown = |index: u32| {
+            let c = &all[index as usize];
+            match &c.hint {
+                Some(h) if !h.is_empty() => {
+                    format!("{}{}", c.value, candidate_window::format_hint(h))
+                }
+                _ => c.value.clone(),
+            }
+        };
+
+        // The second page on show, and it alone in hand: what `sync` keeps
+        // while the IME draws its own popup.
+        let page = jd::next_page();
+        assert!(page.total_pages > 3, "`n` has pages of candidates");
+        let list = element(ElementState {
+            thread_mgr: None,
+            items: page
+                .options
+                .iter()
+                .map(|c| CandidateItem {
+                    value: c.value.clone(),
+                    hint: c.hint.clone(),
+                })
+                .collect(),
+            first: 8,
+            current_page: page.current_page,
+            total_pages: page.total_pages,
+            total_count: page.options_count,
+        });
+        // SAFETY: the element's own method.
+        assert_eq!(unsafe { list.GetSelection() }.unwrap(), 8);
+        // In hand, behind it, ahead of it, and the very last.
+        for index in [8, 15, 0, 7, 16, 100, 9, page.options_count - 1] {
+            assert_eq!(string(&list, index), Some(shown(index)), "index {index}");
+        }
+        assert_eq!(string(&list, page.options_count), None);
+
+        // Reading for the host moved nothing: space commits the visible
+        // page's first candidate.
+        let commit = jd::press_key(b' ').commit;
+        assert_eq!(commit.as_deref(), Some(all[8].value.as_str()));
+        jd::deactivate();
+    }
+
+    #[test]
+    fn an_element_kept_past_its_end_is_an_empty_list() {
+        let list = third_page();
+        ELEMENT.with(|e| *e.borrow_mut() = list.cast().ok());
+        end();
+        // SAFETY: the element's own methods.
+        unsafe {
+            assert_eq!(list.GetCount().unwrap(), 0);
+            assert_eq!(list.GetSelection().unwrap(), 0);
+            assert_eq!(list.GetCurrentPage().unwrap(), 0);
+        }
+        assert_eq!(string(&list, 16), None);
+        assert!(ELEMENT.with(|e| e.borrow().is_none()));
+    }
 }

@@ -993,6 +993,8 @@ fn perform_commit(idx: usize) {
     let _ = composition::commit_text(&ctx, tid, &item.value);
     jd::reset();
     hide();
+    // As after every commit by a key: the host is told the list is over.
+    ui_element::end();
 }
 
 /// The user clicked the update notice: hand it to update.rs (opens the

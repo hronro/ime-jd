@@ -122,6 +122,8 @@ A composition belongs to the field it was started in. When the focus moves to an
 
 The candidates open under the text being typed, their left edge on its own, and over it on the last lines of the screen; either way they stay inside the work area of the monitor the text is on, moved left where the text is near the right edge. They go with the text when the application scrolls or moves it (`ITfTextLayoutSink`). An application that has not laid the new text out yet when asked where it is (`TS_E_NOLAYOUT`) is to say when it has, and the candidates wait for that — for a tenth of a second, after which they open under the system caret or, in a window without one, in the corner of the focus window, as they do at once where the application gives no place at all. Implementation: `position` and `follow` in `src/candidate_window.rs`, `locate` in `src/composition.rs`.
 
+An application that draws the candidates itself — a full-screen game, for one — reads them from TSF's UI element (`ITfCandidateListUIElement`) instead. It is asked before the candidate window opens, so the window never shows there; it is told when the list changes and when it ends, by a key or by a click; and what it reads is the whole list in pages of eight, any candidate of it, with the page on show as the current one and that page's first candidate, the one Space commits, as the selection. Implementation: `src/ui_element.rs`.
+
 ## Project layout
 
 ```
@@ -145,6 +147,8 @@ windows/
     display_attribute.rs  ITfDisplayAttributeInfo + IEnumTfDisplayAttributeInfo
                           plus apply/clear helpers via ITfProperty
     candidate_window.rs   D2D + DirectWrite popup showing the engine candidates
+    ui_element.rs     ITfCandidateListUIElement: the candidates, for an
+                      application that draws them itself
     input_mode.rs     中 and 英: the mode, and Shift pressed alone
     mode_icon.rs      the taskbar's mode icon (a language-bar item) and its menu
     settings.rs       what that menu reads, and the helper that changes it
