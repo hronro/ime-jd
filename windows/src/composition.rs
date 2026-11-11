@@ -7,7 +7,7 @@ use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfContext, ITfContextComposition, ITfDocumentMgr,
     ITfEditSession, TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_ES_ASYNCDONTCARE,
-    TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE,
+    TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE, TS_E_NOLAYOUT,
 };
 use windows::core::{BOOL, ComObjectInner, Interface, Result};
 
@@ -20,12 +20,28 @@ use crate::edit_session::EditSession;
 // threading a handle to the TextInputProcessor through every call site.
 thread_local! {
     static STATE: RefCell<CompositionState> = const { RefCell::new(CompositionState::new()) };
-    /// Screen rect of the most recent composition range, as reported by
-    /// `ITfContextView::GetTextExt` inside the same edit session that wrote
-    /// the text. Read by the candidate window to position the popup.
-    /// `None` if the host hasn't laid out the new text yet (TF_E_NOLAYOUT)
-    /// or if no composition has run on this thread.
-    static LAST_SCREEN_RECT: Cell<Option<RECT>> = const { Cell::new(None) };
+    /// Where the composition is on the screen, as `ITfContextView::GetTextExt`
+    /// last told — inside the edit session that wrote the text, or in
+    /// `locate`'s. Read by the candidate window to position the popup. A
+    /// new composition starts from `Unknown`: where the last one was says
+    /// nothing of where this one is.
+    static LOCATION: Cell<Location> = const { Cell::new(Location::Unknown) };
+    /// Whether `locate` has a question out to the application.
+    static LOCATING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Where the composition is on the screen, as far as the application has
+/// said since it started.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Location {
+    /// The rect of its text — the last one given, if the application has
+    /// stopped giving one since.
+    At(RECT),
+    /// The application has not laid the new text out yet (TS_E_NOLAYOUT),
+    /// and is to say when it has: `locate`'s cue.
+    Pending,
+    /// The application will not say.
+    Unknown,
 }
 
 struct CompositionState {
@@ -54,6 +70,7 @@ pub fn append_key(ctx: &ITfContext, tid: u32, sink: &ITfCompositionSink, ch: cha
             if state.composition.is_none() {
                 state.composition =
                     Some(start_composition(&ctx_for_session, ec, &sink_for_session)?);
+                LOCATION.with(|c| c.set(Location::Unknown));
             }
             state.buffer.push(ch);
             let comp = state.composition.as_ref().unwrap();
@@ -126,6 +143,7 @@ pub fn commit_and_continue(
             if state.composition.is_none() {
                 state.composition =
                     Some(start_composition(&ctx_for_session, ec, &sink_for_session)?);
+                LOCATION.with(|c| c.set(Location::Unknown));
             }
             state.buffer.clear();
             state.buffer.push(ch);
@@ -288,7 +306,7 @@ pub fn on_externally_terminated(ec: u32, comp: Option<&ITfComposition>) -> bool 
         true
     });
     if in_flight {
-        LAST_SCREEN_RECT.with(|c| c.set(None));
+        LOCATION.with(|c| c.set(Location::Unknown));
     }
     in_flight
 }
@@ -302,7 +320,7 @@ pub fn forget() {
         state.composition = None;
         state.buffer.clear();
     });
-    LAST_SCREEN_RECT.with(|c| c.set(None));
+    LOCATION.with(|c| c.set(Location::Unknown));
 }
 
 /// Whether there is currently an in-flight composition.
@@ -339,31 +357,97 @@ fn context() -> Option<ITfContext> {
     })
 }
 
-/// Screen rect of the most recently-rendered composition range, if the host
-/// supplied one. Use the bottom-left as the anchor for popups (candidate
-/// window, etc.). Returns `None` if the host returned TF_E_NOLAYOUT for the
-/// last query (Settings UI / classic edit controls usually return a rect on
-/// first try; Chromium-based hosts may need a second composition update).
-pub fn last_screen_rect() -> Option<RECT> {
-    LAST_SCREEN_RECT.with(|c| c.get())
+/// Where the composition is on the screen: the rect of its text, for the
+/// popups (candidate window, etc.) to hang under, if the host has supplied
+/// one since the composition started (Settings UI / classic edit controls
+/// usually return a rect on first try; Chromium-based hosts may need a
+/// second composition update).
+pub fn location() -> Location {
+    LOCATION.with(|c| c.get())
 }
 
-fn refresh_screen_rect(ctx: &ITfContext, ec: u32, comp: &ITfComposition) {
-    use windows::core::BOOL;
-    let Ok(view) = (unsafe { ctx.GetActiveView() }) else {
+/// The application's layout changed — it scrolled, its window moved, or the
+/// layout it had not got to when the composition was written (TS_E_NOLAYOUT)
+/// is ready: ask where the composition is now, and hand the answer to
+/// `found`. Asking takes an edit session of its own, which TSF runs at once
+/// if the document is free and as soon as it is otherwise — a layout change
+/// is often announced from inside the very edit that caused it. One question
+/// is out at a time: a change announced before it is answered is covered by
+/// the answer.
+pub fn locate(tid: u32, found: impl FnOnce(RECT) + 'static) {
+    let Some(ctx) = context() else {
         return;
     };
-    let Ok(range) = (unsafe { comp.GetRange() }) else {
+    let Some(asking) = Locating::begin() else {
         return;
     };
-    let mut rect = RECT::default();
-    let mut clipped = BOOL::default();
-    let r = unsafe { view.GetTextExt(ec, &range, &mut rect, &mut clipped) };
-    if r.is_ok() {
-        LAST_SCREEN_RECT.with(|c| c.set(Some(rect)));
+    let ctx_for_session = ctx.clone();
+    let session = EditSession::new(move |ec| {
+        let _asking = asking;
+        let rect = STATE.with(|s| {
+            // TSF's call, at a time of its choosing: never while an edit of
+            // ours holds the state — that edit reads the rect itself.
+            let state = s.try_borrow().ok()?;
+            let comp = state.composition.as_ref()?;
+            refresh_screen_rect(&ctx_for_session, ec, comp)
+        });
+        if let Some(rect) = rect {
+            found(rect);
+        }
+        Ok(())
+    });
+    let iface: ITfEditSession = session.into_object().into_interface();
+    let _ = unsafe { ctx.RequestEditSession(tid, &iface, TF_ES_ASYNCDONTCARE | TF_ES_READ) };
+}
+
+/// `locate`'s question, out to the application for as long as this lives:
+/// it goes with the edit session that asks, whether TSF runs that or drops
+/// it.
+struct Locating;
+
+impl Locating {
+    /// `None` while another question is out.
+    fn begin() -> Option<Self> {
+        if LOCATING.with(|c| c.replace(true)) {
+            None
+        } else {
+            Some(Self)
+        }
     }
-    // If GetTextExt failed (TF_E_NOLAYOUT, etc.) leave the cache as-is.
-    // The previous rect is still our best guess; the popup won't jump.
+}
+
+impl Drop for Locating {
+    fn drop(&mut self) {
+        LOCATING.with(|c| c.set(false));
+    }
+}
+
+/// Ask the application where the composition is on the screen, and keep the
+/// answer for `location`. Returns the rect if it gave one.
+fn refresh_screen_rect(ctx: &ITfContext, ec: u32, comp: &ITfComposition) -> Option<RECT> {
+    let answer = (|| -> Result<RECT> {
+        let view = unsafe { ctx.GetActiveView() }?;
+        let range = unsafe { comp.GetRange() }?;
+        let mut rect = RECT::default();
+        let mut clipped = BOOL::default();
+        unsafe { view.GetTextExt(ec, &range, &mut rect, &mut clipped) }?;
+        Ok(rect)
+    })();
+    let rect = answer.as_ref().ok().copied();
+    LOCATION.with(|c| c.set(located(c.get(), answer)));
+    rect
+}
+
+/// What an answer to "where is the composition" makes of what was known.
+fn located(known: Location, answer: Result<RECT>) -> Location {
+    match answer {
+        Ok(rect) => Location::At(rect),
+        // If GetTextExt failed (TS_E_NOLAYOUT, etc.), an earlier rect of
+        // this composition is still our best guess; the popup won't jump.
+        Err(_) if matches!(known, Location::At(_)) => known,
+        Err(e) if e.code() == TS_E_NOLAYOUT => Location::Pending,
+        Err(_) => Location::Unknown,
+    }
 }
 
 fn request_session(ctx: &ITfContext, tid: u32, session: EditSession) -> Result<()> {
@@ -479,5 +563,43 @@ mod tests {
         assert!(on_externally_terminated(0, Some(&another)));
         assert!(on_externally_terminated(0, None));
         assert!(!is_active());
+    }
+
+    #[test]
+    fn a_composition_is_where_the_application_last_said() {
+        use Location::{At, Pending, Unknown};
+        let rect = |left| RECT {
+            left,
+            top: 10,
+            right: left + 20,
+            bottom: 34,
+        };
+        let no_layout = || Err(TS_E_NOLAYOUT.into());
+        let failed = || Err(E_FAIL.into());
+
+        // Nothing known: the application's word, and what it promises.
+        assert_eq!(located(Unknown, Ok(rect(1))), At(rect(1)));
+        assert_eq!(located(Unknown, no_layout()), Pending);
+        assert_eq!(located(Unknown, failed()), Unknown);
+        // Waited for: the layout, when it is ready — or no more waiting.
+        assert_eq!(located(Pending, Ok(rect(2))), At(rect(2)));
+        assert_eq!(located(Pending, no_layout()), Pending);
+        assert_eq!(located(Pending, failed()), Unknown);
+        // Known: the newer rect, or the one in hand for want of one.
+        assert_eq!(located(At(rect(3)), Ok(rect(4))), At(rect(4)));
+        assert_eq!(located(At(rect(3)), no_layout()), At(rect(3)));
+        assert_eq!(located(At(rect(3)), failed()), At(rect(3)));
+    }
+
+    #[test]
+    fn one_question_about_the_layout_is_out_at_a_time() {
+        let asking = Locating::begin();
+        assert!(asking.is_some());
+        assert!(Locating::begin().is_none());
+        assert!(Locating::begin().is_none());
+        // Answered, or dropped unasked: the next one may go out.
+        drop(asking);
+        assert!(Locating::begin().is_some());
+        assert!(Locating::begin().is_some());
     }
 }

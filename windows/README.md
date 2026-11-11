@@ -120,6 +120,8 @@ In 英, and in a field where the application has switched input methods off — 
 
 A composition belongs to the field it was started in. When the focus moves to another field or window of the application — a click, Tab — the letters typed so far go into the text as they are, as with Enter, and the next key starts afresh where the focus is. So they do when the application ends the composition itself — at a click elsewhere in the same text, in most — and when the user switches to another input method: either way they are left as plain text, without the dotted underline of a code in flight. When another application comes to the front, the candidates leave the screen, and they are back when this one is, if it kept the composition open. Implementation: the `ITfThreadMgrEventSink`, `ITfThreadFocusSink` and `ITfCompositionSink` halves of `src/tip.rs`.
 
+The candidates open under the text being typed, their left edge on its own, and over it on the last lines of the screen; either way they stay inside the work area of the monitor the text is on, moved left where the text is near the right edge. They go with the text when the application scrolls or moves it (`ITfTextLayoutSink`). An application that has not laid the new text out yet when asked where it is (`TS_E_NOLAYOUT`) is to say when it has, and the candidates wait for that — for a tenth of a second, after which they open under the system caret or, in a window without one, in the corner of the focus window, as they do at once where the application gives no place at all. Implementation: `position` and `follow` in `src/candidate_window.rs`, `locate` in `src/composition.rs`.
+
 ## Project layout
 
 ```

@@ -524,8 +524,12 @@ impl TextInputProcessor_Impl {
                 hint: o.hint.clone(),
             })
             .collect();
-        let pos = popup_pos();
-        candidate_window::show(pos, items.clone(), ctx.clone(), tid);
+        // Under the composition, where `ITfContextView::GetTextExt` put it
+        // in the edit session just run — the TSF-native answer, which works
+        // in every TSF host (Chromium-based apps, modern Notepad, Word,
+        // etc.). The window sees to the applications that had none to give.
+        let place = composition::location();
+        candidate_window::show(place, items.clone(), ctx.clone(), tid);
         // Mirror the candidate state into the TSF UIElement so UI-less hosts
         // (games, immersive shells) can render the list in their own UI.
         if let Some(tm) = self.state.borrow().thread_mgr.clone() {
@@ -549,21 +553,6 @@ fn commit_as_typed(tid: u32) {
     jd::reset();
     candidate_window::hide();
     ui_element::end();
-}
-
-/// Best position for the candidate popup. Prefers `ITfContextView::GetTextExt`
-/// (the TSF-native answer that works in every TSF host — Chromium-based apps,
-/// modern Notepad, Word, etc.). Falls back to `GetCaretPos` for Win32 edit
-/// controls, which keep a real Win32 caret but may not implement TextExt.
-fn popup_pos() -> windows::Win32::Foundation::POINT {
-    use windows::Win32::Foundation::POINT;
-    if let Some(rect) = composition::last_screen_rect() {
-        return POINT {
-            x: rect.left,
-            y: rect.bottom + 4,
-        };
-    }
-    candidate_window::caret_screen_pos()
 }
 
 // ---- VK constants & helpers --------------------------------------------
