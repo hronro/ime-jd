@@ -113,9 +113,12 @@ Implementation: `userdict/` (package `jd-userdict`). Its library is shared with 
 | Backspace | Remove the last typed key (shrinks composition + engine) |
 | Esc | Cancel the in-flight composition |
 | Enter | Commit the typed letters as they are |
+| Home / End / Insert / Delete | Nothing, while composing: let through, they would move the application's caret out of the composition |
 | Shift, alone | Switch to 英 — while composing, after committing the typed letters as they are |
 
 In 英, and in a field where the application has switched input methods off — a password box, the user-dictionary window's 编码 field — keys reach the application as typed.
+
+A composition belongs to the field it was started in. When the focus moves to another field or window of the application — a click, Tab — the letters typed so far go into the text as they are, as with Enter, and the next key starts afresh where the focus is. When another application comes to the front, the candidates leave the screen, and they are back when this one is, if it kept the composition open. Implementation: the `ITfThreadMgrEventSink` and `ITfThreadFocusSink` halves of `src/tip.rs`.
 
 ## Project layout
 

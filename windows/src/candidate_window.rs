@@ -171,6 +171,12 @@ struct CandidateWindow {
     /// Screen position of the last show, so retiring the notice can resize
     /// the popup in place.
     origin: POINT,
+    /// Whether there are candidates up: from `show_at` until `hide`.
+    open: bool,
+    /// Whether another application has the focus (`set_thread_focus`): the
+    /// candidates of a composition still open here stay off the screen until
+    /// this one is back in front.
+    away: bool,
 }
 
 impl CandidateWindow {
@@ -235,6 +241,8 @@ impl CandidateWindow {
             notice_rect: None,
             hover_notice: false,
             origin: POINT::default(),
+            open: false,
+            away: false,
         })
     }
 
@@ -336,6 +344,10 @@ impl CandidateWindow {
         self.items = items;
         self.ctx = Some(ctx);
         self.tid = tid;
+        // A key brought these: the thread has the focus, whatever was last
+        // heard of it.
+        self.open = true;
+        self.away = false;
         // Items changed — drop any stale hover; the cursor may now be
         // over a different candidate or off the popup entirely.
         self.hover = None;
@@ -373,7 +385,8 @@ impl CandidateWindow {
         // When a UIElement-aware host has opted to render the candidate list
         // itself, leave the window hidden — we still keep `self.items` and
         // sizing fresh so flipping `is_shown` back on later re-renders cleanly.
-        if ui_element::is_shown() {
+        // Likewise while another application is in front.
+        if ui_element::is_shown() && !self.away {
             let _ = unsafe { ShowWindow(self.hwnd, SW_SHOWNOACTIVATE) };
         } else {
             let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
@@ -385,6 +398,7 @@ impl CandidateWindow {
     }
 
     fn hide(&mut self) {
+        self.open = false;
         self.hover = None;
         self.tracking_leave = false;
         unsafe {
@@ -610,11 +624,39 @@ pub fn sync_visibility() {
     WINDOW.with(|w| {
         if let Some(win) = w.borrow_mut().as_mut() {
             unsafe {
-                let _ = if shown {
+                let _ = if shown && win.open && !win.away {
                     ShowWindow(win.hwnd, SW_SHOWNOACTIVATE)
                 } else {
                     ShowWindow(win.hwnd, SW_HIDE)
                 };
+            }
+        }
+    });
+}
+
+/// The thread lost the focus — another application came to the front — or
+/// has it back. A composition may stay open in this one meanwhile, as the
+/// application decides; its candidates leave the screen with the focus and
+/// return with it.
+pub fn set_thread_focus(focused: bool) {
+    WINDOW.with(|w| {
+        // TSF's call, at a time of its choosing: never while the window is
+        // in the middle of something of its own.
+        let Ok(mut w) = w.try_borrow_mut() else {
+            return;
+        };
+        let Some(win) = w.as_mut() else {
+            return;
+        };
+        win.away = !focused;
+        if !win.open {
+            return;
+        }
+        if focused {
+            let _ = win.place();
+        } else {
+            unsafe {
+                let _ = ShowWindow(win.hwnd, SW_HIDE);
             }
         }
     });

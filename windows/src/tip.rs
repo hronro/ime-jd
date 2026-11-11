@@ -8,9 +8,11 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, IEnumTfDisplayAttributeInfo, ITfCompartmentEventSink,
     ITfCompartmentEventSink_Impl, ITfCompartmentMgr, ITfComposition, ITfCompositionSink,
     ITfCompositionSink_Impl, ITfContext, ITfDisplayAttributeInfo, ITfDisplayAttributeProvider,
-    ITfDisplayAttributeProvider_Impl, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr,
-    ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
-    ITfTextInputProcessorEx_Impl, ITfThreadMgr, TF_TMAE_SECUREMODE,
+    ITfDisplayAttributeProvider_Impl, ITfDocumentMgr, ITfKeyEventSink, ITfKeyEventSink_Impl,
+    ITfKeystrokeMgr, ITfSource, ITfTextInputProcessor, ITfTextInputProcessor_Impl,
+    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfThreadFocusSink,
+    ITfThreadFocusSink_Impl, ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
+    TF_TMAE_SECUREMODE,
 };
 use windows::core::{BOOL, ComObjectInner, GUID, IUnknownImpl, Interface, Ref, Result, implement};
 
@@ -26,7 +28,9 @@ use crate::{composition, host, jd, mode_icon, ui_element};
     ITfKeyEventSink,
     ITfCompositionSink,
     ITfDisplayAttributeProvider,
-    ITfCompartmentEventSink
+    ITfCompartmentEventSink,
+    ITfThreadMgrEventSink,
+    ITfThreadFocusSink
 )]
 #[derive(Default)]
 pub struct TextInputProcessor {
@@ -40,6 +44,10 @@ struct TipState {
     /// The connection that tells this TIP of every change to the input mode
     /// (input_mode.rs).
     mode_sink_cookie: Option<u32>,
+    /// The connections that tell it where the focus is: in which document
+    /// of this thread, and whether in this thread at all.
+    document_sink_cookie: Option<u32>,
+    thread_focus_sink_cookie: Option<u32>,
 }
 
 impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
@@ -58,6 +66,14 @@ impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
                     input_mode::compartment(thread_mgr).and_then(|c| c.cast::<ITfSource>())
             {
                 let _ = unsafe { source.UnadviseSink(cookie) };
+            }
+            if let Ok(source) = thread_mgr.cast::<ITfSource>() {
+                for cookie in [state.document_sink_cookie, state.thread_focus_sink_cookie]
+                    .into_iter()
+                    .flatten()
+                {
+                    let _ = unsafe { source.UnadviseSink(cookie) };
+                }
             }
             mode_icon::remove(thread_mgr);
         }
@@ -99,10 +115,25 @@ impl ITfTextInputProcessorEx_Impl for TextInputProcessor_Impl {
                 source.AdviseSink(&ITfCompartmentEventSink::IID, &mode_sink)
             })
             .ok();
+
+        // The focus: a composition ends when it leaves its document, and
+        // the candidates hide while it is out of this application.
+        let source = thread_mgr.cast::<ITfSource>().ok();
+        let document_sink: ITfThreadMgrEventSink = self.to_interface();
+        let document_sink_cookie = source.as_ref().and_then(|source| {
+            unsafe { source.AdviseSink(&ITfThreadMgrEventSink::IID, &document_sink) }.ok()
+        });
+        let thread_focus_sink: ITfThreadFocusSink = self.to_interface();
+        let thread_focus_sink_cookie = source.as_ref().and_then(|source| {
+            unsafe { source.AdviseSink(&ITfThreadFocusSink::IID, &thread_focus_sink) }.ok()
+        });
+
         *self.state.borrow_mut() = TipState {
             thread_mgr: Some(thread_mgr.clone()),
             client_id: tid,
             mode_sink_cookie,
+            document_sink_cookie,
+            thread_focus_sink_cookie,
         };
         let _ = input_mode::set(&thread_mgr, tid, false);
         input_mode::sync(&thread_mgr);
@@ -192,6 +223,14 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
         let tid = self.state.borrow().client_id;
         let sink: ITfCompositionSink = self.to_interface();
 
+        // A composition stays in the context it was started in. Should a
+        // key arrive for another one all the same — the focus moved, and
+        // nothing said so — the letters typed so far first go into their
+        // own text as they are, and this key starts afresh.
+        if composition::is_elsewhere(ctx) {
+            commit_as_typed(tid);
+        }
+
         // Modifier chords (Ctrl/Alt/Win + anything) are host shortcuts —
         // never route them to the engine.
         let m = mods();
@@ -218,6 +257,12 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
             if matches!(vk, VK_RIGHT | VK_DOWN | VK_NEXT) || translated == Some(b'=') {
                 let result = jd::next_page();
                 self.update_candidates_from_engine(ctx, tid, &result);
+                return Ok(BOOL(1));
+            }
+            // Home, End, Insert and Delete are taken and do nothing: let
+            // through, they would move the application's caret out of the
+            // composition, or delete beside it (integration.md).
+            if matches!(vk, VK_HOME | VK_END | VK_INSERT | VK_DELETE) {
                 return Ok(BOOL(1));
             }
             if vk == VK_ESCAPE {
@@ -383,12 +428,60 @@ impl ITfCompartmentEventSink_Impl for TextInputProcessor_Impl {
         // Turned to 英 by anything but Shift, which has already done this:
         // the letters typed so far go in as they are, as with Shift.
         if input_mode::sync(&thread_mgr) && composition::is_active() {
-            let _ = composition::commit_as_typed(tid);
-            jd::reset();
-            candidate_window::hide();
-            ui_element::end();
+            commit_as_typed(tid);
         }
         mode_icon::refresh();
+        Ok(())
+    }
+}
+
+impl ITfThreadMgrEventSink_Impl for TextInputProcessor_Impl {
+    fn OnInitDocumentMgr(&self, _pdim: Ref<'_, ITfDocumentMgr>) -> Result<()> {
+        Ok(())
+    }
+
+    fn OnUninitDocumentMgr(&self, _pdim: Ref<'_, ITfDocumentMgr>) -> Result<()> {
+        Ok(())
+    }
+
+    /// The focus went to another document of this thread — another field,
+    /// another window — or to none. A composition does not go with it: the
+    /// letters typed so far stay in their own text as they are, as when the
+    /// application ends the composition itself, and the next key starts
+    /// afresh where the focus is.
+    fn OnSetFocus(
+        &self,
+        pdimfocus: Ref<'_, ITfDocumentMgr>,
+        _pdimprevfocus: Ref<'_, ITfDocumentMgr>,
+    ) -> Result<()> {
+        if composition::is_outside(pdimfocus.as_ref()) {
+            commit_as_typed(self.state.borrow().client_id);
+        }
+        Ok(())
+    }
+
+    fn OnPushContext(&self, _pic: Ref<'_, ITfContext>) -> Result<()> {
+        Ok(())
+    }
+
+    fn OnPopContext(&self, _pic: Ref<'_, ITfContext>) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ITfThreadFocusSink_Impl for TextInputProcessor_Impl {
+    /// This application is in front again: the candidates of a composition
+    /// it kept open come back.
+    fn OnSetThreadFocus(&self) -> Result<()> {
+        candidate_window::set_thread_focus(true);
+        Ok(())
+    }
+
+    /// Another application came to the front. Whether a composition stays
+    /// open here is this one's to decide; its candidates do not stay on
+    /// the screen over the other.
+    fn OnKillThreadFocus(&self) -> Result<()> {
+        candidate_window::set_thread_focus(false);
         Ok(())
     }
 }
@@ -442,6 +535,17 @@ impl TextInputProcessor_Impl {
     }
 }
 
+/// End the composition in flight for a reason that is no key of its own —
+/// the mode turned to 英, the focus left its document: the letters typed so
+/// far stay in the text as they are, as Enter leaves them, and the
+/// candidates go.
+fn commit_as_typed(tid: u32) {
+    let _ = composition::commit_as_typed(tid);
+    jd::reset();
+    candidate_window::hide();
+    ui_element::end();
+}
+
 /// Best position for the candidate popup. Prefers `ITfContextView::GetTextExt`
 /// (the TSF-native answer that works in every TSF host — Chromium-based apps,
 /// modern Notepad, Word, etc.). Falls back to `GetCaretPos` for Win32 edit
@@ -464,10 +568,14 @@ const VK_RETURN: u16 = 0x0D;
 const VK_ESCAPE: u16 = 0x1B;
 const VK_PRIOR: u16 = 0x21; // PageUp
 const VK_NEXT: u16 = 0x22; // PageDown
+const VK_END: u16 = 0x23;
+const VK_HOME: u16 = 0x24;
 const VK_LEFT: u16 = 0x25;
 const VK_UP: u16 = 0x26;
 const VK_RIGHT: u16 = 0x27;
 const VK_DOWN: u16 = 0x28;
+const VK_INSERT: u16 = 0x2D;
+const VK_DELETE: u16 = 0x2E;
 
 fn should_consume(vk: u16) -> bool {
     // Modifier chords always pass through — they're host shortcuts.
@@ -479,7 +587,8 @@ fn should_consume(vk: u16) -> bool {
     if composition::is_active() {
         // Nav / cancel / finish keys we own while composing. Arrow keys must
         // be consumed even apart from the page-nav binding — letting them
-        // through would move the host's caret out of the composition range.
+        // through would move the host's caret out of the composition range,
+        // as would Home and End; Insert and Delete go the same way.
         // These have no printable translation, so they need an explicit list.
         if matches!(
             vk,
@@ -488,10 +597,14 @@ fn should_consume(vk: u16) -> bool {
                 | VK_BACK
                 | VK_PRIOR
                 | VK_NEXT
+                | VK_END
+                | VK_HOME
                 | VK_LEFT
                 | VK_RIGHT
                 | VK_UP
                 | VK_DOWN
+                | VK_INSERT
+                | VK_DELETE
         ) {
             return true;
         }

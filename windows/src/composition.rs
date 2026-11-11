@@ -5,9 +5,9 @@ use windows::Win32::Foundation::RECT;
 
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::UI::TextServices::{
-    ITfComposition, ITfCompositionSink, ITfContext, ITfContextComposition, ITfEditSession,
-    TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_ES_ASYNCDONTCARE, TF_ES_READWRITE,
-    TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE,
+    ITfComposition, ITfCompositionSink, ITfContext, ITfContextComposition, ITfDocumentMgr,
+    ITfEditSession, TF_AE_NONE, TF_ANCHOR_END, TF_DEFAULT_SELECTION, TF_ES_ASYNCDONTCARE,
+    TF_ES_READWRITE, TF_ES_SYNC, TF_SELECTION, TF_SELECTIONSTYLE,
 };
 use windows::core::{BOOL, ComObjectInner, Interface, Result};
 
@@ -177,21 +177,33 @@ pub fn commit(ctx: &ITfContext, tid: u32) -> Result<()> {
     request_session(ctx, tid, commit_session(ctx.clone()))
 }
 
-/// `commit`, for a switch to 英 that came from outside a key event — the
-/// mode icon, an application, a hotkey — and so names no context: the
-/// composition's own is used, and TSF runs the edit at once if it can, or
-/// as soon as the document is free. No-op if there's no composition.
+/// `commit`, for an end that came from outside a key event — a switch to 英
+/// by the mode icon, an application or a hotkey, or the focus gone to
+/// another document — and so names no context: the composition's own is
+/// used, and TSF runs the edit at once if it can, or as soon as the document
+/// is free. The composition leaves this thread's state here and now,
+/// whenever the edit runs, so the next key starts afresh. No-op if there's
+/// no composition.
 pub fn commit_as_typed(tid: u32) -> Result<()> {
-    let context = STATE.with(|s| {
-        s.borrow()
-            .composition
-            .as_ref()
-            .map(|comp| unsafe { comp.GetRange().and_then(|range| range.GetContext()) })
+    let comp = STATE.with(|s| {
+        // Called from TSF's sinks: never while an edit of ours holds the
+        // state.
+        let mut state = s.try_borrow_mut().ok()?;
+        state.buffer.clear();
+        state.composition.take()
     });
-    let Some(ctx) = context.transpose()? else {
+    let Some(comp) = comp else {
         return Ok(());
     };
-    let iface: ITfEditSession = commit_session(ctx.clone()).into_object().into_interface();
+    let ctx = unsafe { comp.GetRange().and_then(|range| range.GetContext()) }?;
+    let ctx_for_session = ctx.clone();
+    let session = EditSession::new(move |ec| {
+        // As in `commit_session`: the text stops rendering as in-flight.
+        let range = unsafe { comp.GetRange() }?;
+        let _ = display_attribute::clear(&ctx_for_session, ec, &range);
+        unsafe { comp.EndComposition(ec) }
+    });
+    let iface: ITfEditSession = session.into_object().into_interface();
     let _ = unsafe { ctx.RequestEditSession(tid, &iface, TF_ES_ASYNCDONTCARE | TF_ES_READWRITE) }?;
     Ok(())
 }
@@ -256,6 +268,35 @@ pub fn on_externally_terminated() {
 /// Whether there is currently an in-flight composition.
 pub fn is_active() -> bool {
     STATE.with(|s| s.borrow().composition.is_some())
+}
+
+/// Whether a composition is in flight in a context other than `ctx`. A
+/// composition stays in the context it was started in: a key that arrives
+/// for another one is not its to take.
+pub fn is_elsewhere(ctx: &ITfContext) -> bool {
+    context().is_some_and(|own| own != *ctx)
+}
+
+/// Whether a composition is in flight in a document other than `focus`, the
+/// one the focus is in now — if it is in any.
+pub fn is_outside(focus: Option<&ITfDocumentMgr>) -> bool {
+    context().is_some_and(|own| {
+        // SAFETY: a plain call on the composition's own context.
+        let document = unsafe { own.GetDocumentMgr() }.ok();
+        document.as_ref() != focus
+    })
+}
+
+/// The context of the composition in flight.
+fn context() -> Option<ITfContext> {
+    STATE.with(|s| {
+        // Asked from TSF's sinks too: never while an edit of ours holds the
+        // state.
+        let state = s.try_borrow().ok()?;
+        let comp = state.composition.as_ref()?;
+        // SAFETY: plain calls on the composition's own range.
+        unsafe { comp.GetRange().and_then(|range| range.GetContext()) }.ok()
+    })
 }
 
 /// Screen rect of the most recently-rendered composition range, if the host
