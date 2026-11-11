@@ -19,7 +19,14 @@ scripts/build-pkg.sh
 
 # Universal (arm64 + x86_64) → build/pkg/jd-ime-macos-universal.pkg
 scripts/build-pkg.sh --universal
+
+# Ad-hoc signed app, unsigned .pkg — for a Mac without the Developer ID identities
+scripts/build-pkg.sh --self-sign
 ```
+
+By default the app and the `.pkg` are signed with the Developer ID Application and Developer ID Installer identities in your keychain; the script stops before building when either is missing. A `--self-sign` build is for local testing.
+
+Release builds are signed in CI, then notarized and stapled: `release.yml`'s `build-macos-ime` does that when the repo has a `MACOS_SIGNING_P12` secret (both Developer ID identities exported as one `.p12`, base64), a `MACOS_SIGNING_P12_PASSWORD`, and the App Store Connect API key secrets the iOS upload uses (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`). Without them the release `.pkg` is built with `--self-sign`; the `.pkg` CI builds on every push always is.
 
 ## Install
 

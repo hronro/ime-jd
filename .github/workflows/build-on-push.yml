@@ -278,6 +278,8 @@ jobs:
   # prebuilt libjd matching the target arch:
   # build-pkg.sh links it via --libjd instead of rebuilding with zig, so the
   # job needs only xcodegen. build-pkg.sh builds for the runner's native arch by default.
+  # Push builds have no Developer ID, so they are ad-hoc signed (--self-sign);
+  # only release.yml signs and notarizes.
   build-macos-ime:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -307,7 +309,7 @@ jobs:
 
       - name: Build .pkg installer
         working-directory: macos
-        run: scripts/build-pkg.sh --libjd "${{ github.workspace }}/prebuilt-libs/lib/libjd.a"
+        run: scripts/build-pkg.sh --libjd "${{ github.workspace }}/prebuilt-libs/lib/libjd.a" --self-sign
 
       - name: Stage .pkg installer
         shell: bash

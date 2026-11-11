@@ -20,6 +20,7 @@ settings:
     # binary carries NO `get-task-allow` (the debug entitlement that makes
     # Launch Services flag the bundle `launch-disabled` and hides it from TIS
     # on macOS 26). This is the configuration proven to enumerate on Tahoe.
+    # scripts/build-pkg.sh re-signs it with a Developer ID unless --self-sign.
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO

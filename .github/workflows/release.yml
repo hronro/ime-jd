@@ -395,7 +395,7 @@ jobs:
         run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
 
   # One IME build per macOS arch, built natively on its own runner. The .pkg
-  # installer produced by build-pkg.sh is shipped directly.
+  # installer produced by build-pkg.sh is signed, notarized and shipped.
   build-macos-ime:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -423,9 +423,79 @@ jobs:
           name: libjd-macos-${{ matrix.arch }}
           path: prebuilt-libs
 
+      # The .pkg is signed with the Developer ID identities and notarized with
+      # the App Store Connect API key upload-ios-appstore uses, so Gatekeeper
+      # opens it without a warning. Without the secrets (forks), the .pkg is
+      # built unsigned, as on every push. Repo secrets:
+      #   MACOS_SIGNING_P12          — Developer ID Application + Developer ID
+      #                                Installer identities in one .p12, base64
+      #   MACOS_SIGNING_P12_PASSWORD — the .p12 export password
+      #   ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8 — shared with upload-ios-appstore
+      - name: Check for signing secrets
+        id: guard
+        env:
+          P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          ASC: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          if [ -n "$P12" ] && [ -n "$ASC" ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::macOS signing secrets not configured — the .pkg stays unsigned."
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import the Developer ID identities
+        if: steps.guard.outputs.sign == 'true'
+        env:
+          P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kc_password="$(uuidgen)"
+          security create-keychain -p "$kc_password" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_password" "$kc"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          # -x: the private keys can't be exported again from this keychain.
+          security import "$RUNNER_TEMP/signing.p12" -k "$kc" -P "$P12_PASSWORD" -f pkcs12 -x -A
+          rm "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_password" "$kc" >/dev/null
+          # Into the search list, where build-pkg.sh looks them up.
+          security list-keychains -d user | xargs security list-keychains -d user -s "$kc"
+
       - name: Build .pkg installer
         working-directory: macos
-        run: scripts/build-pkg.sh --libjd "${{ github.workspace }}/prebuilt-libs/lib/libjd.a"
+        run: >-
+          scripts/build-pkg.sh --libjd "${{ github.workspace }}/prebuilt-libs/lib/libjd.a"
+          ${{ steps.guard.outputs.sign != 'true' && '--self-sign' || '' }}
+
+      - name: Notarize and staple the .pkg
+        if: steps.guard.outputs.sign == 'true'
+        working-directory: macos
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          pkg=$(echo build/pkg/*.pkg)
+          key="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$ASC_KEY_P8" | base64 --decode > "$key"
+          auth=(--key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
+          # Only an Accepted submission gets a ticket to staple; for anything
+          # else print Apple's log, which names each rejected file and why.
+          xcrun notarytool submit "$pkg" "${auth[@]}" --wait --timeout 30m \
+            --output-format json > "$RUNNER_TEMP/notary.json" || true
+          cat "$RUNNER_TEMP/notary.json"
+          id=$(jq -r '.id // empty' "$RUNNER_TEMP/notary.json")
+          status=$(jq -r '.status // empty' "$RUNNER_TEMP/notary.json")
+          if [ "$status" != Accepted ]; then
+            [ -z "$id" ] || xcrun notarytool log "$id" "${auth[@]}"
+            exit 1
+          fi
+          xcrun stapler staple "$pkg"
+          spctl --assess --type install --verbose=2 "$pkg"
 
       - name: Package release archive
         shell: bash

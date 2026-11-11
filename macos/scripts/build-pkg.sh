@@ -7,9 +7,16 @@
 #   scripts/build-pkg.sh --libjd <path>  link a prebuilt libjd.a instead of
 #                                        building it from source with zig (it
 #                                        must cover the arch(es) being built)
+#   scripts/build-pkg.sh --self-sign     ad-hoc sign the app and leave the .pkg
+#                                        unsigned, for a Mac without the
+#                                        Developer ID identities
 #
 # Output: build/pkg/jd-ime-macos-<label>.pkg
 #   <label> is the native arch ("arm64" | "x86_64") or "universal".
+#
+# By default the app and the installer are signed with the Developer ID
+# Application and Developer ID Installer identities in the keychain search
+# list, ready for notarization.
 #
 # Per-arch is the default because the bundle is ~96% embedded trie (read-only
 # data); a universal binary ships that trie twice and roughly doubles the .pkg
@@ -22,9 +29,11 @@ cd "$(dirname "$0")/.."
 
 UNIVERSAL=false
 LIBJD_A=""
+SIGN=true
 while [ $# -gt 0 ]; do
     case "$1" in
         --universal) UNIVERSAL=true ;;
+        --self-sign) SIGN=false ;;
         --libjd) shift; [ $# -gt 0 ] || { echo "--libjd needs a path" >&2; exit 1; }; LIBJD_A="$1" ;;
         --libjd=*) LIBJD_A="${1#--libjd=}" ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
@@ -56,6 +65,26 @@ else
 fi
 
 command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not found (brew install xcodegen)" >&2; exit 1; }
+
+# The full name of the one valid identity in the keychain search list whose
+# certificate is "$1: <name> (<team>)". Resolved before the build, so a missing
+# or ambiguous identity fails in seconds rather than after it.
+signing_identity() {
+    found=$(security find-identity -v -p basic |
+        sed -n "s/^ *[0-9][0-9]*) [0-9A-F]\{40\} \"\($1: .*\)\"\$/\1/p" | sort -u)
+    case "$found" in
+        "") echo "no valid \"$1\" identity in the keychain search list (--self-sign builds without one)" >&2; exit 1 ;;
+        *"
+"*) printf 'more than one valid "%s" identity in the keychain search list:\n%s\n' "$1" "$found" >&2; exit 1 ;;
+    esac
+    echo "$found"
+}
+
+if $SIGN; then
+    APP_IDENTITY=$(signing_identity "Developer ID Application")
+    INSTALLER_IDENTITY=$(signing_identity "Developer ID Installer")
+    echo "==> Signing as: $APP_IDENTITY / $INSTALLER_IDENTITY"
+fi
 
 # Single source of truth for the version: core/build.zig.zon's `.version`.
 # It's forwarded to xcodebuild as MARKETING_VERSION (the Info.plist's
@@ -89,6 +118,16 @@ xcodebuild \
 
 APP_PATH="build/Build/Products/Release/JdIME.app"
 [ -d "$APP_PATH" ] || { echo "build did not produce $APP_PATH" >&2; exit 1; }
+
+# Xcode ad-hoc signs (project.yml), which --self-sign keeps; otherwise that is
+# replaced with the Developer ID signature, hardened runtime and secure
+# timestamp notarization requires. No entitlements, so still no
+# `get-task-allow` (see project.yml).
+if $SIGN; then
+    echo "==> Signing JdIME.app..."
+    codesign --force --options runtime --timestamp --sign "$APP_IDENTITY" "$APP_PATH"
+    codesign --verify --strict --verbose=2 "$APP_PATH"
+fi
 
 VERSION="$CORE_VERSION"
 IDENT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist")
@@ -139,16 +178,20 @@ sed \
     scripts/pkg/distribution.xml > "$DIST_RENDERED"
 
 PKG_OUT="$OUT_DIR/jd-ime-macos-$LABEL.pkg"
+# Only the product archive is signed; it covers the component package too.
+# (The positional parameters are free again after the argument loop.)
+if $SIGN; then
+    set -- --sign "$INSTALLER_IDENTITY" --timestamp
+else
+    set --
+fi
 echo "==> productbuild..."
 productbuild \
     --distribution "$DIST_RENDERED" \
     --resources scripts/pkg \
     --package-path "$OUT_DIR" \
+    "$@" \
     "$PKG_OUT"
 
 rm -f "$OUT_DIR/JdIME-component.pkg" "$COMPONENT_PLIST"
 echo "built $PKG_OUT"
-
-# Optional signing (uncomment and configure the identity for distribution):
-# productsign --sign "Developer ID Installer: <Your Name> (TEAMID)" \
-#     "$PKG_OUT" "${PKG_OUT%.pkg}-signed.pkg"
