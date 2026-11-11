@@ -96,6 +96,14 @@ impl Table {
         &self.shown
     }
 
+    /// Where `rows` (indices into `rows()`) are on screen: their positions
+    /// in `shown()`, in the order given, less those the search hides.
+    pub fn view_rows(&self, rows: &[usize]) -> Vec<usize> {
+        // `shown` is in list order, so each row is a binary search away: a
+        // scan for each made selecting thousands of rows quadratic.
+        rows.iter().filter_map(|row| self.shown.binary_search(row).ok()).collect()
+    }
+
     pub fn filter(&self) -> &str {
         &self.filter
     }
@@ -486,6 +494,23 @@ mod tests {
         f.table.add(1, &Entry::new("新", "zzzzzc")).unwrap();
         assert!(!f.table.is_filtering());
         assert_eq!(f.table.shown(), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn rows_are_found_on_screen_by_their_place_in_the_shown_ones() {
+        let mut f = Fixture::new("view", Some("键道\tzzzzzz\n输入法\tzzzzza\nABC\tzzzzzb\n键道输入法\tzzzzzc\n".as_bytes()));
+        // Unfiltered, a row is where its index says; the order asked is the
+        // order answered, and a row that is not there is not found.
+        assert_eq!(f.table.view_rows(&[0, 3]), [0, 3]);
+        assert_eq!(f.table.view_rows(&[3, 1, 9]), [3, 1]);
+        assert_eq!(f.table.view_rows(&[]), [0usize; 0]);
+
+        // Under a search, rows 0 and 3 are the first and second on screen,
+        // and the others are not on it.
+        f.table.set_filter("键道");
+        assert_eq!(f.table.shown(), [0, 3]);
+        assert_eq!(f.table.view_rows(&[0, 1, 2, 3]), [0, 1]);
+        assert_eq!(f.table.view_rows(&[1, 2]), [0usize; 0]);
     }
 
     #[test]

@@ -163,6 +163,9 @@ struct Window {
     /// The window's size as the template made it: the smallest it goes.
     min_size: Cell<(i32, i32)>,
     dpi: Cell<u32>,
+    /// Whether `select_rows` is at work: the list tells of every row it
+    /// changes, and the buttons follow once, when the selection is whole.
+    selecting: Cell<bool>,
 }
 
 thread_local! {
@@ -491,18 +494,19 @@ impl Window {
     /// Select exactly `rows` (indices into the table) as far as they are
     /// shown, focusing and revealing the first.
     fn select_rows(&self, rows: &[usize]) {
-        let view_rows: Vec<usize> = {
-            let table = self.table.borrow();
-            rows.iter()
-                .filter_map(|row| table.shown().iter().position(|shown| shown == row))
-                .collect()
-        };
+        let view_rows = self.table.borrow().view_rows(rows);
         let selected_and_focused = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0);
+        // The list tells of each row as its state is set, and the buttons
+        // read the whole selection to follow it: once, below, not once a
+        // row — which took a second for a thousand rows, and half a minute
+        // for four thousand.
+        self.selecting.set(true);
         self.set_item_state(-1, LIST_VIEW_ITEM_STATE_FLAGS(0), selected_and_focused);
         for (n, &row) in view_rows.iter().enumerate() {
             let state = if n == 0 { selected_and_focused } else { LVIS_SELECTED };
             self.set_item_state(row as isize, state, state);
         }
+        self.selecting.set(false);
         if let Some(&first) = view_rows.first() {
             // SAFETY: a plain message to the list.
             unsafe {
@@ -913,7 +917,9 @@ impl Window {
                 LVN_GETEMPTYMARKUP => {
                     return Some(self.empty_markup(&mut *(lparam.0 as *mut NMLVEMPTYMARKUP)));
                 }
-                LVN_ITEMCHANGED | LVN_ODSTATECHANGED => self.update_buttons(),
+                // The selection changed — unless `select_rows` is still
+                // making it, and follows up itself.
+                LVN_ITEMCHANGED | LVN_ODSTATECHANGED if !self.selecting.get() => self.update_buttons(),
                 NM_DBLCLK => {
                     let activate = &*(lparam.0 as *const NMITEMACTIVATE);
                     let mut hit = LVHITTESTINFO {
@@ -1267,6 +1273,7 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 remember_placement: launch.remember_placement,
                 min_size: Cell::new((0, 0)),
                 dpi: Cell::new(GetDpiForWindow(hwnd).max(96)),
+                selecting: Cell::new(false),
             });
             WINDOW.with(|w| *w.borrow_mut() = Some(window.clone()));
             window.init();
