@@ -31,7 +31,7 @@ final class UserDictTests: XCTestCase {
         XCTAssertEqual(plain.readRange(from: 0, count: 1).first?.value, "不")
     }
 
-    func testAUserOnlyCodeComposesWithHintsAndAutoCommits() throws {
+    func testAUserOnlyCodeComposesWithHintsAndTheNextKeyCommitsASoleCandidate() throws {
         let (dict, _) = try build("键道\tzzzzzz\n键道输入法\tzzzzza\n")
         let engine = Engine(userDict: dict)
         for byte in "zzzzz".utf8 {
@@ -45,9 +45,14 @@ final class UserDictTests: XCTestCase {
         XCTAssertEqual(window[1].value, "键道")
         XCTAssertEqual(window[1].hint, "z")
 
-        let state = engine.pressKey(UInt8(ascii: "z"))
+        let full = engine.pressKey(UInt8(ascii: "z"))
+        XCTAssertNil(full.commit, "a sole candidate is not committed on the last key")
+        XCTAssertEqual(full.optionsCount, 1)
+        XCTAssertEqual(engine.readRange(from: 0, count: 4).map(\.value), ["键道"])
+
+        let state = engine.pressKey(UInt8(ascii: "h"))
         XCTAssertEqual(state.commit, "键道")
-        XCTAssertEqual(state.optionsCount, 0)
+        XCTAssertTrue(state.isComposing, "h is left composing")
     }
 
     func testBadLinesAreSkippedAndNotedNeverFatal() throws {
@@ -96,7 +101,7 @@ final class UserDictTests: XCTestCase {
 
         // The engine reads the cached copy exactly like the original.
         let engine = Engine(userDict: again)
-        for byte in "zzzzzz".utf8 {
+        for byte in "zzzzzz ".utf8 {
             engine.pressKey(byte)
         }
         XCTAssertEqual(engine.state.commit, "键道")

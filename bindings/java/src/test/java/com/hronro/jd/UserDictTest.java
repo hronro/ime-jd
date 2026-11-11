@@ -58,7 +58,7 @@ class UserDictTest {
     }
 
     @Test
-    void aUserOnlyCodeComposesWithHintsAndAutoCommits() throws UserDictException {
+    void aUserOnlyCodeComposesWithHintsAndTheNextKeyCommitsASoleCandidate() throws UserDictException {
         UserDict dict = UserDict.build("键道\tzzzzzz\n键道输入法\tzzzzza\n").dict();
         try (Engine e = new Engine(dict)) {
             type(e, "zzzzz");
@@ -66,9 +66,13 @@ class UserDictTest {
             List<Candidate> window = e.readRange(0, 4);
             assertEquals(List.of("键道输入法", "键道"), values(window));
             assertEquals(List.of("a", "z"), window.stream().map(Candidate::hint).toList());
-            EngineState state = e.pressKey((byte) 'z');
+            EngineState full = e.pressKey((byte) 'z');
+            assertNull(full.commit(), "a sole candidate is not committed on the last key");
+            assertEquals(1, full.optionsCount());
+            assertEquals(List.of("键道"), values(e.readRange(0, 4)));
+            EngineState state = e.pressKey((byte) 'h');
             assertEquals("键道", state.commit());
-            assertEquals(0, state.optionsCount());
+            assertTrue(state.optionsCount() > 0, "h is left composing");
         }
     }
 
@@ -171,7 +175,7 @@ class UserDictTest {
         assertEquals(tag, again.getSourceTag());
         assertEquals(1, again.getEntries());
         try (Engine e = new Engine(again)) {
-            type(e, "zzzzzz");
+            type(e, "zzzzzz ");
             assertEquals("键道", e.getState().commit(), "the engine reads the cached copy like the original");
         }
 

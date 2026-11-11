@@ -149,7 +149,7 @@ Cost model: reading forward is amortized O(1) per candidate, so walking the whol
 
 ### The anchor: what the engine's own commits resolve to
 
-Some keys make the engine commit by itself — space, `;`, the commit-and-jump when a key restarts from the root, and the literal-byte fallback. Those resolve against **`anchor_index`**: space and the fallbacks take `anchor_index`, `;` takes `anchor_index + 1`.
+Some keys make the engine commit by itself — space, `;`, the commit-and-jump when a key restarts from the root, and the literal-byte fallback. Those resolve against **`anchor_index`**: space and the fallbacks take `anchor_index`, `;` takes `anchor_index + 1` — or, when there is no candidate there (a one-candidate window, or the anchor on the last candidate), commits `anchor_index` and opens the `;` symbol window, like the commit-and-jump.
 
 The anchor moves only when you call `jd_set_anchor`, or when a new composition starts (which resets it to 0). So the rule for a frontend is simply:
 
@@ -195,6 +195,8 @@ if (s->commit_a || s->commit_b || s->commit_lit) {
 | Empty (no-op)             | absent   | 0               |
 
 The third row happens when the user types a key that isn't a child of the current trie node but *is* a child of the root: the anchor candidate is committed *and* the user is now navigating fresh from the root with the just-pressed key.
+
+A letter that continues the composition never commits, even when the code it completes has a single candidate: that candidate stays in the window (`options_count` = 1) until the next key commits it by the usual rules. Typing a unique code and then `h`, say, commits the code's candidate and leaves `h` composing.
 
 ### Pointer lifetimes
 
@@ -317,8 +319,8 @@ The blob is your memory and the engine reads it in place:
 ### What the engine does with it
 
 - A user phrase sits in the same flat candidate list as built-in words, in the same order — shorter completions first, ties by key order — with hints like any other candidate. On an exact tie, a user phrase on a built-in code, the **user phrase comes first**, so it is what space commits: adding a phrase on a code is how a user overrides that code's default.
-- A code only the user dictionary knows composes exactly like a built-in one, including the auto-commit when it is the sole completion, the `;` second-candidate rule, backspace, and the commit-and-jump when it starts a new composition.
-- A user phrase on a code that used to be unique therefore turns that code's auto-commit into a two-candidate window — that is what sharing a code means. The build's notes say so (`JD_USER_DICT_LINE_CODE_IN_BUILTIN`, with the number of built-in words on the code), so a GUI can show it next to the row.
+- A code only the user dictionary knows composes exactly like a built-in one, including the `;` second-candidate rule, backspace, and the commit-and-jump when it starts a new composition.
+- A user phrase on a code that used to be unique therefore turns that code's one-candidate window into a two-candidate one, with the phrase first — that is what sharing a code means. The build's notes say so (`JD_USER_DICT_LINE_CODE_IN_BUILTIN`, with the number of built-in words on the code), so a GUI can show it next to the row.
 - Per keystroke a user dictionary costs a handful of binary searches, whatever its size, and the per-context allocation is unchanged.
 
 ## WebAssembly
@@ -344,7 +346,7 @@ The table below is the recommended dispatch policy across all platforms. Followi
 |---|---|---|
 | Modifier chords (Ctrl / Cmd / Alt / Win+anything) | IME | pass through to the host — these are host shortcuts (select-all, copy/paste, menu accelerators, system commands) |
 | `a`–`z` | engine | `jd_press_key(byte)` — descends the trie / starts a composition |
-| Punctuation (the keys mapped in `punctuation-marks/normal.txt` + `paired.txt`, plus `;`) | engine **or** IME — implementer's choice | **Delegate to the engine**: `jd_press_key(byte)` resolves the byte to a Chinese mark (auto-commit, paired-toggle, or a candidate window — see "Punctuation handling" below). **Or bypass the engine** and insert the mark in the IME yourself, replicating the engine's semantics: if a composition is in flight, commit the anchor candidate first, then append the mark; otherwise insert the mark directly. **Desktop IMEs usually delegate** (the hardware key already shows the ASCII glyph); **mobile IMEs usually bypass**, so the on-screen keyboard shows the Chinese marks directly and the user taps the exact one. Either way, dispatch the **actually-typed byte** (`Shift+/` → `?`, `Shift+1` → `!`). **`;` is a special case**: the engine routes it through its trie *symbol scheme* (`;`→`；`, `;;`→`：`, `;e`→`（`, … — opening a candidate window when not composing) rather than the punctuation tables, and reuses it as the built-in **2nd-candidate selector** while composing a trie code (it picks `anchor_index + 1`, not commit-then-append; on a *punctuation* candidate window it instead commits the window's anchor candidate and then opens its own symbol window). A delegating desktop IME gets both behaviors for free; a bypassing mobile IME usually omits the `;` key, since a candidate tap already selects the 2nd one. |
+| Punctuation (the keys mapped in `punctuation-marks/normal.txt` + `paired.txt`, plus `;`) | engine **or** IME — implementer's choice | **Delegate to the engine**: `jd_press_key(byte)` resolves the byte to a Chinese mark (auto-commit, paired-toggle, or a candidate window — see "Punctuation handling" below). **Or bypass the engine** and insert the mark in the IME yourself, replicating the engine's semantics: if a composition is in flight, commit the anchor candidate first, then append the mark; otherwise insert the mark directly. **Desktop IMEs usually delegate** (the hardware key already shows the ASCII glyph); **mobile IMEs usually bypass**, so the on-screen keyboard shows the Chinese marks directly and the user taps the exact one. Either way, dispatch the **actually-typed byte** (`Shift+/` → `?`, `Shift+1` → `!`). **`;` is a special case**: the engine routes it through its trie *symbol scheme* (`;`→`；`, `;;`→`：`, `;e`→`（`, … — opening a candidate window when not composing) rather than the punctuation tables, and reuses it as the built-in **2nd-candidate selector** while composing a trie code (it picks `anchor_index + 1`, not commit-then-append; when there is no candidate at `anchor_index + 1` — a one-candidate window, or the anchor on the last candidate — and on a *punctuation* candidate window, it instead commits the window's anchor candidate and then opens its own symbol window). A delegating desktop IME gets both behaviors for free; a bypassing mobile IME usually omits the `;` key, since a candidate tap already selects the 2nd one. |
 | Other printable ASCII (digits `0`-`9`, uppercase letters, other `Shift`/`Caps Lock`-modified bytes not in the punctuation tables …) | engine | `jd_press_key(byte)` — commits the current state and appends the byte literally, so `Shift+K` → `K` yields `…K`. |
 | Space | engine | `jd_press_key(' ')` — engine commits the anchor candidate and appends nothing |
 | Candidate-selector keys / gestures | IME (bindings up to the implementer) | commit the candidate's `value` yourself, then `jd_reset()` |

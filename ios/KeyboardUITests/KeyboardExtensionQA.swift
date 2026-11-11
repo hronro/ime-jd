@@ -111,7 +111,8 @@ final class KeyboardExtensionQA: XCTestCase {
         XCTAssertEqual(app.switches.firstMatch.value as? String, "1", "switched on")
 
         // The real extension over the preview's field: the code composes the
-        // phrase, and the sixth key auto-commits it.
+        // phrase, which waits after the sixth key until the next one (h)
+        // commits it.
         app.launchArguments = ["-preview", "-system", "-userdict", seed]
         app.launch()
         XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 10))
@@ -128,6 +129,7 @@ final class KeyboardExtensionQA: XCTestCase {
             .matching(NSPredicate(format: "label BEGINSWITH %@", "键道")).firstMatch
         XCTAssertTrue(candidate.waitForExistence(timeout: 3), "the user phrase is not in the extension's candidate bar")
         tapKey(app, "z")
+        tapKey(app, "h")
         XCTAssertTrue(((app.textViews.firstMatch.value as? String) ?? "").contains("键道"), "not committed")
     }
 

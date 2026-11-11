@@ -52,10 +52,9 @@ final class UserDictContainerTests: XCTestCase {
         XCTAssertEqual(loaded.dict.entries, 1, "不/b repeats a built-in word and is dropped")
         XCTAssertEqual(store.report?.dropped, 1)
 
-        // The phrase reaches an engine created with it (one key short of the
-        // full code: the sole completion auto-commits on the last key).
+        // The phrase reaches an engine created with it.
         let engine = Engine(userDict: loaded.dict)
-        for byte in "zzzzz".utf8 {
+        for byte in "zzzzzz".utf8 {
             _ = engine.pressKey(byte)
         }
         XCTAssertEqual(engine.readRange(from: 0, count: 1).map(\.value), ["键道"])

@@ -31,8 +31,12 @@ final class InputSessionTests: XCTestCase {
         XCTAssertEqual(s.snapshot.candidates.map(\.value), ["键道"])
         XCTAssertEqual(s.snapshot.candidates.first?.hint, "z")
         s.handle(.engineKey(UInt8(ascii: "z")))
-        XCTAssertEqual(h.joined, "键道", "the sole completion auto-commits")
-        XCTAssertFalse(s.isComposing)
+        XCTAssertTrue(s.isComposing, "the sole completion waits for the next key")
+        XCTAssertEqual(s.snapshot.candidates.map(\.value), ["键道"])
+        XCTAssertEqual(h.inserted, [])
+        s.handle(.engineKey(UInt8(ascii: "h")))
+        XCTAssertEqual(h.joined, "键道")
+        XCTAssertEqual(s.rawBuffer, "h")
     }
 
     /// Swapping the dictionary mid-composition drops the composition and

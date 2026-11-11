@@ -448,6 +448,49 @@ test "reading the whole dictionary list leaves the anchor commit intact" {
     );
 }
 
+test "`;` on a last page holding one candidate commits it and opens the symbol window" {
+    // `j` has thousands of candidates. A frontend that pages to the end,
+    // where the last page holds only the final one, leaves `;` no 2nd
+    // candidate to pick — so it acts as in a one-candidate window.
+    const handle = jd_init(null, 0) orelse return error.OutOfMemory;
+    defer jd_deinit(handle);
+    jd_press_key(handle, 'j');
+    const total = jd_state_ptr(handle).options_count;
+    try std.testing.expect(total > 1);
+
+    // On any full page, `;` picks the page's 2nd candidate.
+    var page: [2]QueryOption = undefined;
+    jd_set_anchor(handle, total - 2);
+    try std.testing.expectEqual(@as(u32, 2), jd_read_range(handle, total - 2, 2, &page, 2));
+    const second = try std.testing.allocator.dupe(u8, std.mem.sliceTo(page[1].value, 0));
+    defer std.testing.allocator.free(second);
+    jd_press_key(handle, ';');
+    var buf: [1024]u8 = undefined;
+    try std.testing.expectEqualStrings(second, joined(handle, &buf) orelse return error.NoCommit);
+    try std.testing.expectEqual(@as(u32, 0), jd_state_ptr(handle).options_count);
+
+    // On the last page, `;` commits its one candidate and opens what a
+    // fresh `;` opens.
+    jd_press_key(handle, 'j');
+    jd_set_anchor(handle, total - 1);
+    try std.testing.expectEqual(@as(u32, 1), jd_read_range(handle, total - 1, 2, &page, 2));
+    const last = try std.testing.allocator.dupe(u8, std.mem.sliceTo(page[0].value, 0));
+    defer std.testing.allocator.free(last);
+    jd_press_key(handle, ';');
+    try std.testing.expectEqualStrings(last, joined(handle, &buf) orelse return error.NoCommit);
+    try std.testing.expectEqual(@as(u8, 0), jd_state_ptr(handle).commit_lit);
+    try std.testing.expectEqual(@as(u32, 0), jd_state_ptr(handle).anchor_index);
+
+    const fresh = jd_init(null, 0) orelse return error.OutOfMemory;
+    defer jd_deinit(fresh);
+    jd_press_key(fresh, ';');
+    try std.testing.expect(jd_state_ptr(fresh).options_count > 1);
+    try std.testing.expectEqual(jd_state_ptr(fresh).options_count, jd_state_ptr(handle).options_count);
+    var mine: [1]QueryOption = undefined;
+    try std.testing.expectEqual(@as(u32, 1), jd_read_range(handle, 0, 1, &mine, 1));
+    try std.testing.expectEqualStrings("；", std.mem.sliceTo(mine[0].value, 0));
+}
+
 test "jd_scratch_ptr is writable and holds a full window" {
     const handle = jd_init(null, 0) orelse return error.OutOfMemory;
     defer jd_deinit(handle);
@@ -606,12 +649,41 @@ test "a user dictionary built through the ABI merges into the real dictionary" {
     var buf: [1024]u8 = undefined;
     try std.testing.expectEqualStrings("测试词", joined(handle, &buf) orelse return error.NoCommit);
 
-    // A user-only code composes and auto-commits on its last key.
-    for ("zzzzz") |k| jd_press_key(handle, k);
+    // A user-only code composes like a built-in one. Its sole candidate is
+    // not committed on the last key: the next key commits it, and composes
+    // on its own.
+    for ("zzzzzz") |k| jd_press_key(handle, k);
+    try std.testing.expect(joined(handle, &buf) == null);
     try std.testing.expectEqual(@as(u32, 1), jd_state_ptr(handle).options_count);
-    jd_press_key(handle, 'z');
+    jd_press_key(handle, 'h');
     try std.testing.expectEqualStrings("键道", joined(handle, &buf) orelse return error.NoCommit);
-    try std.testing.expectEqual(@as(u32, 0), jd_state_ptr(handle).options_count);
+    {
+        // The composition is now just "h": the same list a fresh `h` gets.
+        const fresh = blob.init() orelse return error.InitFailed;
+        defer jd_deinit(fresh);
+        jd_press_key(fresh, 'h');
+        try std.testing.expect(jd_state_ptr(fresh).options_count > 0);
+        try std.testing.expectEqual(jd_state_ptr(fresh).options_count, jd_state_ptr(handle).options_count);
+    }
+
+    // With no 2nd candidate to pick, `;` commits the sole one and opens the
+    // `;` symbol window, exactly as a fresh `;` does.
+    jd_reset(handle);
+    for ("zzzzzz;") |k| jd_press_key(handle, k);
+    try std.testing.expectEqualStrings("键道", joined(handle, &buf) orelse return error.NoCommit);
+    {
+        const fresh = blob.init() orelse return error.InitFailed;
+        defer jd_deinit(fresh);
+        jd_press_key(fresh, ';');
+        try std.testing.expect(jd_state_ptr(fresh).options_count > 1);
+        try std.testing.expectEqual(jd_state_ptr(fresh).options_count, jd_state_ptr(handle).options_count);
+        var mine: [1]QueryOption = undefined;
+        var theirs: [1]QueryOption = undefined;
+        try std.testing.expectEqual(@as(u32, 1), jd_read_range(handle, 0, 1, &mine, 1));
+        try std.testing.expectEqual(@as(u32, 1), jd_read_range(fresh, 0, 1, &theirs, 1));
+        try std.testing.expectEqualStrings("；", std.mem.sliceTo(theirs[0].value, 0));
+        try std.testing.expectEqualStrings("；", std.mem.sliceTo(mine[0].value, 0));
+    }
 
     // The commit pointed into the host's blob, which is still alive — and
     // the notes past it are untouched by the context.

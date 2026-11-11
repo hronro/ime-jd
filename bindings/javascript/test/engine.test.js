@@ -336,7 +336,7 @@ test("a user dictionary's phrases lead the built-in candidates on a shared code"
   }
 });
 
-test("a user-only code composes with hints and auto-commits", () => {
+test("a user-only code composes with hints; the next key commits a sole candidate", () => {
   const { dict } = mod.buildUserDict("键道\tzzzzzz\n键道输入法\tzzzzza\n");
   const e = mod.createEngine({ userDict: dict });
   try {
@@ -346,9 +346,13 @@ test("a user-only code composes with hints and auto-commits", () => {
       { value: "键道输入法", hint: "a" },
       { value: "键道", hint: "z" },
     ]);
-    const committed = e.pressKey(byte("z"));
+    const full = e.pressKey(byte("z"));
+    assert.equal(full.commit, null);
+    assert.equal(full.optionsCount, 1);
+    assert.deepEqual(e.readRange(0, 4), [{ value: "键道", hint: null }]);
+    const committed = e.pressKey(byte("h"));
     assert.equal(committed.commit, "键道");
-    assert.equal(committed.optionsCount, 0);
+    assert.ok(committed.optionsCount > 0, "h is left composing");
   } finally {
     e.dispose();
     dict.dispose();

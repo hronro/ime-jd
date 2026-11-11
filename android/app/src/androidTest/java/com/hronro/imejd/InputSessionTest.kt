@@ -283,8 +283,12 @@ class InputSessionTest {
         assertEquals(listOf("键道"), s.snapshot.candidates.map { it.value })
         assertEquals("z", s.snapshot.candidates.first().hint)
         s.handle(KeyAction.EngineKey(ascii('z')))
-        assertEquals("the sole completion auto-commits", "键道", h.joined)
-        assertFalse(s.isComposing)
+        assertTrue("the sole completion waits for the next key", s.isComposing)
+        assertEquals(listOf("键道"), s.snapshot.candidates.map { it.value })
+        assertTrue(h.inserted.isEmpty())
+        s.handle(KeyAction.EngineKey(ascii('h')))
+        assertEquals("键道", h.joined)
+        assertEquals("h", s.rawBuffer)
         s.close()
     }
 

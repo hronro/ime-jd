@@ -23,8 +23,9 @@ final class EngineSmokeTests: XCTestCase {
         let engine = Engine()
         engine.pressKey(UInt8(ascii: "b"))
         let state = engine.pressKey(UInt8(ascii: "a"))
-        // Either there are still candidates, or the engine auto-committed.
-        XCTAssertTrue(state.isComposing || state.hasCommit)
+        // 'a' either continues the code or commits it and starts a new one;
+        // either way a composition is open.
+        XCTAssertTrue(state.isComposing)
     }
 
     func testPunctuationCommitsAndAppends() {

@@ -265,7 +265,7 @@ fn user_phrases_lead_the_built_in_candidates_on_a_shared_code() {
 }
 
 #[test]
-fn a_user_only_code_composes_with_hints_and_auto_commits() {
+fn a_user_only_code_composes_with_hints_and_the_next_key_commits_a_sole_candidate() {
     let (dict, _) = phrase_dict("键道\tzzzzzz\n键道输入法\tzzzzza\n");
     let mut ctx = JdContext::with_user_dict(dict).expect("jd_init failed");
 
@@ -282,8 +282,15 @@ fn a_user_only_code_composes_with_hints_and_auto_commits() {
     assert_eq!((window[1].value(), window[1].hint()), ("键道", Some("z")));
 
     ctx.press_key(b'z');
+    assert!(ctx.commit().is_none());
+    assert_eq!(ctx.state().options_count, 1);
+    let window = ctx.candidates(0, 4);
+    assert_eq!(window.len(), 1);
+    assert_eq!((window[0].value(), window[0].hint()), ("键道", None));
+
+    ctx.press_key(b'h');
     assert_eq!(ctx.commit().unwrap().to_string(), "键道");
-    assert_eq!(ctx.state().options_count, 0);
+    assert!(ctx.state().options_count > 0, "h is left composing");
 }
 
 #[test]
@@ -513,7 +520,7 @@ fn a_static_blob_is_used_in_place_and_check_peeks_without_taking_over() {
     assert_eq!(dict.source_tag(), tag);
 
     let mut ctx = JdContext::with_user_dict(dict.leak()).expect("jd_init failed");
-    for byte in *b"zzzzzz" {
+    for byte in *b"zzzzzz " {
         ctx.press_key(byte);
     }
     assert_eq!(ctx.commit().unwrap().to_string(), "键道");

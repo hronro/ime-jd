@@ -321,14 +321,17 @@ void jd_free(void *ptr, size_t size);
  * byte; the engine resolves it in this order:
  *   1. Space commits the candidate at `anchor_index` (or a bare " " when
  *      nothing is in flight); `;` commits `anchor_index + 1` on a trie
- *      composition. Digits are literal input — numeric candidate-selector
+ *      composition. When there is no candidate at `anchor_index + 1`, `;`
+ *      is handled as in 3: it commits the anchor candidate and opens the
+ *      `;` symbol window. Digits are literal input — numeric candidate-selector
  *      bindings (`1`-`9` and the like) are the IME's responsibility, see
  *      docs/integration.md.
  *   2. The punctuation tables — paired entries auto-commit with toggle,
  *      single-candidate normals auto-commit, multi-candidate normals open a
  *      candidate window.
  *   3. The trie — descend, or commit-and-jump when the key is a child of
- *      the root but not of the current node.
+ *      the root but not of the current node. A descent never commits, even
+ *      to a code with a single candidate: the next key commits it.
  *   4. Fallback — commit the anchor candidate with the key byte appended.
  *
  * Read the outcome with jd_state_ptr.

@@ -21,17 +21,24 @@
 //! <one literal byte>)`:
 //!
 //!   case A   space          → anchor[0]              | " "
-//!   case B   `;` fallthrough→ anchor[1]              | anchor[0] + ';'
+//!   case B   `;` 2nd option → anchor[1]
 //!   case C   paired punc    → [prev +] open/close half
 //!   case D   normal punc    → [prev +] candidate
-//!   case E1  auto-commit    → [prev +] the sole option
-//!   case F1  drill + commit → prev + the sole option
+//!   case E   descend        → [prev]
+//!   case F   commit + jump  → anchor[0]
 //!   case G   root fallback  → [prev +] the key byte
 //!   case H   deep fallback  → anchor[0] + the key byte
 //!
-//! No case needs three segments (the `prev == null` assertions in F and H
-//! are what rule it out), so `JdState` carries two immortal pointers plus
-//! one inline byte and the engine needs no scratch buffer at all.
+//! No case needs three segments (the `prev == null` assertion in H is what
+//! rules it out), so `JdState` carries two immortal pointers plus one
+//! inline byte and the engine needs no scratch buffer at all.
+//!
+//! The trie never commits on its own: a descent that leaves a single
+//! candidate still shows it in a window, and the next key decides — space
+//! commits it, punctuation commits it plus the mark, and any other key
+//! commits it through the commit-and-jump (F) or literal (H) fallback.
+//! `;` is one of those other keys whenever the anchor has no 2nd option:
+//! it commits the anchor option and opens the `;` symbol window (F).
 //!
 //! A context may carry a user dictionary (`user_dict.zig`), a host-owned
 //! blob fixed at `jd_init`. The composed prefix is tracked as key bytes
@@ -391,18 +398,18 @@ pub const Context = struct {
         // Case B: ';' with no ';' continuation of the composed prefix in
         // either dictionary — only meaningful when the active pager is a
         // trie pager (punc pagers don't shadow ';'). Commits the anchor's
-        // 2nd option, or its 1st with ';' appended as a fallback.
+        // 2nd option. With no 2nd option, `;` is an ordinary key: it falls
+        // through to case F, which commits the anchor option and opens the
+        // `;` symbol window (or to case H's literal ';' when the root has
+        // no `;` child).
         if (key == ';' and !self.hasChild(self.node, self.prefix(), ';')) {
             if (self.pager) |*p| {
                 if (p.* == .trie) {
                     if (self.anchorOption(1)) |second| {
                         self.setCommit(second.value, null, 0);
-                    } else {
-                        // A trie pager always has at least one option.
-                        self.setCommit(self.anchorOption(0).?.value, null, ';');
+                        self.endComposition();
+                        return;
                     }
-                    self.endComposition();
-                    return;
                 }
             }
         }
@@ -473,20 +480,11 @@ pub const Context = struct {
         // ============================================================
 
         // Case E: the key continues the composed prefix in either
-        // dictionary — descend.
+        // dictionary — descend. Even a sole candidate stays in the window;
+        // the next key commits it.
         if (self.hasChild(self.node, self.prefix(), key)) {
             self.descend(key);
-
-            const total = self.pager.?.totalOptions();
-
-            // E1: exactly one option and it needs no more keys — commit it.
-            if (total == 1 and self.anchor_opts[0].hintSlice() == null) {
-                self.setCommitWithPrefix(prev, self.anchor_opts[0].value);
-                self.endComposition();
-                return;
-            }
-
-            self.state.options_count = total;
+            self.state.options_count = self.pager.?.totalOptions();
             if (prev) |p| self.setCommit(p, null, 0);
             return;
         } else if (self.hasChild(self.root_node, "", key)) {
@@ -507,17 +505,7 @@ pub const Context = struct {
             self.node = self.root_node;
             self.pressed_keys_len = 0;
             self.descend(key);
-
-            const total = self.pager.?.totalOptions();
-
-            // F1: the jumped-to node auto-commits too — both segments.
-            if (total == 1 and self.anchor_opts[0].hintSlice() == null) {
-                self.setCommit(prev_value, self.anchor_opts[0].value, 0);
-                self.endComposition();
-                return;
-            }
-
-            self.state.options_count = total;
+            self.state.options_count = self.pager.?.totalOptions();
             self.setCommit(prev_value, null, 0);
             return;
         }
@@ -803,7 +791,7 @@ test "press space when no other key has been pressed" {
 
 test "`;` descends when the current node has a ';' child" {
     // Node "ac" HAS a ';' child ("ac;" → FooBar), so case B is skipped and
-    // this is an ordinary case-E descent that auto-commits (E1).
+    // this is an ordinary case-E descent.
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
     var harness = try ContextHarness.init(testing.allocator, &th.trie);
@@ -814,8 +802,9 @@ test "`;` descends when the current node has a ';' child" {
     ctx.pressKey('c');
     ctx.pressKey(';');
 
-    try expectCommit(ctx, "FooBar");
-    try testing.expectEqual(@as(u32, 0), ctx.state.options_count);
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 1), ctx.state.options_count);
+    try expectWindow(ctx, 1, &.{.{ .value = "FooBar" }});
 }
 
 test "press `;` to commit the anchor's 2nd option" {
@@ -873,7 +862,89 @@ test "press `;` when there are options starting with ';'" {
     });
 }
 
-test "press `;` when there is only one option, with a hint" {
+/// What a fresh `;` opens in the tries of the `;` tests below.
+const semicolon_window = [_]pagination.ExpectedOption{
+    .{ .value = "；" },
+    .{ .value = "：", .hint = ";" },
+};
+
+test "press `;` with no 2nd option: commit the option and open the `;` window" {
+    var th = try trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = "abc", .value = "FooBar" },
+        .{ .keys = ";", .value = "；" },
+        .{ .keys = ";;", .value = "：" },
+    });
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.init(testing.allocator, &th.trie);
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    // The only option, still carrying a hint (case F shape: one segment,
+    // no literal, and a fresh composition of `;`).
+    ctx.pressKey('a');
+    ctx.pressKey('b');
+    ctx.pressKey(';');
+    try expectCommit(ctx, "FooBar");
+    try testing.expect(ctx.state.commit_b == null);
+    try testing.expectEqual(@as(u8, 0), ctx.state.commit_lit);
+    try testing.expectEqual(@as(u32, 2), ctx.state.options_count);
+    try testing.expectEqual(@as(u32, 0), ctx.state.anchor_index);
+    try expectWindow(ctx, 2, &semicolon_window);
+    ctx.pressKey(' ');
+    try expectCommit(ctx, "；");
+
+    // The only option, needing no more keys.
+    for ("abc;") |k| ctx.pressKey(k);
+    try expectCommit(ctx, "FooBar");
+    try expectWindow(ctx, 2, &semicolon_window);
+}
+
+test "press `;` on a last page holding one candidate, as on a sole candidate" {
+    // Five candidates under "a", which a frontend paging two at a time shows
+    // as [甲 乙] [丙 丁] [戊]: the last page has no 2nd candidate.
+    var th = try trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = "a", .value = "甲" },
+        .{ .keys = "ab", .value = "乙" },
+        .{ .keys = "ac", .value = "丙" },
+        .{ .keys = "ad", .value = "丁" },
+        .{ .keys = "ae", .value = "戊" },
+        .{ .keys = ";", .value = "；" },
+        .{ .keys = ";;", .value = "：" },
+    });
+    defer th.deinit(testing.allocator);
+    var harness = try ContextHarness.init(testing.allocator, &th.trie);
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+    const page_size: u32 = 2;
+
+    // On a full page, `;` still picks the page's 2nd candidate.
+    ctx.pressKey('a');
+    try testing.expectEqual(@as(u32, 5), ctx.state.options_count);
+    ctx.setAnchor(page_size);
+    try expectWindow(ctx, page_size, &.{ .{ .value = "丙", .hint = "c" }, .{ .value = "丁", .hint = "d" } });
+    ctx.pressKey(';');
+    try expectCommit(ctx, "丁");
+    try testing.expectEqual(@as(u32, 0), ctx.state.options_count);
+
+    // On the last page, `;` commits its one candidate and opens the `;`
+    // window, in the same shape as on a one-candidate window.
+    ctx.pressKey('a');
+    ctx.setAnchor(page_size);
+    ctx.setAnchor(2 * page_size);
+    try testing.expectEqual(@as(u32, 4), ctx.state.anchor_index);
+    try expectWindow(ctx, page_size, &.{.{ .value = "戊", .hint = "e" }});
+    ctx.pressKey(';');
+    try expectCommit(ctx, "戊");
+    try testing.expect(ctx.state.commit_b == null);
+    try testing.expectEqual(@as(u8, 0), ctx.state.commit_lit);
+    try testing.expectEqual(@as(u32, 2), ctx.state.options_count);
+    try testing.expectEqual(@as(u32, 0), ctx.state.anchor_index);
+    try expectWindow(ctx, 2, &semicolon_window);
+    ctx.pressKey(' ');
+    try expectCommit(ctx, "；");
+}
+
+test "press `;` with no 2nd option and no `;` scheme appends the literal" {
     var th = try trie_mod.buildTrie(testing.allocator, &.{
         .{ .keys = "abc", .value = "FooBar" },
     });
@@ -886,13 +957,15 @@ test "press `;` when there is only one option, with a hint" {
     ctx.pressKey('b');
     ctx.pressKey(';');
 
+    // The root has no `;` child, so `;` falls through to case H: one
+    // segment plus the ';' literal.
     try expectCommit(ctx, "FooBar;");
-    // Case B fallback shape: one segment plus the ';' literal.
     try testing.expect(ctx.state.commit_b == null);
     try testing.expectEqual(@as(u8, ';'), ctx.state.commit_lit);
+    try testing.expectEqual(@as(u32, 0), ctx.state.options_count);
 }
 
-test "auto-commit when the only option needs no more keys" {
+test "no auto-commit when the only option needs no more keys" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
     var harness = try ContextHarness.init(testing.allocator, &th.trie);
@@ -902,8 +975,64 @@ test "auto-commit when the only option needs no more keys" {
     ctx.pressKey('a');
     ctx.pressKey('e');
 
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 1), ctx.state.options_count);
+    try testing.expectEqual(@as(u32, 0), ctx.state.anchor_index);
+    try expectWindow(ctx, 1, &.{.{ .value = "Foo" }});
+
+    // The next key that starts a composition commits it and is the only
+    // key left composing.
+    ctx.pressKey('a');
+    try expectCommit(ctx, "Foo");
+    try testing.expect(ctx.state.commit_b == null);
+    try testing.expectEqual(@as(u8, 0), ctx.state.commit_lit);
+    try testing.expectEqual(@as(u32, 11), ctx.state.options_count);
+    try testing.expectEqual(@as(u32, 0), ctx.state.anchor_index);
+    try expectWindow(ctx, 3, expected_a[0..3]);
+}
+
+test "the other keys commit a sole option by their usual rules" {
+    var th = try buildTestTrie(testing.allocator);
+    defer th.deinit(testing.allocator);
+    const dot = [_][]const u8{"。"};
+    var harness = try ContextHarness.initWithPunc(testing.allocator, &th.trie, &.{
+        .{ .key = '.', .candidates = &dot },
+    }, &.{});
+    defer harness.deinit(testing.allocator);
+    const ctx = &harness.ctx;
+
+    // Space (case A).
+    ctx.pressKey('a');
+    ctx.pressKey('e');
+    ctx.pressKey(' ');
     try expectCommit(ctx, "Foo");
     try testing.expectEqual(@as(u32, 0), ctx.state.options_count);
+
+    // `;` with no second option, and no `;` scheme in this trie (case H).
+    ctx.pressKey('a');
+    ctx.pressKey('e');
+    ctx.pressKey(';');
+    try expectCommit(ctx, "Foo;");
+
+    // Punctuation (case D).
+    ctx.pressKey('a');
+    ctx.pressKey('e');
+    ctx.pressKey('.');
+    try expectCommit(ctx, "Foo。");
+
+    // A key that starts nothing (case H).
+    ctx.pressKey('a');
+    ctx.pressKey('e');
+    ctx.pressKey('x');
+    try expectCommit(ctx, "Foox");
+    try testing.expectEqual(@as(u32, 0), ctx.state.options_count);
+
+    // Backspace returns to the shorter code without committing.
+    ctx.pressKey('a');
+    ctx.pressKey('e');
+    ctx.backspace();
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 11), ctx.state.options_count);
 }
 
 test "no auto-commit when the only option still carries a hint" {
@@ -1473,7 +1602,7 @@ fn buildLongValueTrie(allocator: std.mem.Allocator) !trie_mod.TrieHandle {
     });
 }
 
-test "long values: F1 commits two immortal segments" {
+test "long values: case F commits a long anchor option and composes on" {
     var th = try buildLongValueTrie(testing.allocator);
     defer th.deinit(testing.allocator);
     var harness = try ContextHarness.init(testing.allocator, &th.trie);
@@ -1482,14 +1611,17 @@ test "long values: F1 commits two immortal segments" {
 
     // 'a' opens an enumeration whose first option is LONG_A (child a < c).
     ctx.pressKey('a');
-    // 'b' is no child of node "a" but is a child of the root, and node "b"
-    // has a single hint-less option: commit LONG_A then LONG_B.
+    // 'b' is no child of node "a" but is a child of the root: commit
+    // LONG_A, then compose "b", whose single hint-less option LONG_B waits.
     ctx.pressKey('b');
 
     try testing.expectEqualStrings(LONG_A, std.mem.sliceTo(ctx.state.commit_a.?, 0));
-    try testing.expectEqualStrings(LONG_B, std.mem.sliceTo(ctx.state.commit_b.?, 0));
+    try testing.expect(ctx.state.commit_b == null);
     try testing.expectEqual(@as(u8, 0), ctx.state.commit_lit);
-    try expectCommit(ctx, LONG_A ++ LONG_B);
+    try testing.expectEqual(@as(u32, 1), ctx.state.options_count);
+
+    ctx.pressKey(' ');
+    try expectCommit(ctx, LONG_B);
 }
 
 test "long values: case H appends a literal byte to a long anchor option" {
@@ -1508,7 +1640,7 @@ test "long values: case H appends a literal byte to a long anchor option" {
     try expectCommit(ctx, LONG_A ++ "1");
 }
 
-test "long values: case B fallback appends ';' to a long single option" {
+test "long values: case H appends ';' to a long single option" {
     var th = try trie_mod.buildTrie(testing.allocator, &.{
         .{ .keys = "aa", .value = LONG_A },
     });
@@ -1517,7 +1649,8 @@ test "long values: case B fallback appends ';' to a long single option" {
     defer harness.deinit(testing.allocator);
     const ctx = &harness.ctx;
 
-    // Single option WITH a hint ("a"), so no E1 auto-commit.
+    // A single option, so `;` has no second one to pick, and no `;` at the
+    // root to jump to.
     ctx.pressKey('a');
     ctx.pressKey(';');
     try expectCommit(ctx, LONG_A ++ ";");
@@ -1546,7 +1679,7 @@ test "long values: punctuation after a long composition commits both" {
     try expectCommit(ctx, LONG_A ++ "“");
 }
 
-test "long values: E1 auto-commit after abandoning a punc window" {
+test "long values: abandoning a punc window for a sole long option" {
     var th = try buildLongValueTrie(testing.allocator);
     defer th.deinit(testing.allocator);
     const brackets = [_][]const u8{ "「", "【" };
@@ -1557,10 +1690,16 @@ test "long values: E1 auto-commit after abandoning a punc window" {
     const ctx = &harness.ctx;
 
     // '[' opens a punc window; 'b' abandons it (committing 「) and descends
-    // to node "b", whose single hint-less option LONG_B auto-commits.
+    // to node "b", whose single hint-less option LONG_B waits in the window.
     ctx.pressKey('[');
     ctx.pressKey('b');
-    try expectCommit(ctx, "「" ++ LONG_B);
+    try expectCommit(ctx, "「");
+    try testing.expectEqual(@as(u32, 1), ctx.state.options_count);
+
+    // '[' commits LONG_B and opens the punc window again.
+    ctx.pressKey('[');
+    try expectCommit(ctx, LONG_B);
+    try testing.expectEqual(@as(u32, 2), ctx.state.options_count);
 }
 
 // =========================================================================
@@ -1598,10 +1737,10 @@ test "user phrases merge into a built-in composition, user first on ties" {
     try expectCommit(ctx, "甲");
 }
 
-test "a user word on a unique built-in code opens a window instead of auto-committing" {
+test "a user word on a unique built-in code leads its window" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
-    // "ae" → Foo is the trie's E1 auto-commit; the user adds a second word.
+    // "ae" carries Foo alone in the trie; the user adds a second word.
     var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "UFoo\tae\n");
     defer harness.deinit(testing.allocator);
     const ctx = &harness.ctx;
@@ -1615,29 +1754,34 @@ test "a user word on a unique built-in code opens a window instead of auto-commi
     try expectCommit(ctx, "UFoo");
 }
 
-test "a user-only code descends, composes with hints, and auto-commits when unique" {
+test "a user-only code descends and composes with hints" {
     var th = try buildTestTrie(testing.allocator);
     defer th.deinit(testing.allocator);
     var harness = try ContextHarness.initWithUserDict(testing.allocator, &th.trie, "UB\tb\nUZA\taza\nUZB\tazb\n");
     defer harness.deinit(testing.allocator);
     const ctx = &harness.ctx;
 
-    // "b" exists only in the user dictionary and is unique: E1.
+    // "b" exists only in the user dictionary: a one-candidate window.
     ctx.pressKey('b');
-    try expectCommit(ctx, "UB");
-    try testing.expectEqual(@as(u32, 0), ctx.state.options_count);
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 1), ctx.state.options_count);
+    try expectWindow(ctx, 1, &.{.{ .value = "UB" }});
 
-    // "az" is a user-only extension below a built-in node; both completions
-    // still need a key, so no auto-commit.
+    // 'a' commits UB and starts over; "az" is a user-only extension below
+    // a built-in node, both of whose completions still need a key.
     ctx.pressKey('a');
+    try expectCommit(ctx, "UB");
     ctx.pressKey('z');
     try expectNoCommit(ctx);
     try testing.expectEqual(@as(u32, 2), ctx.state.options_count);
     try expectWindow(ctx, 2, &.{ .{ .value = "UZA", .hint = "a" }, .{ .value = "UZB", .hint = "b" } });
 
     ctx.pressKey('b');
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 1), ctx.state.options_count);
+    try expectWindow(ctx, 1, &.{.{ .value = "UZB" }});
+    ctx.pressKey(' ');
     try expectCommit(ctx, "UZB");
-    try testing.expectEqual(@as(u32, 0), ctx.state.options_count);
 }
 
 test "backspace replays a prefix that only the user dictionary knows" {
@@ -1681,9 +1825,13 @@ test "a user-only root child triggers the commit-and-jump case" {
     try testing.expectEqual(@as(u32, 2), ctx.state.options_count);
     try expectWindow(ctx, 2, &.{ .{ .value = "UB" }, .{ .value = "UBC", .hint = "c" } });
 
-    // And F1 when the jumped-to code is unique.
+    // The jumped-to code composes on like any other.
     ctx.pressKey('c');
+    try expectNoCommit(ctx);
+    try expectWindow(ctx, 1, &.{.{ .value = "UBC" }});
+    ctx.pressKey('a');
     try expectCommit(ctx, "UBC");
+    try testing.expectEqual(@as(u32, 11), ctx.state.options_count);
 }
 
 test "a user code cannot take `;` over: the line is skipped, case B stands" {
@@ -1744,7 +1892,10 @@ test "an empty user dictionary behaves exactly like none" {
     try testing.expectEqual(@as(u32, 11), ctx.state.options_count);
     try expectWindow(ctx, 3, expected_a[0..3]);
     ctx.pressKey('e');
-    try expectCommit(ctx, "Foo");
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 1), ctx.state.options_count);
+    ctx.pressKey('x');
+    try expectCommit(ctx, "Foox");
     ctx.pressKey('x');
     try expectCommit(ctx, "x");
 }
