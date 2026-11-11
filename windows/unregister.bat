@@ -16,8 +16,9 @@ set "DLL32_NAME=ime_jd_x86.dll"
 set "EXE_NAME=ime_jd_userdict.exe"
 set "SHORTCUT=%ProgramData%\Microsoft\Windows\Start Menu\Programs\键道用户自造词.lnk"
 
-REM Need admin to delete files under Program Files.
-net session >nul 2>&1
+REM Need admin to delete files under Program Files; tested as in
+REM register.bat.
+fltmc >nul 2>&1
 if errorlevel 1 goto :not_admin
 
 if not exist "%INSTALL_DIR%" goto :nothing_to_do

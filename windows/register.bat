@@ -48,8 +48,11 @@ if not defined SOURCE32 if exist "%SCRIPT_DIR%target\i686-pc-windows-msvc\releas
 
 REM Require Administrator. regsvr32 auto-elevates, but writing to Program
 REM Files and running icacls need admin up-front; if we're not elevated the
-REM directory create silently fails.
-net session >nul 2>&1
+REM directory create silently fails. The test is fltmc, which lists the
+REM file system's filters to an administrator and to no one else. It used
+REM to be `net session`, which asks the Server service — and so sent an
+REM administrator away wherever that service is stopped or disabled.
+fltmc >nul 2>&1
 if errorlevel 1 (
     echo 此脚本需要以管理员身份运行。
     echo 请右键点击 register.bat 并选择「以管理员身份运行」。
