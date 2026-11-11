@@ -39,13 +39,12 @@ use windows::Win32::Graphics::DirectWrite::{
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, COLOR_WINDOWTEXT, CreateBitmap, CreateCompatibleDC,
-    CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetMonitorInfoW,
-    GetSysColor, HBITMAP, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, SelectObject,
+    CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetMonitorInfoW, HBITMAP,
+    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, SelectObject,
 };
 use windows::Win32::System::Ole::{
     CONNECT_E_ADVISELIMIT, CONNECT_E_CANNOTCONNECT, CONNECT_E_NOCONNECTION,
 };
-use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, GetDpiForWindow,
     SetThreadDpiAwarenessContext,
@@ -59,8 +58,7 @@ use windows::Win32::UI::TextServices::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
     DestroyWindow, FindWindowW, HICON, ICONINFO, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING,
-    PostMessageW, RegisterClassExW, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    SystemParametersInfoW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
+    PostMessageW, RegisterClassExW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
     TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TPM_TOPALIGN, TPM_WORKAREA, TRACK_POPUP_MENU_FLAGS,
     TrackPopupMenuEx, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NULL, WM_SETTINGCHANGE, WNDCLASSEXW,
     WS_EX_TOOLWINDOW, WS_POPUP,
@@ -69,7 +67,7 @@ use windows::core::{
     BOOL, BSTR, ComObject, GUID, IUnknown, Interface, PCWSTR, Ref, Result, implement, w,
 };
 
-use crate::candidate_window::read_hkcu_dword;
+use crate::candidate_window::{high_contrast, read_hkcu_dword, system_color};
 use crate::{dll_hmodule, guids, host, input_mode, settings};
 
 /// The two input modes' glyphs, as Windows' Chinese IMEs draw them.
@@ -488,15 +486,7 @@ fn scaled(size: i32, dpi: u32) -> i32 {
 /// colour, else white on a dark taskbar and black on a light one.
 fn glyph_color() -> D2D1_COLOR_F {
     if high_contrast() {
-        // SAFETY: GetSysColor only reads.
-        let rgb = unsafe { GetSysColor(COLOR_WINDOWTEXT) };
-        let channel = |shift: u32| ((rgb >> shift) & 0xFF) as f32 / 255.0;
-        return D2D1_COLOR_F {
-            r: channel(0),
-            g: channel(8),
-            b: channel(16),
-            a: 1.0,
-        };
+        return system_color(COLOR_WINDOWTEXT);
     }
     let light = read_hkcu_dword(
         w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
@@ -508,24 +498,6 @@ fn glyph_color() -> D2D1_COLOR_F {
         g: level,
         b: level,
         a: 1.0,
-    }
-}
-
-fn high_contrast() -> bool {
-    let mut contrast = HIGHCONTRASTW {
-        cbSize: size_of::<HIGHCONTRASTW>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: the struct is the size it says it is.
-    unsafe {
-        SystemParametersInfoW(
-            SPI_GETHIGHCONTRAST,
-            contrast.cbSize,
-            Some(&mut contrast as *mut HIGHCONTRASTW as *mut c_void),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        )
-        .is_ok()
-            && contrast.dwFlags & HCF_HIGHCONTRASTON == HCF_HIGHCONTRASTON
     }
 }
 

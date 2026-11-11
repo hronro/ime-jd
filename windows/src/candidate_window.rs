@@ -23,7 +23,10 @@
 //!   so it is also the only place an update can be announced.
 //! - Colors follow the system app theme (light/dark) and the user's accent
 //!   color, re-read from the registry on every show so theme switches apply
-//!   without restarting the host.
+//!   without restarting the host. In a high-contrast theme they are the
+//!   theme's own, and nothing else: the window's for the popup and its
+//!   text, the selection's for the active candidate, an outline for the
+//!   hovered one.
 //! - DWM is asked for rounded corners. On Windows 11 that succeeds: the OS
 //!   clips the window round and our hairline border is stroked with a
 //!   matching radius. On Windows 10 the call fails (the attribute doesn't
@@ -36,6 +39,7 @@
 //! window's DPI so coordinates can stay in DIPs end-to-end.
 
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{
@@ -62,11 +66,13 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, GetMonitorInfoW, HBRUSH, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MapWindowPoints, MonitorFromPoint, ValidateRect,
+    COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_HOTLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT,
+    ClientToScreen, GetMonitorInfoW, GetSysColor, HBRUSH, InvalidateRect, MONITOR_DEFAULTTONEAREST,
+    MONITORINFO, MapWindowPoints, MonitorFromPoint, SYS_COLOR_INDEX, ValidateRect,
 };
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::TextServices::{
@@ -76,8 +82,9 @@ use windows::Win32::UI::TextServices::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DROPSHADOW, CS_HREDRAW, CS_IME, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
     GUITHREADINFO, GetClientRect, GetGUIThreadInfo, HICON, IDC_ARROW, KillTimer, LoadCursorW,
-    MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER,
-    SetTimer, SetWindowPos, ShowWindow, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_PAINT,
+    MA_NOACTIVATE, RegisterClassExW, SPI_GETHIGHCONTRAST, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetTimer, SetWindowPos,
+    ShowWindow, SystemParametersInfoW, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_PAINT,
     WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
@@ -115,6 +122,9 @@ const SEL_BAR_HEIGHT: f32 = 16.0;
 /// Radius the border stroke follows on Windows 11; DWMWCP_ROUND clips the
 /// window to the same 8-DIP curve, so the hairline hugs the visible edge.
 const CORNER_RADIUS: f32 = 8.0;
+/// Width of the outline that marks the hovered candidate in a high-contrast
+/// theme.
+const HOVER_OUTLINE: f32 = 1.0;
 /// The update-notice row under the candidates (update.rs), when one is shown.
 const NOTICE_HEIGHT: f32 = 22.0;
 const NOTICE_FONT_SIZE: f32 = 12.0;
@@ -143,17 +153,31 @@ struct ItemLayout {
     value_w: f32,
 }
 
-/// Theme-derived colors, WinUI flyout tokens. Detected from the registry at
-/// window creation and refreshed on every `show_at`.
-#[derive(Debug, Clone, Copy)]
+/// Theme-derived colors: WinUI flyout tokens in the light and the dark
+/// theme, the system's own colors in a high-contrast one. Detected at window
+/// creation and refreshed on every `show_at`.
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Palette {
     bg: D2D1_COLOR_F,
     border: D2D1_COLOR_F,
     text: D2D1_COLOR_F,
     text_secondary: D2D1_COLOR_F,
+    /// The active candidate's pill.
     selected_fill: D2D1_COLOR_F,
+    /// What is written on that pill: `text` and `text_secondary` again over
+    /// the themes' faint fill, the highlighted-text color over a
+    /// high-contrast theme's highlight.
+    selected_text: D2D1_COLOR_F,
+    selected_text_secondary: D2D1_COLOR_F,
+    /// The bar on the pill's left edge.
+    selected_bar: D2D1_COLOR_F,
+    /// A hovered candidate's pill: a fainter fill — or, with `hover_outline`,
+    /// an outline in this color, a high-contrast theme having no fainter.
     hover_fill: D2D1_COLOR_F,
-    accent: D2D1_COLOR_F,
+    hover_outline: bool,
+    /// The update notice under the pointer: the accent, or a high-contrast
+    /// theme's color for links.
+    link: D2D1_COLOR_F,
 }
 
 struct CandidateWindow {
@@ -565,7 +589,9 @@ impl CandidateWindow {
 
             let text_brush = rt.CreateSolidColorBrush(&p.text, None)?;
             let secondary_brush = rt.CreateSolidColorBrush(&p.text_secondary, None)?;
-            let accent_brush = rt.CreateSolidColorBrush(&p.accent, None)?;
+            let selected_text_brush = rt.CreateSolidColorBrush(&p.selected_text, None)?;
+            let selected_secondary_brush =
+                rt.CreateSolidColorBrush(&p.selected_text_secondary, None)?;
 
             // Active (first) candidate: highlight pill + accent bar on its
             // left edge, vertically centered — the Windows 11 selection look.
@@ -578,26 +604,51 @@ impl CandidateWindow {
                     right: first.rect.left + SEL_BAR_WIDTH,
                     bottom: first.rect.top + (PILL_HEIGHT + SEL_BAR_HEIGHT) / 2.0,
                 };
-                rt.FillRoundedRectangle(&rounded(bar, SEL_BAR_WIDTH / 2.0), &accent_brush);
+                let bar_brush = rt.CreateSolidColorBrush(&p.selected_bar, None)?;
+                rt.FillRoundedRectangle(&rounded(bar, SEL_BAR_WIDTH / 2.0), &bar_brush);
             }
 
             // Hover pill on any other candidate (the active one already has
-            // the stronger selected fill).
+            // the stronger selected fill). A high-contrast theme has one
+            // fill for a selection and none fainter, so there the pill is
+            // an outline, just inside its edge.
             if let Some(i) = self.hover
                 && i != 0
                 && let Some(layout) = self.item_layouts.get(i)
             {
                 let hover_brush = rt.CreateSolidColorBrush(&p.hover_fill, None)?;
-                rt.FillRoundedRectangle(&rounded(layout.rect, PILL_RADIUS), &hover_brush);
+                if p.hover_outline {
+                    let inset = HOVER_OUTLINE / 2.0;
+                    let outline = D2D_RECT_F {
+                        left: layout.rect.left + inset,
+                        top: layout.rect.top + inset,
+                        right: layout.rect.right - inset,
+                        bottom: layout.rect.bottom - inset,
+                    };
+                    rt.DrawRoundedRectangle(
+                        &rounded(outline, PILL_RADIUS - inset),
+                        &hover_brush,
+                        HOVER_OUTLINE,
+                        None,
+                    );
+                } else {
+                    rt.FillRoundedRectangle(&rounded(layout.rect, PILL_RADIUS), &hover_brush);
+                }
             }
 
             // Text runs — index digit in the secondary color, the candidate
             // value in the primary color, the optional hint dim again
             // (matches the CLI's display). All runs share one text format,
-            // so their baselines line up.
+            // so their baselines line up. The active candidate's are in the
+            // colors that go on its pill.
             for (i, item) in self.items.iter().enumerate() {
                 let Some(layout) = self.item_layouts.get(i) else {
                     continue;
+                };
+                let (text_brush, secondary_brush) = if i == 0 {
+                    (&selected_text_brush, &selected_secondary_brush)
+                } else {
+                    (&text_brush, &secondary_brush)
                 };
                 let run = |left: f32, w: f32| D2D_RECT_F {
                     left,
@@ -611,7 +662,7 @@ impl CandidateWindow {
                     &(i + 1).to_string(),
                     &run(x, layout.num_w),
                     &self.text_format,
-                    &secondary_brush,
+                    secondary_brush,
                 );
                 x += layout.num_w + NUM_GAP;
                 draw_text(
@@ -619,7 +670,7 @@ impl CandidateWindow {
                     &item.value,
                     &run(x, layout.value_w),
                     &self.text_format,
-                    &text_brush,
+                    text_brush,
                 );
                 x += layout.value_w;
                 if let Some(hint) = &item.hint {
@@ -629,7 +680,7 @@ impl CandidateWindow {
                         &format_hint(hint),
                         &hint_rect,
                         &self.text_format,
-                        &secondary_brush,
+                        secondary_brush,
                     );
                 }
             }
@@ -638,6 +689,7 @@ impl CandidateWindow {
             // the line in the secondary color — accent while hovered, so it
             // reads as the link it is.
             let border_brush = rt.CreateSolidColorBrush(&p.border, None)?;
+            let link_brush = rt.CreateSolidColorBrush(&p.link, None)?;
             if let (Some(notice), Some(rect)) = (&self.notice, self.notice_rect) {
                 let rule = D2D_RECT_F {
                     left: rect.left,
@@ -653,7 +705,7 @@ impl CandidateWindow {
                     bottom: rect.bottom,
                 };
                 let brush = if self.hover_notice {
-                    &accent_brush
+                    &link_brush
                 } else {
                     &secondary_brush
                 };
@@ -1160,30 +1212,118 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
 
 // ---- theme detection ------------------------------------------------------
 
-/// WinUI flyout-surface colors for the current system theme + accent.
+/// The popup's colors for the theme in force: a high-contrast theme's own,
+/// or the light or dark theme's with the user's accent.
 fn detect_palette() -> Palette {
-    let accent = system_accent_color();
-    if system_apps_dark_theme() {
-        Palette {
-            bg: color(0.172, 0.172, 0.172, 1.0), // #2C2C2C flyout surface
-            border: color(1.0, 1.0, 1.0, 0.094),
-            text: color(1.0, 1.0, 1.0, 1.0),
-            text_secondary: color(1.0, 1.0, 1.0, 0.63),
-            selected_fill: color(1.0, 1.0, 1.0, 0.075),
-            hover_fill: color(1.0, 1.0, 1.0, 0.05),
-            accent,
-        }
-    } else {
-        Palette {
-            bg: color(0.976, 0.976, 0.976, 1.0), // #F9F9F9 flyout surface
-            border: color(0.0, 0.0, 0.0, 0.08),
-            text: color(0.0, 0.0, 0.0, 0.896),
-            text_secondary: color(0.0, 0.0, 0.0, 0.61),
-            selected_fill: color(0.0, 0.0, 0.0, 0.055),
-            hover_fill: color(0.0, 0.0, 0.0, 0.035),
-            accent,
-        }
+    if high_contrast() {
+        return contrast_palette(ContrastColors {
+            window: system_color(COLOR_WINDOW),
+            window_text: system_color(COLOR_WINDOWTEXT),
+            highlight: system_color(COLOR_HIGHLIGHT),
+            highlight_text: system_color(COLOR_HIGHLIGHTTEXT),
+            hot_light: system_color(COLOR_HOTLIGHT),
+        });
     }
+    themed_palette(system_apps_dark_theme(), system_accent_color())
+}
+
+/// WinUI flyout-surface colors for the dark or the light theme + accent.
+fn themed_palette(dark: bool, accent: D2D1_COLOR_F) -> Palette {
+    let (text, text_secondary) = if dark {
+        (color(1.0, 1.0, 1.0, 1.0), color(1.0, 1.0, 1.0, 0.63))
+    } else {
+        (color(0.0, 0.0, 0.0, 0.896), color(0.0, 0.0, 0.0, 0.61))
+    };
+    let (bg, border, selected_fill, hover_fill) = if dark {
+        (
+            color(0.172, 0.172, 0.172, 1.0), // #2C2C2C flyout surface
+            color(1.0, 1.0, 1.0, 0.094),
+            color(1.0, 1.0, 1.0, 0.075),
+            color(1.0, 1.0, 1.0, 0.05),
+        )
+    } else {
+        (
+            color(0.976, 0.976, 0.976, 1.0), // #F9F9F9 flyout surface
+            color(0.0, 0.0, 0.0, 0.08),
+            color(0.0, 0.0, 0.0, 0.055),
+            color(0.0, 0.0, 0.0, 0.035),
+        )
+    };
+    Palette {
+        bg,
+        border,
+        text,
+        text_secondary,
+        selected_fill,
+        // The fills are faint: what is on them is written as anywhere else.
+        selected_text: text,
+        selected_text_secondary: text_secondary,
+        selected_bar: accent,
+        hover_fill,
+        hover_outline: false,
+        link: accent,
+    }
+}
+
+/// The system colors a high-contrast theme sets, as far as the popup has a
+/// use for them.
+#[derive(Clone, Copy)]
+struct ContrastColors {
+    window: D2D1_COLOR_F,
+    window_text: D2D1_COLOR_F,
+    highlight: D2D1_COLOR_F,
+    highlight_text: D2D1_COLOR_F,
+    hot_light: D2D1_COLOR_F,
+}
+
+/// A high-contrast theme's colors, each where the theme means it to go: the
+/// window's for the popup and its text — all of it, such a theme having no
+/// second, dimmer text — the selection's for the active candidate and what
+/// is written on it, and the link's for the notice under the pointer.
+/// Nothing is translucent, and nothing is the popup's own choice: the user
+/// picked these colors to be able to read the screen.
+fn contrast_palette(colors: ContrastColors) -> Palette {
+    Palette {
+        bg: colors.window,
+        border: colors.window_text,
+        text: colors.window_text,
+        text_secondary: colors.window_text,
+        selected_fill: colors.highlight,
+        selected_text: colors.highlight_text,
+        selected_text_secondary: colors.highlight_text,
+        selected_bar: colors.highlight_text,
+        hover_fill: colors.highlight,
+        hover_outline: true,
+        link: colors.hot_light,
+    }
+}
+
+/// Whether a high-contrast theme is on.
+pub(crate) fn high_contrast() -> bool {
+    let mut contrast = HIGHCONTRASTW {
+        cbSize: size_of::<HIGHCONTRASTW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: the struct is the size it says it is.
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            contrast.cbSize,
+            Some(&mut contrast as *mut HIGHCONTRASTW as *mut c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok()
+            && contrast.dwFlags & HCF_HIGHCONTRASTON == HCF_HIGHCONTRASTON
+    }
+}
+
+/// One of the system's colors (`COLOR_*`) — the theme's own, when it is a
+/// high-contrast one.
+pub(crate) fn system_color(index: SYS_COLOR_INDEX) -> D2D1_COLOR_F {
+    // SAFETY: GetSysColor only reads.
+    let rgb = unsafe { GetSysColor(index) };
+    let channel = |shift: u32| ((rgb >> shift) & 0xFF) as f32 / 255.0;
+    color(channel(0), channel(8), channel(16), 1.0)
 }
 
 /// `AppsUseLightTheme == 0` means apps render dark. A missing value (or any
@@ -1313,6 +1453,50 @@ mod tests {
     fn at(anchor: RECT, size: SIZE, work: RECT) -> (i32, i32) {
         let point = position(&anchor, size, &work);
         (point.x, point.y)
+    }
+
+    #[test]
+    fn the_light_and_dark_themes_write_on_a_pill_as_anywhere_else() {
+        let accent = color(0.0, 0.47, 0.83, 1.0);
+        for dark in [false, true] {
+            let p = themed_palette(dark, accent);
+            assert_eq!(
+                (p.selected_text, p.selected_text_secondary),
+                (p.text, p.text_secondary)
+            );
+            assert_eq!((p.selected_bar, p.link), (accent, accent));
+            // Faint fills over an opaque surface, the hovered one fainter.
+            assert!(!p.hover_outline);
+            assert!(p.bg.a == 1.0 && p.selected_fill.a < 0.1 && p.hover_fill.a < p.selected_fill.a);
+            // Light text on the dark surface, dark on the light.
+            assert_eq!(p.text.r > 0.5, dark);
+            assert_eq!(p.bg.r < 0.5, dark);
+        }
+    }
+
+    #[test]
+    fn a_high_contrast_theme_colors_everything_itself() {
+        let theme = ContrastColors {
+            window: color(0.0, 0.0, 0.0, 1.0),
+            window_text: color(1.0, 1.0, 1.0, 1.0),
+            highlight: color(0.1, 0.9, 1.0, 1.0),
+            highlight_text: color(0.0, 0.0, 0.2, 1.0),
+            hot_light: color(1.0, 1.0, 0.0, 1.0),
+        };
+        let p = contrast_palette(theme);
+        // The window's colors for the popup, with no dimmer text.
+        assert_eq!((p.bg, p.text), (theme.window, theme.window_text));
+        for of_the_text in [p.text_secondary, p.border] {
+            assert_eq!(of_the_text, theme.window_text);
+        }
+        // The selection's for the active candidate and all that is on it.
+        assert_eq!(p.selected_fill, theme.highlight);
+        for on_the_pill in [p.selected_text, p.selected_text_secondary, p.selected_bar] {
+            assert_eq!(on_the_pill, theme.highlight_text);
+        }
+        // An outline for the hovered one, and the link's for the notice.
+        assert_eq!((p.hover_fill, p.hover_outline), (theme.highlight, true));
+        assert_eq!(p.link, theme.hot_light);
     }
 
     #[test]
