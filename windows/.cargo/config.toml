@@ -1,0 +1,13 @@
+# The C runtime goes into each binary built here, not beside it.
+#
+# Left to itself, rustc links the Visual C++ runtime as a DLL,
+# vcruntime140.dll — which is no part of Windows: a machine has it when some
+# program brought Microsoft's redistributable along, for that program's own
+# architecture, or not at all. The IME is a DLL in other people's
+# applications and regsvr32 is the first of them: without the runtime the
+# DLL does not load, register.bat fails, and with the 32-bit runtime alone
+# missing, as on an ARM64 machine that has only the ARM64 one, 32-bit
+# applications are left without the IME. The 用户自造词 window would not start
+# either.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

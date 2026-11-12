@@ -100,3 +100,15 @@ extern "system" fn DllUnregisterServer() -> HRESULT {
         Err(e) => e.code(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_c_runtime_is_linked_in() {
+        // .cargo/config.toml, for everything built in this workspace. Built
+        // without it — a RUSTFLAGS in the environment takes its place — the
+        // DLL imports vcruntime140.dll, and loads only where a Visual C++
+        // redistributable of its architecture is installed.
+        assert!(cfg!(target_feature = "crt-static"));
+    }
+}

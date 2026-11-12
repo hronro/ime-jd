@@ -5,6 +5,7 @@ Rust implementation of 键道输入法 as a Windows TSF Text Input Processor. Li
 ## Requirements
 
 - Windows 10 version 1809 (October 2018) or newer, x64 or ARM64. On ARM64 the IME is there for x64 applications too, which Windows 11 runs.
+- Nothing else on the machine: the DLLs and the user-dictionary window carry the C runtime in themselves (`.cargo/config.toml`), so no Visual C++ redistributable has to be installed for any of them to load.
 - For building: [Rust](https://rustup.rs/), [Zig](https://ziglang.org/) (used to build the `libjd` core).
 
 ## Build
@@ -147,6 +148,9 @@ windows/
   Cargo.toml          cdylib, depends on `windows` 0.62, `windows-core`, the
                       shared `jd` bindings crate (../bindings/rust) and
                       userdict/'s library; also the workspace root
+  .cargo/config.toml  links the C runtime into every binary built here
+                      (crt-static), so that none needs the Visual C++
+                      redistributable
   build.rs            generates the .rc (RT_MANIFEST + VERSIONINFO, the
                       version read from core/build.zig.zon); libjd itself is
                       located/linked by the `jd` crate's build script
