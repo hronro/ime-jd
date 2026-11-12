@@ -175,49 +175,39 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
         &self,
         pic: Ref<'_, ITfContext>,
         wparam: WPARAM,
-        _lparam: LPARAM,
+        lparam: LPARAM,
     ) -> Result<BOOL> {
-        if pic.as_ref().is_some_and(keyboard_disabled) {
-            input_mode::cancel();
-            return Ok(BOOL(0));
-        }
         let vk = wparam.0 as u16;
-        // Every key down counts towards telling a lone Shift from one used
-        // as a modifier; Shift itself always reaches the application.
-        let m = mods();
-        input_mode::key_down(vk, m.ctrl || m.alt || m.win);
-        // 英: every key reaches the application as typed.
-        if input_mode::is_english() {
+        if !key_goes_down(pic.as_ref(), vk, lparam) {
             return Ok(BOOL(0));
         }
         Ok(BOOL(if should_consume(vk) { 1 } else { 0 }))
     }
 
     /// Shift pressed and released alone switches 中 and 英, in `OnKeyUp`;
-    /// that key-up is this IME's, and no other is.
+    /// that key-up is this IME's, and no other is. Only an application that
+    /// feeds TSF its keys itself asks here first; where the system feeds
+    /// them, `OnKeyUp` is all there is (`key_goes_down`).
     fn OnTestKeyUp(
         &self,
         pic: Ref<'_, ITfContext>,
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
-        if wparam.0 as u16 != VK_SHIFT {
-            return Ok(BOOL(0));
-        }
-        if pic.as_ref().is_some_and(keyboard_disabled) {
-            input_mode::cancel();
+        if !shift_goes_up(pic.as_ref(), wparam.0 as u16) {
             return Ok(BOOL(0));
         }
         Ok(BOOL::from(input_mode::shift_up_is_tap()))
     }
 
-    fn OnKeyDown(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
+    fn OnKeyDown(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         let vk = wparam.0 as u16;
+        let ours = key_goes_down(pic.as_ref(), vk, lparam);
         let Some(ctx_ref) = pic.as_ref() else {
             return Ok(BOOL(0));
         };
         let ctx = ctx_ref;
-        if keyboard_disabled(ctx) || input_mode::is_english() {
+        if !ours {
             return Ok(BOOL(0));
         }
         let tid = self.state.borrow().client_id;
@@ -383,7 +373,8 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
     /// as they are — what Enter does — and the mode turns to 英; from 英, it
     /// turns back to 中.
     fn OnKeyUp(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
-        if wparam.0 as u16 != VK_SHIFT || !input_mode::take_tap() {
+        // As in `OnTestKeyUp`, which not every application asks first.
+        if !shift_goes_up(pic.as_ref(), wparam.0 as u16) || !input_mode::take_tap() {
             return Ok(BOOL(0));
         }
         let (thread_mgr, tid) = {
@@ -564,6 +555,8 @@ fn commit_as_typed(tid: u32) {
 
 const VK_BACK: u16 = 0x08;
 const VK_RETURN: u16 = 0x0D;
+const VK_CONTROL: u16 = 0x11;
+const VK_MENU: u16 = 0x12; // Alt
 const VK_ESCAPE: u16 = 0x1B;
 const VK_PRIOR: u16 = 0x21; // PageUp
 const VK_NEXT: u16 = 0x22; // PageDown
@@ -575,6 +568,11 @@ const VK_RIGHT: u16 = 0x27;
 const VK_DOWN: u16 = 0x28;
 const VK_INSERT: u16 = 0x2D;
 const VK_DELETE: u16 = 0x2E;
+const VK_LWIN: u16 = 0x5B;
+const VK_RWIN: u16 = 0x5C;
+// Left and right Ctrl, then left and right Alt.
+const VK_LCONTROL: u16 = 0xA2;
+const VK_RMENU: u16 = 0xA5;
 
 fn should_consume(vk: u16) -> bool {
     // Modifier chords always pass through — they're host shortcuts.
@@ -617,6 +615,60 @@ fn should_consume(vk: u16) -> bool {
     // authoritative pass-through decision happens there when the engine
     // returns neither a commit nor options (see tip.rs:257).
     translate(vk).is_some()
+}
+
+/// What a key going down does before anything else, whichever call brings
+/// it. TSF has two ways of handing a text service a key. An application that
+/// feeds TSF its keys itself, and the bridge for IMM32 applications, ask
+/// `OnTestKeyDown` first and call `OnKeyDown` only for a key that is taken.
+/// Where the application leaves its keys to the system — Notepad, a Chromium
+/// browser, the search of the Start menu — `OnKeyDown` is all there is, and
+/// `OnKeyUp` likewise (msctf's `SYSTHREAD::OnKeyboardEvent`). So both calls
+/// start here: the key counts towards telling a lone Shift from one used as
+/// a modifier — once, even when both calls bring it (`ShiftTap::key_down`);
+/// Shift itself always reaches the application.
+///
+/// Returns whether the key is the IME's to look at: not where the
+/// application has the keyboard switched off, and not in 英, where every key
+/// reaches the application as typed.
+fn key_goes_down(ctx: Option<&ITfContext>, vk: u16, lparam: LPARAM) -> bool {
+    if ctx.is_some_and(keyboard_disabled) {
+        input_mode::cancel();
+        return false;
+    }
+    let m = mods();
+    // Bit 30 of a key message: the key was down already, and repeats.
+    let pressed_now = lparam.0 & (1 << 30) == 0;
+    input_mode::key_down(vk, pressed_now, m.ctrl || m.alt || m.win);
+    !input_mode::is_english()
+}
+
+/// What a key going up does first, in `OnTestKeyUp` and in `OnKeyUp` alike.
+/// Returns whether it is Shift's, let go where it may switch the mode: the
+/// one release that can be the IME's.
+///
+/// Where the system feeds the keys it hands a text service none while Alt is
+/// down — not Alt's own press, not the key pressed with it, not Shift let go
+/// before Alt is. Of a Shift+Alt+F all that gets here is Shift going down
+/// and, at the end, Alt and Shift going up. So the release of Alt, Ctrl or
+/// the Windows key while Shift is down says that Shift was not alone, and
+/// one of them still down when Shift goes up says the same.
+fn shift_goes_up(ctx: Option<&ITfContext>, vk: u16) -> bool {
+    if vk != VK_SHIFT {
+        if matches!(
+            vk,
+            VK_CONTROL | VK_MENU | VK_LWIN | VK_RWIN | VK_LCONTROL..=VK_RMENU
+        ) {
+            input_mode::used_with_another_key();
+        }
+        return false;
+    }
+    let m = mods();
+    if ctx.is_some_and(keyboard_disabled) || m.ctrl || m.alt || m.win {
+        input_mode::cancel();
+        return false;
+    }
+    true
 }
 
 /// Whether the application has switched keyboard input methods off for this

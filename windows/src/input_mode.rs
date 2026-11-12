@@ -108,20 +108,29 @@ enum ShiftTap {
 }
 
 impl ShiftTap {
-    /// A key went down; `with_modifier` says whether Ctrl, Alt or the
-    /// Windows key was down with it.
-    fn key_down(self, vk: u16, with_modifier: bool) -> Self {
+    /// A key went down: `pressed_now`, or held and repeating; `with_modifier`
+    /// says whether Ctrl, Alt or the Windows key was down with it. Told of
+    /// the same key down a second time it stays as it is: TSF brings some
+    /// keys twice, to `OnTestKeyDown` and to `OnKeyDown`, and others once,
+    /// to either.
+    fn key_down(self, vk: u16, pressed_now: bool, with_modifier: bool) -> Self {
         match (vk, self) {
-            (VK_SHIFT, ShiftTap::Idle) if with_modifier => ShiftTap::Used,
-            (VK_SHIFT, ShiftTap::Idle) => ShiftTap::Pending,
-            // Held down: the key repeats.
+            // A new press starts afresh, whatever became of the last one,
+            // whose release is not always told (tip.rs, `shift_goes_up`).
+            (VK_SHIFT, _) if pressed_now && with_modifier => ShiftTap::Used,
+            (VK_SHIFT, _) if pressed_now => ShiftTap::Pending,
+            // Held down, the key repeats — also a Shift that was pressed
+            // before the focus came here, which is not this thread's to
+            // count.
             (VK_SHIFT, state) => state,
             (_, ShiftTap::Idle) => ShiftTap::Idle,
             (_, _) => ShiftTap::Used,
         }
     }
 
-    fn mouse(self) -> Self {
+    /// Something else happened while Shift was down: a mouse button, the
+    /// wheel, or a key of which only the release was told.
+    fn used(self) -> Self {
         match self {
             ShiftTap::Pending => ShiftTap::Used,
             state => state,
@@ -129,9 +138,14 @@ impl ShiftTap {
     }
 }
 
-/// Every key down, from `OnTestKeyDown`.
-pub fn key_down(vk: u16, with_modifier: bool) {
-    let next = SHIFT.with(Cell::get).key_down(vk, with_modifier);
+/// Every key down, from `OnTestKeyDown` and from `OnKeyDown`: an
+/// application gets a key to one of them, or to both (tip.rs,
+/// `key_goes_down`). `pressed_now` is false for a key that is held and
+/// repeats.
+pub fn key_down(vk: u16, pressed_now: bool, with_modifier: bool) {
+    let next = SHIFT
+        .with(Cell::get)
+        .key_down(vk, pressed_now, with_modifier);
     SHIFT.with(|state| state.set(next));
     // The mouse matters only while the press is still alone.
     if next == ShiftTap::Pending {
@@ -141,8 +155,19 @@ pub fn key_down(vk: u16, with_modifier: bool) {
     }
 }
 
-/// Shift went up (`OnTestKeyUp`): whether it was pressed alone. When it was,
-/// `OnKeyUp` follows and takes it; when it was not, it is over here.
+/// Alt, Ctrl or the Windows key went up while Shift may be down: Shift was
+/// not pressed alone, though nothing may have been told of that key going
+/// down (tip.rs, `shift_goes_up`).
+pub fn used_with_another_key() {
+    SHIFT.with(|state| state.set(state.get().used()));
+    if SHIFT.with(Cell::get) != ShiftTap::Pending {
+        unwatch_mouse();
+    }
+}
+
+/// Shift went up, and the application asks first (`OnTestKeyUp`): whether
+/// it was pressed alone. When it was, `OnKeyUp` follows and takes it; when
+/// it was not, it is over here.
 pub fn shift_up_is_tap() -> bool {
     let tap = SHIFT.with(Cell::get) == ShiftTap::Pending;
     if !tap {
@@ -151,7 +176,8 @@ pub fn shift_up_is_tap() -> bool {
     tap
 }
 
-/// Shift went up and `OnKeyUp` acts on it: whether it was a tap.
+/// Shift went up and `OnKeyUp` acts on it — asked first or not: whether it
+/// was a tap.
 pub fn take_tap() -> bool {
     let tap = SHIFT.with(Cell::get) == ShiftTap::Pending;
     cancel();
@@ -208,7 +234,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 | WM_MOUSEHWHEEL
         )
     {
-        SHIFT.with(|state| state.set(state.get().mouse()));
+        SHIFT.with(|state| state.set(state.get().used()));
     }
     // SAFETY: passing the message on, as every hook must.
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
@@ -221,39 +247,105 @@ mod tests {
     const VK_A: u16 = 0x41;
     const VK_CONTROL: u16 = 0x11;
 
-    /// Feed key downs to a fresh press and say whether the release taps.
-    fn taps(downs: &[(u16, bool)], mouse_after: Option<usize>) -> bool {
+    /// What a thread hears of while Shift may be down.
+    #[derive(Clone, Copy)]
+    enum Told {
+        /// A key pressed, and whether Ctrl, Alt or the Windows key was down
+        /// with it.
+        Press(u16, bool),
+        /// A key held down, repeating.
+        Repeat(u16),
+        /// A mouse button or the wheel, or a modifier let go.
+        Other,
+    }
+    use Told::{Other, Press, Repeat};
+
+    /// Whether Shift, let go after all of `told`, switches the mode.
+    fn taps(told: &[Told]) -> bool {
         let mut state = ShiftTap::Idle;
-        for (n, &(vk, with_modifier)) in downs.iter().enumerate() {
-            state = state.key_down(vk, with_modifier);
-            if mouse_after == Some(n) {
-                state = state.mouse();
-            }
+        for event in told {
+            state = match *event {
+                Press(vk, with_modifier) => state.key_down(vk, true, with_modifier),
+                Repeat(vk) => state.key_down(vk, false, false),
+                Other => state.used(),
+            };
         }
         state == ShiftTap::Pending
     }
 
     #[test]
     fn only_shift_pressed_alone_switches() {
-        assert!(taps(&[(VK_SHIFT, false)], None), "a tap");
+        assert!(taps(&[Press(VK_SHIFT, false)]), "a tap");
         assert!(
-            taps(&[(VK_SHIFT, false); 5], None),
+            taps(&[Press(VK_SHIFT, false), Repeat(VK_SHIFT), Repeat(VK_SHIFT)]),
             "held a while: the key repeats"
         );
         assert!(
-            !taps(&[(VK_SHIFT, false), (VK_A, false)], None),
+            !taps(&[Press(VK_SHIFT, false), Press(VK_A, false)]),
             "Shift+A types a capital"
         );
-        assert!(!taps(
-            &[(VK_SHIFT, false), (VK_A, false), (VK_SHIFT, false)],
-            None
-        ));
-        assert!(!taps(&[(VK_SHIFT, true)], None), "Ctrl+Shift, Alt+Shift");
+        assert!(!taps(&[
+            Press(VK_SHIFT, false),
+            Press(VK_A, false),
+            Repeat(VK_A),
+            Repeat(VK_SHIFT)
+        ]));
+        assert!(!taps(&[Press(VK_SHIFT, true)]), "Ctrl+Shift, Alt+Shift");
         assert!(
-            !taps(&[(VK_SHIFT, false), (VK_CONTROL, false)], None),
+            !taps(&[Press(VK_SHIFT, false), Press(VK_CONTROL, false)]),
             "Shift, then Ctrl"
         );
-        assert!(!taps(&[(VK_SHIFT, false)], Some(0)), "Shift-click selects");
-        assert!(!taps(&[(VK_A, false)], None), "no Shift at all");
+        assert!(
+            !taps(&[Press(VK_SHIFT, false), Other]),
+            "Shift-click selects; Shift, Alt+F, Alt let go"
+        );
+        assert!(!taps(&[Press(VK_A, false)]), "no Shift at all");
+    }
+
+    #[test]
+    fn a_new_press_of_shift_starts_afresh() {
+        // Shift let go while Alt is down is told to no text service where
+        // the system feeds the keys: the press after it is judged on its
+        // own, not on what became of that one.
+        assert!(taps(&[
+            Press(VK_SHIFT, false),
+            Other,
+            Press(VK_SHIFT, false)
+        ]));
+        assert!(taps(&[Press(VK_SHIFT, true), Press(VK_SHIFT, false)]));
+        assert!(!taps(&[Press(VK_SHIFT, false), Press(VK_SHIFT, true)]));
+        // And a Shift that was down before the focus came here — the click
+        // that brought it was a Shift-click — is none of this thread's.
+        assert!(!taps(&[Repeat(VK_SHIFT), Repeat(VK_SHIFT)]));
+    }
+
+    #[test]
+    fn a_key_down_told_twice_counts_once() {
+        // An application that feeds TSF its keys brings a key that is taken
+        // to `OnTestKeyDown` and then to `OnKeyDown`; one that leaves them
+        // to the system brings every key to `OnKeyDown` alone. Either way
+        // the press stands where one telling leaves it.
+        for state in [ShiftTap::Idle, ShiftTap::Pending, ShiftTap::Used] {
+            for vk in [VK_SHIFT, VK_A, VK_CONTROL] {
+                for pressed_now in [false, true] {
+                    for with_modifier in [false, true] {
+                        let once = state.key_down(vk, pressed_now, with_modifier);
+                        assert_eq!(
+                            once.key_down(vk, pressed_now, with_modifier),
+                            once,
+                            "{state:?}, key {vk:#x}, pressed now {pressed_now}, modifier {with_modifier}"
+                        );
+                    }
+                }
+            }
+        }
+        let twice = |told: &[Told]| {
+            let doubled: Vec<_> = told.iter().flat_map(|&event| [event, event]).collect();
+            taps(&doubled)
+        };
+        assert!(twice(&[Press(VK_SHIFT, false)]));
+        assert!(!twice(&[Press(VK_SHIFT, false), Press(VK_A, false)]));
+        assert!(!twice(&[Press(VK_SHIFT, true)]));
+        assert!(!twice(&[Press(VK_SHIFT, false), Other]));
     }
 }
