@@ -35,8 +35,16 @@
 //!   10's own IME popup.
 //!
 //! One window per TIP UI thread; created lazily, destroyed in `Deactivate`.
-//! D2D + DirectWrite render the body. The render target's DPI is set to the
-//! window's DPI so coordinates can stay in DIPs end-to-end.
+//! It is an owned window of the window the text is in (`text_window`):
+//! Windows keeps an owned window in its owner's layer of the screen, and
+//! shows and hides it with its owner, where a window that is no one's, made
+//! inside a Store app — the Start menu's search is one — is not shown at
+//! all (`CandidateWindow::new`). It is made again when the text is in
+//! another window (`belonging_to`).
+//! D2D + DirectWrite render the body, in software, onto a bitmap in memory
+//! that `paint` copies to the window (`draw`, `Canvas`). The render target's
+//! DPI is set to the window's DPI so coordinates can stay in DIPs
+//! end-to-end.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -46,13 +54,13 @@ use windows::Win32::Foundation::{
     D2DERR_RECREATE_TARGET, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
-    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
-    D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1_RENDER_TARGET_USAGE_NONE,
+    D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1RenderTarget,
+    ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -66,26 +74,32 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
-    COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_HOTLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT,
-    ClientToScreen, GetMonitorInfoW, GetSysColor, HBRUSH, InvalidateRect, MONITOR_DEFAULTTONEAREST,
-    MONITORINFO, MapWindowPoints, MonitorFromPoint, SYS_COLOR_INDEX, ValidateRect,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
+    COLOR_HOTLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT, ClientToScreen, CreateCompatibleDC,
+    CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, GetMonitorInfoW,
+    GetSysColor, HBITMAP, HBRUSH, HDC, HGDIOBJ, InvalidateRect, MONITOR_DEFAULTTONEAREST,
+    MONITORINFO, MapWindowPoints, MonitorFromPoint, PAINTSTRUCT, SRCCOPY, SYS_COLOR_INDEX,
+    SelectObject, ValidateRect,
 };
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows::Win32::UI::TextServices::{
     ITfContext, ITfContextView, ITfSource, ITfTextLayoutSink, ITfTextLayoutSink_Impl,
     TF_LC_DESTROY, TfLayoutCode,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DROPSHADOW, CS_HREDRAW, CS_IME, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    GUITHREADINFO, GetClientRect, GetGUIThreadInfo, HICON, IDC_ARROW, KillTimer, LoadCursorW,
-    MA_NOACTIVATE, RegisterClassExW, SPI_GETHIGHCONTRAST, SW_HIDE, SW_SHOWNOACTIVATE,
-    SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetTimer, SetWindowPos,
-    ShowWindow, SystemParametersInfoW, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_PAINT,
-    WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    GA_ROOT, GUITHREADINFO, GetAncestor, GetClientRect, GetGUIThreadInfo, HICON, IDC_ARROW,
+    KillTimer, LoadCursorW, MA_NOACTIVATE, RegisterClassExW, SPI_GETHIGHCONTRAST, SW_HIDE,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetTimer,
+    SetWindowPos, ShowWindow, SystemParametersInfoW, WM_LBUTTONDOWN, WM_MOUSEACTIVATE,
+    WM_MOUSEMOVE, WM_NCDESTROY, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 // `WM_MOUSELEAVE` lives in `Win32::UI::Controls` in windows-rs, which would
@@ -182,10 +196,24 @@ struct Palette {
 
 struct CandidateWindow {
     hwnd: HWND,
+    /// The window the popup was made for and belongs to, as an owned
+    /// window: the top-level one the text is in (`text_window`); `None`
+    /// where there was no telling which that is. For text in another
+    /// window the popup is made again (`belonging_to`).
+    text_window: Option<HWND>,
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
     text_format: IDWriteTextFormat,
-    render_target: Option<ID2D1HwndRenderTarget>,
+    /// What the popup is drawn with: Direct2D, in software, onto `canvas`.
+    /// Not a render target of the window's own: that one is a swap chain,
+    /// and DXGI makes none for a window inside a Store app — the search of
+    /// the Start menu is one — so there the popup came up with nothing in
+    /// it. (`CreateSwapChainForHwndImpl` in dxgi.dll answers such a process
+    /// DXGI_ERROR_NOT_CURRENTLY_AVAILABLE.)
+    render_target: Option<ID2D1DCRenderTarget>,
+    /// What it is drawn on: a bitmap in memory of the window's size, which
+    /// `paint` copies to the window.
+    canvas: Option<Canvas>,
     items: Vec<CandidateItem>,
     /// Pill rects in DIPs, parallel to `items`.
     item_layouts: Vec<ItemLayout>,
@@ -233,7 +261,19 @@ struct CandidateWindow {
 }
 
 impl CandidateWindow {
-    fn new() -> Result<Self> {
+    /// The popup, as an owned window of `text_window`, the window the text
+    /// is in: what Microsoft's IME requirements ask for. Windows keeps the
+    /// windows of the screen in layers ("bands"): the ordinary one, and over
+    /// it those of the Store apps' surfaces, the Start menu and the search
+    /// among them. An owned window is made in its owner's layer, cloaked as
+    /// its owner is, and shown and hidden with it. A window that is no
+    /// one's is made in the ordinary layer when a desktop program makes it;
+    /// made in a Store app's process — where the IME is while text is typed
+    /// in one, the page of the Start menu's search included — it gets a
+    /// layer of its own under every Store app's, and is cloaked from the
+    /// start: the code went into the text there, and the candidates were
+    /// never seen. (`xxxCreateWindowEx` in win32kfull.sys, Windows 11 23H2.)
+    fn new(text_window: Option<HWND>) -> Result<Self> {
         ensure_class_registered();
 
         let d2d: ID2D1Factory =
@@ -243,7 +283,7 @@ impl CandidateWindow {
         let notice_format = make_text_format(&dwrite, NOTICE_FONT_SIZE)?;
 
         let hinstance = dll_hmodule();
-        let hwnd = unsafe {
+        let create = |owner: Option<HWND>| unsafe {
             CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
                 WINDOW_CLASS_NAME,
@@ -253,11 +293,20 @@ impl CandidateWindow {
                 0,
                 100,
                 WINDOW_HEIGHT as i32,
-                None,
+                owner,
                 None,
                 Some(hinstance.into()),
                 None,
             )
+        };
+        // Where Windows refuses that owner — a window that has just gone,
+        // one in a layer this process may put no window in — the popup is
+        // no one's, as it used to be. (A desktop program that asks for an
+        // owner in a Store app's layer is not refused: it gets its window,
+        // in the ordinary layer and with no owner.)
+        let hwnd = match text_window {
+            Some(owner) => create(Some(owner)).or_else(|_| create(None)),
+            None => create(None),
         }?;
 
         // Rounded corners on Windows 11. On Windows 10 the attribute doesn't
@@ -277,10 +326,12 @@ impl CandidateWindow {
 
         Ok(Self {
             hwnd,
+            text_window,
             d2d,
             dwrite,
             text_format,
             render_target: None,
+            canvas: None,
             items: Vec::new(),
             item_layouts: Vec::new(),
             palette: detect_palette(),
@@ -306,30 +357,29 @@ impl CandidateWindow {
         if d == 0 { 96.0 } else { d as f32 }
     }
 
-    fn ensure_render_target(&mut self, width: u32, height: u32) -> Result<()> {
-        if self.render_target.is_some() {
-            return Ok(());
+    /// The render target: made on first use, and again after Direct2D has
+    /// asked for a new one. It draws in software and on whichever bitmap it
+    /// is bound to, so it has nothing to do with the window, its size, or
+    /// the kind of process this is.
+    fn render_target(&mut self) -> Result<ID2D1DCRenderTarget> {
+        if let Some(rt) = &self.render_target {
+            return Ok(rt.clone());
         }
-        let dpi = self.dpi();
-        let rt_props = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        let props = D2D1_RENDER_TARGET_PROPERTIES {
+            r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
             pixelFormat: D2D1_PIXEL_FORMAT {
                 format: DXGI_FORMAT_B8G8R8A8_UNORM,
                 alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
             },
-            dpiX: dpi,
-            dpiY: dpi,
+            // The window's, set at every `draw`.
+            dpiX: 0.0,
+            dpiY: 0.0,
             usage: D2D1_RENDER_TARGET_USAGE_NONE,
             minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
         };
-        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-            hwnd: self.hwnd,
-            pixelSize: D2D_SIZE_U { width, height },
-            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
-        };
-        let rt = unsafe { self.d2d.CreateHwndRenderTarget(&rt_props, &hwnd_props) }?;
-        self.render_target = Some(rt);
-        Ok(())
+        let rt = unsafe { self.d2d.CreateDCRenderTarget(&props) }?;
+        self.render_target = Some(rt.clone());
+        Ok(rt)
     }
 
     /// Re-layout: measure each item's runs (index digit, value, optional
@@ -450,8 +500,6 @@ impl CandidateWindow {
             cy: (height_dip * scale).ceil() as i32,
         };
 
-        self.render_target = None;
-
         let at = match work_area(&self.anchor) {
             Some(work) => position(&self.anchor, size, &work),
             None => POINT {
@@ -561,26 +609,100 @@ impl CandidateWindow {
         }
     }
 
+    /// Draw the popup, and copy what was drawn to the window.
     fn paint(&mut self) -> Result<()> {
+        self.draw()?;
+        let Some(canvas) = &self.canvas else {
+            return Ok(());
+        };
+        // SAFETY: the window's own paint cycle, and its own canvas.
+        unsafe {
+            let mut paint = PAINTSTRUCT::default();
+            let dc = BeginPaint(self.hwnd, &mut paint);
+            let copied = BitBlt(
+                dc,
+                0,
+                0,
+                canvas.size.cx,
+                canvas.size.cy,
+                Some(canvas.dc),
+                0,
+                0,
+                SRCCOPY,
+            );
+            let _ = EndPaint(self.hwnd, &paint);
+            copied
+        }
+    }
+
+    /// Draw the popup on the canvas. Direct2D may ask for a new render
+    /// target in the middle of it: it gets one, once.
+    fn draw(&mut self) -> Result<()> {
+        match self.draw_once() {
+            Err(e) if e.code() == D2DERR_RECREATE_TARGET => self.draw_once(),
+            drawn => drawn,
+        }
+    }
+
+    fn draw_once(&mut self) -> Result<()> {
         let rect = unsafe {
             let mut r = RECT::default();
             GetClientRect(self.hwnd, &mut r)?;
             r
         };
-        let width_px = (rect.right - rect.left).max(1) as u32;
-        let height_px = (rect.bottom - rect.top).max(1) as u32;
-        self.ensure_render_target(width_px, height_px)?;
-        let rt = self.render_target.as_ref().unwrap().clone();
+        let size = SIZE {
+            cx: (rect.right - rect.left).max(1),
+            cy: (rect.bottom - rect.top).max(1),
+        };
+        // A canvas of the window's size: the one there is, or a new one —
+        // after the old one is gone, not beside it.
+        let on = match &self.canvas {
+            Some(canvas) if canvas.size == size => canvas.dc,
+            _ => {
+                self.canvas = None;
+                self.canvas.insert(Canvas::new(size)?).dc
+            }
+        };
+        let rt = self.render_target()?;
 
-        let scale = self.dpi() / 96.0;
-        let width = width_px as f32 / scale;
-        let height = height_px as f32 / scale;
-        let p = self.palette;
+        let dpi = self.dpi();
+        let scale = dpi / 96.0;
+        let width = size.cx as f32 / scale;
+        let height = size.cy as f32 / scale;
         // One physical pixel, for the hairlines.
         let px = 1.0 / scale;
+        let all = RECT {
+            left: 0,
+            top: 0,
+            right: size.cx,
+            bottom: size.cy,
+        };
 
-        unsafe {
+        // SAFETY: Direct2D calls on this thread's own render target; `on`
+        // is the canvas's device context, and the canvas stays as it is
+        // until they are done.
+        let drawn = unsafe {
+            rt.BindDC(on, &all)?;
+            rt.SetDpi(dpi, dpi);
             rt.BeginDraw();
+            let drawn = self.draw_on(&rt, width, height, px);
+            // Whatever became of the drawing, it is brought to an end: a
+            // render target left in the middle of one starts no other.
+            drawn.and(rt.EndDraw(None, None))
+        };
+        if drawn.is_err() {
+            // Direct2D wants a new one (D2DERR_RECREATE_TARGET), or this
+            // one is not to be trusted with the next drawing.
+            self.render_target = None;
+        }
+        drawn
+    }
+
+    /// The popup's picture, `width` by `height` DIPs, on a render target
+    /// that is drawing.
+    fn draw_on(&self, rt: &ID2D1RenderTarget, width: f32, height: f32, px: f32) -> Result<()> {
+        let p = self.palette;
+        unsafe {
             // Full-bleed background. On Windows 11 DWM clips the corners to
             // the rounded preference; on Windows 10 the window is square and
             // the fill covers it exactly (no transparent corners — a
@@ -658,7 +780,7 @@ impl CandidateWindow {
                 };
                 let mut x = layout.rect.left + ITEM_PAD_X;
                 draw_text(
-                    &rt,
+                    rt,
                     &(i + 1).to_string(),
                     &run(x, layout.num_w),
                     &self.text_format,
@@ -666,7 +788,7 @@ impl CandidateWindow {
                 );
                 x += layout.num_w + NUM_GAP;
                 draw_text(
-                    &rt,
+                    rt,
                     &item.value,
                     &run(x, layout.value_w),
                     &self.text_format,
@@ -676,7 +798,7 @@ impl CandidateWindow {
                 if let Some(hint) = &item.hint {
                     let hint_rect = run(x, (layout.rect.right - ITEM_PAD_X - x).max(0.0));
                     draw_text(
-                        &rt,
+                        rt,
                         &format_hint(hint),
                         &hint_rect,
                         &self.text_format,
@@ -709,7 +831,7 @@ impl CandidateWindow {
                 } else {
                     &secondary_brush
                 };
-                draw_text(&rt, &notice.text(), &text_rect, &self.notice_format, brush);
+                draw_text(rt, &notice.text(), &text_rect, &self.notice_format, brush);
             }
 
             // Hairline border, one physical pixel, stroked just inside the
@@ -731,14 +853,6 @@ impl CandidateWindow {
                 );
             } else {
                 rt.DrawRectangle(&border_rect, &border_brush, px, None);
-            }
-
-            match rt.EndDraw(None, None) {
-                Ok(()) => {}
-                Err(e) if e.code() == D2DERR_RECREATE_TARGET => {
-                    self.render_target = None;
-                }
-                Err(e) => return Err(e),
             }
         }
         Ok(())
@@ -768,6 +882,75 @@ impl Drop for CandidateWindow {
     }
 }
 
+/// What the popup is drawn on: a 32-bit bitmap in memory, and the device
+/// context it is reached through.
+struct Canvas {
+    dc: HDC,
+    bitmap: HBITMAP,
+    /// What the device context held before the bitmap, to give it back.
+    held_before: HGDIOBJ,
+    size: SIZE,
+    /// The pixels, `size.cx * size.cy` of them from the top row down, each
+    /// 0xAARRGGBB.
+    #[cfg(test)]
+    pixels: *const u32,
+}
+
+impl Canvas {
+    fn new(size: SIZE) -> Result<Self> {
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: size.cx,
+                // Negative: the top row first.
+                biHeight: -size.cy,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // SAFETY: plain GDI calls. What they make is deleted in `drop` — or
+        // here, where the making stops halfway.
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            if dc.is_invalid() {
+                return Err(windows::core::Error::from_thread());
+            }
+            let mut pixels = std::ptr::null_mut();
+            let bitmap = match CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut pixels, None, 0) {
+                Ok(bitmap) => bitmap,
+                Err(e) => {
+                    let _ = DeleteDC(dc);
+                    return Err(e);
+                }
+            };
+            let held_before = SelectObject(dc, bitmap.into());
+            Ok(Self {
+                dc,
+                bitmap,
+                held_before,
+                size,
+                #[cfg(test)]
+                pixels: pixels as *const u32,
+            })
+        }
+    }
+}
+
+impl Drop for Canvas {
+    fn drop(&mut self) {
+        // SAFETY: what `new` made, the bitmap out of the device context
+        // before either goes.
+        unsafe {
+            SelectObject(self.dc, self.held_before);
+            let _ = DeleteObject(self.bitmap.into());
+            let _ = DeleteDC(self.dc);
+        }
+    }
+}
+
 // ---- thread-local instance + public API ----------------------------------
 
 thread_local! {
@@ -778,16 +961,52 @@ thread_local! {
 /// where on the screen the application says that composition is
 /// (`composition::location`).
 pub fn show(place: Location, items: Vec<CandidateItem>, ctx: ITfContext, tid: u32) {
+    let text_window = text_window(&ctx);
     WINDOW.with(|w| {
         let mut w = w.borrow_mut();
-        if w.is_none() {
-            match CandidateWindow::new() {
-                Ok(win) => *w = Some(win),
-                Err(_) => return,
-            }
+        if let Some(win) = belonging_to(&mut w, text_window) {
+            let _ = win.show_at(place, items, ctx, tid);
         }
-        let _ = w.as_mut().unwrap().show_at(place, items, ctx, tid);
     });
+}
+
+/// This thread's popup as one that belongs to `text_window`: the one there
+/// is, if it was made for that window; a new one otherwise, and the old one
+/// goes — whose window an owned window is does not change.
+fn belonging_to(
+    window: &mut Option<CandidateWindow>,
+    text_window: Option<HWND>,
+) -> Option<&mut CandidateWindow> {
+    if window
+        .as_ref()
+        .is_some_and(|win| win.text_window != text_window)
+    {
+        *window = None;
+    }
+    if window.is_none() {
+        *window = CandidateWindow::new(text_window).ok();
+    }
+    window.as_mut()
+}
+
+/// The top-level window the text of `ctx` is in: the window of the
+/// context's view or, where the view names none, the one with the focus, as
+/// Microsoft's IME requirements have it looked up. `None` where neither says.
+fn text_window(ctx: &ITfContext) -> Option<HWND> {
+    // SAFETY: plain calls, on the context TSF handed this thread a key in.
+    unsafe {
+        let of_view = ctx
+            .GetActiveView()
+            .and_then(|view| view.GetWnd())
+            .unwrap_or_default();
+        let inner = if of_view.0.is_null() {
+            GetFocus()
+        } else {
+            of_view
+        };
+        let top = GetAncestor(inner, GA_ROOT);
+        (!top.0.is_null()).then_some(top)
+    }
 }
 
 /// The composition is not where the candidates were put — the application
@@ -1206,6 +1425,24 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             });
             LRESULT(0)
         }
+        WM_NCDESTROY => {
+            // Destroyed, and not by `Drop`, which has the thread's popup
+            // in hand while it destroys it: the system takes an owned
+            // window along with the one it belongs to, when the application
+            // closes that. What is kept here goes with it — a handle of a
+            // window that is no more may be another window's tomorrow. (The
+            // thread's own end is one of `Drop`'s occasions, and there is
+            // no reaching the thread-local then.)
+            let _ = WINDOW.try_with(|w| {
+                if let Ok(mut w) = w.try_borrow_mut()
+                    && w.as_ref().is_some_and(|win| win.hwnd == hwnd)
+                    && let Some(mut win) = w.take()
+                {
+                    win.hwnd = HWND::default();
+                }
+            });
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
@@ -1404,7 +1641,7 @@ fn measure_text(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &str)
 }
 
 fn draw_text(
-    rt: &ID2D1HwndRenderTarget,
+    rt: &ID2D1RenderTarget,
     text: &str,
     rect: &D2D_RECT_F,
     format: &IDWriteTextFormat,
@@ -1429,6 +1666,8 @@ fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
 
 #[cfg(test)]
 mod tests {
+    use windows::Win32::UI::WindowsAndMessaging::{GW_OWNER, GetWindow, IsWindow, WS_CHILD};
+
     use super::*;
 
     const WORK: RECT = RECT {
@@ -1438,6 +1677,183 @@ mod tests {
         bottom: 800,
     };
     const SIZE_300_40: SIZE = SIZE { cx: 300, cy: 40 };
+
+    /// A window of this thread's that is never shown: an application's, or,
+    /// inside `parent`, a field of one.
+    fn plain_window(parent: Option<HWND>) -> HWND {
+        // SAFETY: a window of a system class, the test's alone.
+        unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                PCWSTR::null(),
+                if parent.is_some() { WS_CHILD } else { WS_POPUP },
+                0,
+                0,
+                10,
+                10,
+                parent,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("a window")
+    }
+
+    /// The window `popup` is an owned window of, if it is one.
+    fn owner(popup: HWND) -> Option<HWND> {
+        // SAFETY: a plain call.
+        unsafe { GetWindow(popup, GW_OWNER) }
+            .ok()
+            .filter(|owner| !owner.0.is_null())
+    }
+
+    #[test]
+    fn the_popup_belongs_to_the_window_the_text_is_in() {
+        let (first, second) = (plain_window(None), plain_window(None));
+        let field = plain_window(Some(first));
+        // SAFETY: a plain call.
+        let top_of_field = unsafe { GetAncestor(field, GA_ROOT) };
+        assert_eq!(top_of_field, first);
+
+        let mut window = None;
+        let popup = belonging_to(&mut window, Some(first))
+            .expect("a popup")
+            .hwnd;
+        assert_eq!(owner(popup), Some(first));
+        // It is kept for more text in that window, in whichever field of it,
+        let kept = belonging_to(&mut window, Some(top_of_field)).unwrap().hwnd;
+        assert_eq!(kept, popup);
+        // and made again for text in another one.
+        let popup = belonging_to(&mut window, Some(second)).unwrap().hwnd;
+        assert_eq!(owner(popup), Some(second));
+        // With no window to belong to it is no one's, as it used to be.
+        let popup = belonging_to(&mut window, None).unwrap().hwnd;
+        assert_eq!(owner(popup), None);
+
+        drop(window);
+        // SAFETY: the test's own windows.
+        unsafe {
+            let _ = DestroyWindow(first);
+            let _ = DestroyWindow(second);
+        }
+    }
+
+    #[test]
+    fn a_popup_gone_with_its_window_is_made_again() {
+        let application = plain_window(None);
+        let popup = WINDOW.with(|w| {
+            belonging_to(&mut w.borrow_mut(), Some(application))
+                .expect("a popup")
+                .hwnd
+        });
+        assert_eq!(owner(popup), Some(application));
+
+        // The application closes its window, and Windows the popup with it.
+        // SAFETY: the test's own window.
+        unsafe { DestroyWindow(application) }.unwrap();
+        // SAFETY: a plain call.
+        assert!(!unsafe { IsWindow(Some(popup)) }.as_bool());
+        assert!(
+            WINDOW.with(|w| w.borrow().is_none()),
+            "nothing is kept of a popup that is no more"
+        );
+
+        // The next candidates, in another window, have a popup of their own.
+        let another = plain_window(None);
+        let again = WINDOW.with(|w| {
+            belonging_to(&mut w.borrow_mut(), Some(another))
+                .expect("a popup")
+                .hwnd
+        });
+        assert_eq!(owner(again), Some(another));
+
+        destroy();
+        // SAFETY: the test's own window.
+        unsafe {
+            let _ = DestroyWindow(another);
+        }
+    }
+
+    /// Lay `win` out and give its window the size the layout takes, as
+    /// `place` does, without showing it. The size, in pixels.
+    fn sized(win: &mut CandidateWindow) -> SIZE {
+        let (width, height) = win.relayout().expect("a layout");
+        let scale = win.dpi() / 96.0;
+        let size = SIZE {
+            cx: (width * scale).ceil() as i32,
+            cy: (height * scale).ceil() as i32,
+        };
+        // SAFETY: the test's own window.
+        unsafe {
+            SetWindowPos(
+                win.hwnd,
+                None,
+                0,
+                0,
+                size.cx,
+                size.cy,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            )
+        }
+        .expect("a size");
+        size
+    }
+
+    #[test]
+    fn the_popup_is_drawn_on_a_bitmap_in_memory() {
+        let named = |value: &str| CandidateItem {
+            value: value.to_owned(),
+            hint: None,
+        };
+        let mut win = CandidateWindow::new(None).expect("a popup");
+        win.items = ["你好", "你号", "拟好", "倪浩"].map(named).to_vec();
+        let size = sized(&mut win);
+        // No window of a Store app's process gets a swap chain, and the
+        // popup, drawn through one, came up empty there: what it is drawn
+        // with now asks nothing of the window.
+        win.draw().expect("drawn");
+        {
+            let canvas = win.canvas.as_ref().expect("a canvas");
+            assert_eq!(canvas.size, size);
+            // SAFETY: the bitmap's own pixels; nothing draws meanwhile.
+            let pixels =
+                unsafe { std::slice::from_raw_parts(canvas.pixels, (size.cx * size.cy) as usize) };
+            // Nothing of it is see-through,
+            assert!(pixels.iter().all(|pixel| pixel >> 24 == 0xFF));
+            // most of it is the popup's own background,
+            let bg = win.palette.bg;
+            let is_background = |pixel: &&u32| {
+                [(bg.r, 16), (bg.g, 8), (bg.b, 0)]
+                    .iter()
+                    .all(|(channel, shift)| {
+                        ((*pixel >> shift) & 0xFF).abs_diff((channel * 255.0).round() as u32) <= 1
+                    })
+            };
+            let of_background = pixels.iter().filter(is_background).count();
+            assert!(
+                of_background * 2 > pixels.len(),
+                "{of_background} of {} pixels",
+                pixels.len()
+            );
+            // and the candidates are written on it.
+            let mut colors: Vec<u32> = pixels.to_vec();
+            colors.sort_unstable();
+            colors.dedup();
+            assert!(colors.len() > 8, "{} colors", colors.len());
+        }
+
+        // One candidate more: the canvas is made again, for the new size.
+        win.items.push(CandidateItem {
+            value: "泥".to_owned(),
+            hint: Some("nk".to_owned()),
+        });
+        let larger = sized(&mut win);
+        assert!(larger.cx > size.cx);
+        win.draw().expect("drawn again");
+        assert_eq!(win.canvas.as_ref().expect("a canvas").size, larger);
+    }
 
     /// A line of text 24 pixels high, 20 wide, with its top-left corner at
     /// (`left`, `top`).
