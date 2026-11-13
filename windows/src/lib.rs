@@ -10,6 +10,7 @@ mod factory;
 mod guids;
 mod host;
 mod input_mode;
+mod loader;
 mod mode_icon;
 mod registration;
 mod settings;
@@ -22,12 +23,12 @@ use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, E_POINTER, HINSTANCE, HMODULE, S_FALSE, S_OK,
+    CLASS_E_CLASSNOTAVAILABLE, E_POINTER, HINSTANCE, HMODULE, HWND, S_FALSE, S_OK,
 };
 use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
-use windows::core::{BOOL, ComObjectInner, GUID, HRESULT, Interface};
+use windows::core::{BOOL, ComObjectInner, GUID, HRESULT, Interface, PCWSTR};
 
 static DLL_INSTANCE: AtomicIsize = AtomicIsize::new(0);
 
@@ -85,9 +86,11 @@ extern "system" fn DllCanUnloadNow() -> HRESULT {
     S_FALSE
 }
 
+/// This DLL registered by itself, as what applications load for the IME:
+/// with no loader in front of it (`JdRegisterServer`).
 #[unsafe(no_mangle)]
 extern "system" fn DllRegisterServer() -> HRESULT {
-    match registration::register() {
+    match registration::register(None) {
         Ok(()) => S_OK,
         Err(e) => e.code(),
     }
@@ -99,6 +102,42 @@ extern "system" fn DllUnregisterServer() -> HRESULT {
         Ok(()) => S_OK,
         Err(e) => e.code(),
     }
+}
+
+// ---- For the loader (windows/loader) ---------------------------------------
+//
+// The DLL that is installed as the IME's, and registered, is the loader:
+// it loads this one, and puts a newer installation's in its place while
+// applications run (loader.rs). These three are what it calls besides the
+// entry points above. An application keeps the loader it started with and
+// is handed DLLs newer than that: their names, and what they do, stay.
+
+/// Where the loader's `DllRegisterServer` ends: the IME registered with
+/// `server`, the loader's own DLL, as what applications load for it.
+#[unsafe(no_mangle)]
+extern "system" fn JdRegisterServer(server: PCWSTR) -> HRESULT {
+    if server.is_null() {
+        return E_POINTER;
+    }
+    // SAFETY: the loader passes a path that ends with a NUL.
+    match registration::register(Some(unsafe { server.as_wide() })) {
+        Ok(()) => S_OK,
+        Err(e) => e.code(),
+    }
+}
+
+/// From now on, post `message` to `window` whenever the calling thread's
+/// IME may have become idle — until that IME is deactivated.
+#[unsafe(no_mangle)]
+extern "system" fn JdTellWhenIdle(window: HWND, message: u32) {
+    loader::listen(window, message);
+}
+
+/// Whether the calling thread's IME is idle now, and may be deactivated
+/// with nothing lost.
+#[unsafe(no_mangle)]
+extern "system" fn JdIsIdle() -> BOOL {
+    BOOL::from(loader::is_idle())
 }
 
 #[cfg(test)]

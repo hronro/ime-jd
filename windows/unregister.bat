@@ -11,12 +11,12 @@ exit /b %ERRORLEVEL%
 :Native
 
 set "INSTALL_DIR=%ProgramFiles%\ime-jd"
-set "DLL_NAME=ime_jd.dll"
-set "DLL32_NAME=ime_jd_x86.dll"
-REM The ARM64 package's (register.bat): the IME behind the forwarder that
-REM ime_jd.dll is there, for ARM64 applications and for x64 ones.
-set "DLL_ARM64_NAME=ime_jd_arm64.dll"
-set "DLL_X64_NAME=ime_jd_x64.dll"
+REM What register.bat installs: the loaders, which are what is registered,
+REM and behind them the IME of the installation in use, jd-<id>-<arch>.dll,
+REM named by `current`.
+set "LOADER_NAME=ime_jd.dll"
+set "LOADER32_NAME=ime_jd_x86.dll"
+set "REGSVR32_32=%SystemRoot%\SysWOW64\regsvr32.exe"
 set "EXE_NAME=ime_jd_userdict.exe"
 set "SHORTCUT=%ProgramData%\Microsoft\Windows\Start Menu\Programs\键道用户自造词.lnk"
 
@@ -27,26 +27,36 @@ if errorlevel 1 goto :not_admin
 
 if not exist "%INSTALL_DIR%" goto :nothing_to_do
 
-REM Unregister from COM/TSF first, the 32-bit DLL with the 32-bit regsvr32.
-REM On ARM64 the IME's own DLL is asked as well as the forwarder in front of
-REM it: whichever of the two is registered, and whether or not the forwarder
-REM still finds it.
-if exist "%INSTALL_DIR%\%DLL32_NAME%" "%SystemRoot%\SysWOW64\regsvr32.exe" /s /u "%INSTALL_DIR%\%DLL32_NAME%"
-if exist "%INSTALL_DIR%\%DLL_ARM64_NAME%" regsvr32 /s /u "%INSTALL_DIR%\%DLL_ARM64_NAME%"
-if exist "%INSTALL_DIR%\%DLL_NAME%" regsvr32 /s /u "%INSTALL_DIR%\%DLL_NAME%"
+REM Unregister from COM/TSF first, the 32-bit side with the 32-bit regsvr32.
+REM The loader is asked, and passes it on to the IME in use. Where there is
+REM no loader, or it does not find the IME, every IME that is there is
+REM asked itself: any of them takes out what all of them register. So is,
+REM before the loader, what an installation from before there was one has
+REM behind its ime_jd.dll on ARM64.
+set "ASK_IME32=1"
+if exist "%INSTALL_DIR%\%LOADER32_NAME%" "%REGSVR32_32%" /s /u "%INSTALL_DIR%\%LOADER32_NAME%" && set "ASK_IME32="
+if defined ASK_IME32 for %%F in ("%INSTALL_DIR%\jd-*-x86.dll") do "%REGSVR32_32%" /s /u "%%F"
+if exist "%INSTALL_DIR%\ime_jd_arm64.dll" regsvr32 /s /u "%INSTALL_DIR%\ime_jd_arm64.dll"
+set "ASK_IME=1"
+if exist "%INSTALL_DIR%\%LOADER_NAME%" regsvr32 /s /u "%INSTALL_DIR%\%LOADER_NAME%" && set "ASK_IME="
+if defined ASK_IME for %%F in ("%INSTALL_DIR%\jd-*-arm64.dll" "%INSTALL_DIR%\jd-*-x64.dll") do regsvr32 /s /u "%%F"
 
 REM The user-dictionary window's Start menu entry. The phrases themselves,
 REM in each user's %APPDATA%\ime-jd, are the user's and stay.
 del /Q "%SHORTCUT%" >nul 2>&1
 
-REM Best-effort file cleanup. The DLL may still be loaded into running
+REM Best-effort file cleanup. The DLLs may still be loaded into running
 REM processes that picked up the IME, and the window may be open; those hold
 REM their files until they exit. Anything we can't delete now stays in the
 REM directory.
-del /Q "%INSTALL_DIR%\%DLL_NAME%" >nul 2>&1
-del /Q "%INSTALL_DIR%\%DLL_ARM64_NAME%" >nul 2>&1
-del /Q "%INSTALL_DIR%\%DLL_X64_NAME%" >nul 2>&1
-del /Q "%INSTALL_DIR%\%DLL32_NAME%" >nul 2>&1
+del /Q "%INSTALL_DIR%\%LOADER_NAME%" >nul 2>&1
+del /Q "%INSTALL_DIR%\%LOADER32_NAME%" >nul 2>&1
+del /Q "%INSTALL_DIR%\jd-*.dll" >nul 2>&1
+del /Q "%INSTALL_DIR%\current" >nul 2>&1
+del /Q "%INSTALL_DIR%\current.new" >nul 2>&1
+REM An installation from before there was a loader, on ARM64.
+del /Q "%INSTALL_DIR%\ime_jd_arm64.dll" >nul 2>&1
+del /Q "%INSTALL_DIR%\ime_jd_x64.dll" >nul 2>&1
 del /Q "%INSTALL_DIR%\%EXE_NAME%" >nul 2>&1
 del /Q "%INSTALL_DIR%\*.old-*" >nul 2>&1
 REM The update's script, and what an update cut short may have left.

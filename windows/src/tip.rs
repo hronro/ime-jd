@@ -20,7 +20,7 @@ use crate::candidate_window::{self, CandidateItem};
 use crate::display_attribute::{DisplayAttributeEnum, DisplayAttributeInfo};
 use crate::guids::GUID_JD_DISPLAY_ATTRIBUTE;
 use crate::input_mode::{self, VK_SHIFT};
-use crate::{composition, host, jd, mode_icon, ui_element};
+use crate::{composition, host, jd, loader, mode_icon, ui_element};
 
 #[implement(
     ITfTextInputProcessorEx,
@@ -56,6 +56,10 @@ impl ITfTextInputProcessor_Impl for TextInputProcessor_Impl {
     }
 
     fn Deactivate(&self) -> Result<()> {
+        // Whoever deactivates it — TSF, or a loader putting a newer
+        // installation's IME in this one's place — this one has no more to
+        // tell the loader.
+        loader::forget();
         let state = self.state.borrow();
         if let Some(thread_mgr) = state.thread_mgr.as_ref() {
             if let Ok(keystroke_mgr) = thread_mgr.cast::<ITfKeystrokeMgr>() {
@@ -164,8 +168,12 @@ impl ITfDisplayAttributeProvider_Impl for TextInputProcessor_Impl {
 
 impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
     fn OnSetFocus(&self, fforeground: BOOL) -> Result<()> {
-        // A press of Shift does not survive the focus going elsewhere.
-        if !fforeground.as_bool() {
+        if fforeground.as_bool() {
+            // The keys are this IME's again, and none has come yet: as
+            // when the thread has the focus back (`OnSetThreadFocus`).
+            loader::idle();
+        } else {
+            // A press of Shift does not survive the focus going elsewhere.
             input_mode::cancel();
         }
         Ok(())
@@ -448,6 +456,8 @@ impl ITfThreadMgrEventSink_Impl for TextInputProcessor_Impl {
         if composition::is_outside(pdimfocus.as_ref()) {
             commit_as_typed(self.state.borrow().client_id);
         }
+        // Between two documents nothing is being typed.
+        loader::idle();
         Ok(())
     }
 
@@ -465,6 +475,10 @@ impl ITfThreadFocusSink_Impl for TextInputProcessor_Impl {
     /// it kept open come back.
     fn OnSetThreadFocus(&self) -> Result<()> {
         candidate_window::set_thread_focus(true);
+        // Back from elsewhere — from installing a newer 键道, it may be —
+        // and before the first key: the moment for a loader in front of
+        // this DLL to bring that one in (loader.rs).
+        loader::idle();
         Ok(())
     }
 

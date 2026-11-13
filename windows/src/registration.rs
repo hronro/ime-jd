@@ -1,13 +1,9 @@
-use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt;
-use std::path::PathBuf;
-
 use windows::Win32::Foundation::{HMODULE, MAX_PATH, S_OK};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
     CoUninitialize,
 };
-use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::Registry::{
     HKEY, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
     RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
@@ -36,17 +32,22 @@ const REGISTERED_CATEGORIES: &[windows::core::GUID] = &[
     GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
     GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
 ];
-use windows::core::{Error, PCWSTR, Result, w};
+use windows::core::{Error, PCWSTR, Result};
 
 use crate::{dll_hmodule, guids};
 
-/// The name the IME's DLL is installed and registered under. On ARM64 it is
-/// the forwarder's, in front of the IME (`server_path`).
-const FORWARDER: PCWSTR = w!("ime_jd.dll");
-
-pub fn register() -> Result<()> {
-    let dll_path = module_path(dll_hmodule())?;
-    write_clsid_registry(&server_path()?)?;
+/// Register the IME with `server` as the DLL applications load for it: the
+/// loader that is installed in front of this DLL (windows/loader), whose
+/// `DllRegisterServer` regsvr32 calls and which passes its own path on. It
+/// is what stays where it is from one installation to the next, and on
+/// ARM64 what loads into ARM64 and x64 applications alike, which read one
+/// registry. With no `server`, this DLL registers itself.
+pub fn register(server: Option<&[u16]>) -> Result<()> {
+    let server = match server {
+        Some(server) => server.to_vec(),
+        None => module_path(dll_hmodule())?,
+    };
+    write_clsid_registry(&server)?;
 
     let _com = ComScope::init()?;
 
@@ -65,10 +66,11 @@ pub fn register() -> Result<()> {
             &desc,
             // pchIconFile + uIconIndex: the icon shown in the input switcher
             // and Settings. Index 0 is the DLL's first ICON resource — the
-            // seal icon embedded by build.rs (`1 ICON "jd.ico"`). This DLL's
-            // own path, behind a forwarder too: the icon is in this file
-            // however the forwarder was built.
-            &dll_path,
+            // seal icon embedded by build.rs (`1 ICON "jd.ico"`), which the
+            // loader is built with too (loader/build.bat). The registered
+            // DLL's path, then, and not this DLL's own behind a loader: that
+            // one is another file with every installation.
+            &server,
             0,
             HKL::default(),
             0,
@@ -125,44 +127,6 @@ pub fn unregister() -> Result<()> {
 
     let _ = delete_clsid_registry();
     Ok(())
-}
-
-/// The DLL applications are to load for the IME: this one — unless this
-/// one was reached through the forwarder. On ARM64 `ime_jd.dll` is not the
-/// IME but the DLL in front of it (windows/forwarder), which hands an ARM64
-/// application this DLL and an x64 one its x64 twin. The two kinds read one
-/// registry, so the forwarder's is the only path that serves both: this
-/// DLL's own would be found by x64 applications, which cannot load it.
-/// regsvr32 is pointed at the forwarder, then, and its call arrives here
-/// with the forwarder loaded in the same process, from the same folder.
-fn server_path() -> Result<Vec<u16>> {
-    let own = module_path(dll_hmodule())?;
-    // SAFETY: a lookup among the modules of this process.
-    let front = unsafe { GetModuleHandleW(FORWARDER) }
-        .ok()
-        .filter(|front| *front != dll_hmodule())
-        .and_then(|front| module_path(front).ok());
-    Ok(server_of(own, front))
-}
-
-/// `front` — a module of the forwarder's name other than this DLL, `own` —
-/// if it is in this DLL's folder, where the forwarder looks for it; if
-/// there is none, or it is a namesake from somewhere else, `own`.
-fn server_of(own: Vec<u16>, front: Option<Vec<u16>>) -> Vec<u16> {
-    match front {
-        Some(front) if in_one_folder(&front, &own) => front,
-        _ => own,
-    }
-}
-
-/// Whether two files lie in one folder, letter case aside.
-fn in_one_folder(a: &[u16], b: &[u16]) -> bool {
-    let a = PathBuf::from(OsString::from_wide(a));
-    let b = PathBuf::from(OsString::from_wide(b));
-    match (a.parent(), b.parent()) {
-        (Some(a), Some(b)) => a.as_os_str().eq_ignore_ascii_case(b.as_os_str()),
-        _ => false,
-    }
 }
 
 fn module_path(hmod: HMODULE) -> Result<Vec<u16>> {
@@ -297,29 +261,4 @@ fn write_value(path: &str, value_name: PCWSTR, value_wide_z: &[u16]) -> Result<(
         close_err?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn wide(path: &str) -> Vec<u16> {
-        path.encode_utf16().collect()
-    }
-
-    #[test]
-    fn the_forwarder_this_dll_was_reached_through_is_what_gets_registered() {
-        let own = wide(r"C:\Program Files\ime-jd\ime_jd_arm64.dll");
-        // As regsvr32 was given it, whatever the letter case.
-        let forwarder = wide(r"c:\program files\IME-JD\ime_jd.dll");
-        assert_eq!(server_of(own.clone(), Some(forwarder.clone())), forwarder);
-
-        // Registered by itself — the x64 package's DLL, the 32-bit one, and
-        // this one where the forwarder would not load — a DLL is its own
-        // server.
-        assert_eq!(server_of(own.clone(), None), own);
-        // So it is with a namesake in the process that did not lead here.
-        let stranger = wide(r"C:\Program Files\Other\ime_jd.dll");
-        assert_eq!(server_of(own.clone(), Some(stranger)), own);
-    }
 }

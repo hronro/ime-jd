@@ -1,14 +1,20 @@
 //! Whether the installed IME can be created in a process of this
 //! architecture: what register.bat's work comes down to, for each kind of
 //! application Windows runs. On x64 Windows those are two, x64 and x86; on
-//! ARM64, where x64 applications run too and reach the IME through the
-//! forwarder (../forwarder), three. The workflows that build the bundles
-//! build this for each kind and run it against the bundle they have just
-//! installed (.github/workflows/build-on-push.yml, release.yml).
+//! ARM64, where x64 applications run too, three. What is created is the
+//! object of the loader (../loader), the DLL that is registered, with the
+//! IME's own behind it, and both are named. The workflows that build the
+//! bundles build this for each kind and run it against the bundle they have
+//! just installed (.github/workflows/build-on-push.yml, release.yml).
 //!
 //!     ime_jd_check                the installed IME, created both ways below
 //!     ime_jd_check --uninstalled  that there is none, after unregister.bat
 //!     ime_jd_check <dll>          a DLL that is not installed, by its path
+//!     ime_jd_check --hand-over <folder>
+//!                                 the loader in <folder>, a bundle or an
+//!                                 installation: whether it hands the IME
+//!                                 over to the next installation's
+//!                                 (hand_over.rs)
 //!
 //! TSF comes by an IME's objects in two ways, which load its DLL differently:
 //!
@@ -25,6 +31,7 @@
 #[path = "../../src/guids.rs"]
 #[allow(dead_code)]
 mod guids;
+mod hand_over;
 
 use std::env::consts::ARCH;
 use std::ffi::c_void;
@@ -41,7 +48,7 @@ use windows::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetModuleHandleExW, GetProcAddress, LOAD_LIBRARY_FLAGS, LoadLibraryExW,
 };
 use windows::Win32::System::Registry::{HKEY_CLASSES_ROOT, RRF_RT_REG_SZ, RegGetValueW};
-use windows::Win32::UI::TextServices::ITfTextInputProcessor;
+use windows::Win32::UI::TextServices::{ITfDisplayAttributeProvider, ITfTextInputProcessor};
 use windows::core::{Error, GUID, HRESULT, Interface, PCWSTR, Result, s};
 
 const THROUGH_COM: &str = "--through-com";
@@ -60,9 +67,13 @@ fn main() -> ExitCode {
                 .ok_or_else(|| Error::from(REGDB_E_CLASSNOTREG))
                 .and_then(|dll| by_path(&dll)),
         ),
+        ["--hand-over", folder] => hand_over::run(Path::new(folder)),
+        [hand_over::IN_ITS_FOLDER, folder, ime] => {
+            hand_over::in_its_folder(Path::new(folder), Path::new(ime))
+        }
         [dll] if !dll.starts_with('-') => report("by its path", by_path(Path::new(dll))),
         _ => {
-            eprintln!("usage: ime_jd_check [--uninstalled | <dll>]");
+            eprintln!("usage: ime_jd_check [--uninstalled | <dll> | --hand-over <folder>]");
             return ExitCode::from(2);
         }
     };
@@ -116,12 +127,40 @@ fn uninstalled() -> bool {
     }
 }
 
-fn report(how: &str, created: Result<PathBuf>) -> bool {
+fn report(how: &str, created: Result<Created>) -> bool {
     match &created {
-        Ok(dll) => println!("  {how}: created, by {}", dll.display()),
+        Ok(Created { by, ime: Some(ime) }) => println!(
+            "  {how}: created, by {} in front of {}",
+            by.display(),
+            ime.display()
+        ),
+        Ok(Created { by, ime: None }) => println!("  {how}: created, by {}", by.display()),
         Err(error) => println!("  {how}: not created, {error}"),
     }
     created.is_ok()
+}
+
+/// Where a created object's code is: the DLL that answered for the class —
+/// the loader's — and, behind a loader, the IME's own.
+#[derive(Debug)]
+struct Created {
+    by: PathBuf,
+    ime: Option<PathBuf>,
+}
+
+impl Created {
+    /// The loader's object answers for the text service itself and passes
+    /// every other question on to the IME's object behind it: the display
+    /// attributes are the IME's. With no loader in front, the two are one.
+    fn of(tip: &ITfTextInputProcessor) -> Result<Self> {
+        let by = home(tip)?;
+        let ime = tip
+            .cast::<ITfDisplayAttributeProvider>()
+            .and_then(|provider| home(&provider))
+            .ok()
+            .filter(|ime| *ime != by);
+        Ok(Self { by, ime })
+    }
 }
 
 /// The DLL registered as the IME's, in the registry this process reads — a
@@ -155,18 +194,18 @@ fn registered() -> Option<PathBuf> {
 
 /// As `TipCreateInstance` in msctf: the class, in process, for the text
 /// service's own interface.
-fn through_com() -> Result<PathBuf> {
+fn through_com() -> Result<Created> {
     // SAFETY: COM on this thread, for as long as the process lasts.
     let tip: ITfTextInputProcessor = unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         CoCreateInstance(&guids::CLSID_JD_IME, None, CLSCTX_INPROC_SERVER)?
     };
-    home(&tip)
+    Created::of(&tip)
 }
 
 /// As `ComLessCreateInstance` in msctf: the DLL loaded by its path with no
 /// flag, and its class factory asked for the object.
-fn by_path(dll: &Path) -> Result<PathBuf> {
+fn by_path(dll: &Path) -> Result<Created> {
     type GetClassObject =
         unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
     let path = wide(&std::path::absolute(dll)?);
@@ -181,11 +220,11 @@ fn by_path(dll: &Path) -> Result<PathBuf> {
         get(&guids::CLSID_JD_IME, &IClassFactory::IID, &mut factory).ok()?;
         IClassFactory::from_raw(factory).CreateInstance(None)?
     };
-    home(&tip)
+    Created::of(&tip)
 }
 
 /// The DLL an object's code is in: the one its vtable lies in.
-fn home(object: &impl Interface) -> Result<PathBuf> {
+pub(crate) fn home(object: &impl Interface) -> Result<PathBuf> {
     let mut module = HMODULE::default();
     let mut buffer = [0u16; 1024];
     // SAFETY: a COM object starts with the pointer to its vtable, and the
@@ -205,6 +244,6 @@ fn home(object: &impl Interface) -> Result<PathBuf> {
     Ok(PathBuf::from(String::from_utf16_lossy(&buffer[..length])))
 }
 
-fn wide(path: &Path) -> Vec<u16> {
+pub(crate) fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain([0]).collect()
 }

@@ -1,7 +1,0 @@
-; The IME's four entry points (..\src\lib.rs), exported from both sides of
-; the forwarder: build.bat gives the linker this file for each.
-EXPORTS
-    DllGetClassObject PRIVATE
-    DllCanUnloadNow PRIVATE
-    DllRegisterServer PRIVATE
-    DllUnregisterServer PRIVATE

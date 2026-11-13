@@ -68,7 +68,7 @@ use windows::core::{
 };
 
 use crate::candidate_window::{high_contrast, read_hkcu_dword, system_color};
-use crate::{dll_hmodule, guids, host, input_mode, settings};
+use crate::{dll_hmodule, guids, host, input_mode, loader, settings};
 
 /// The two input modes' glyphs, as Windows' Chinese IMEs draw them.
 const CHINESE_GLYPH: &str = "中";
@@ -294,6 +294,9 @@ fn show_menu(secure: bool, at: POINT) {
     else {
         return;
     };
+    // The menu runs a message loop of its own, and so may what is picked
+    // from it: the IME is not to be replaced from inside either (loader.rs).
+    let _busy = loader::Busy::new();
     let current = settings::current();
     let changeable = current.changeable && !secure;
     let flags = |checked: bool| {

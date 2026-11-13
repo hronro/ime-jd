@@ -56,6 +56,17 @@ impl CompositionState {
             composition: None,
         }
     }
+
+    /// The composition in flight leaves this thread's state: it is ending,
+    /// whichever way. With none in flight the IME is idle, which a loader
+    /// in front of this DLL waits to hear (loader.rs).
+    fn end(&mut self) -> Option<ITfComposition> {
+        let composition = self.composition.take();
+        if composition.is_some() {
+            crate::loader::idle();
+        }
+        composition
+    }
 }
 
 /// Called from OnKeyDown for each consumable letter. Starts a composition on
@@ -94,7 +105,7 @@ pub fn commit_text(ctx: &ITfContext, tid: u32, text: &str) -> Result<()> {
     let session = EditSession::new(move |ec| {
         STATE.with(|s| -> Result<()> {
             let mut state = s.borrow_mut();
-            if let Some(comp) = state.composition.take() {
+            if let Some(comp) = state.end() {
                 let range = unsafe { comp.GetRange() }?;
                 let wide: Vec<u16> = text_owned.encode_utf16().collect();
                 unsafe { range.SetText(ec, 0, &wide) }?;
@@ -175,7 +186,7 @@ pub fn backspace(ctx: &ITfContext, tid: u32) -> Result<()> {
             state.buffer.pop();
             let buffer = state.buffer.clone();
             if buffer.is_empty() {
-                if let Some(comp) = state.composition.take() {
+                if let Some(comp) = state.end() {
                     let range = unsafe { comp.GetRange() }?;
                     let empty: Vec<u16> = Vec::new();
                     unsafe { range.SetText(ec, 0, &empty) }?;
@@ -208,7 +219,7 @@ pub fn commit_as_typed(tid: u32) -> Result<()> {
         // state.
         let mut state = s.try_borrow_mut().ok()?;
         state.buffer.clear();
-        state.composition.take()
+        state.end()
     });
     let Some(comp) = comp else {
         return Ok(());
@@ -232,7 +243,7 @@ fn commit_session(ctx: ITfContext) -> EditSession {
     EditSession::new(move |ec| {
         STATE.with(|s| -> Result<()> {
             let mut state = s.borrow_mut();
-            if let Some(comp) = state.composition.take() {
+            if let Some(comp) = state.end() {
                 // Strip the display attribute from the now-committed text so
                 // it stops rendering as in-flight. SampleIME does the same in
                 // `_ClearCompositionDisplayAttributes`.
@@ -257,7 +268,7 @@ pub fn cancel(ctx: &ITfContext, tid: u32) -> Result<()> {
     let session = EditSession::new(move |ec| {
         STATE.with(|s| -> Result<()> {
             let mut state = s.borrow_mut();
-            if let Some(comp) = state.composition.take() {
+            if let Some(comp) = state.end() {
                 let range = unsafe { comp.GetRange() }?;
                 let empty: Vec<u16> = Vec::new();
                 unsafe { range.SetText(ec, 0, &empty) }?;
@@ -301,7 +312,7 @@ pub fn on_externally_terminated(ec: u32, comp: Option<&ITfComposition>) -> bool 
         {
             return false;
         }
-        state.composition = None;
+        state.end();
         state.buffer.clear();
         true
     });
@@ -326,6 +337,17 @@ pub fn forget() {
 /// Whether there is currently an in-flight composition.
 pub fn is_active() -> bool {
     STATE.with(|s| s.borrow().composition.is_some())
+}
+
+/// Whether nothing is being composed, and no edit of ours is under way
+/// either. Asked from outside TSF's calls, by a loader in front of this DLL
+/// (loader.rs), at a time of its message's arriving: an edit that holds the
+/// state is not idle.
+pub fn is_idle() -> bool {
+    STATE.with(|s| {
+        s.try_borrow()
+            .is_ok_and(|state| state.composition.is_none())
+    })
 }
 
 /// Whether a composition is in flight in a context other than `ctx`. A

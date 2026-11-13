@@ -6,7 +6,7 @@ Rust implementation of 键道输入法 as a Windows TSF Text Input Processor. Li
 
 - Windows 10 version 1809 (October 2018) or newer, x64 or ARM64. On ARM64 the IME is there for x64 applications too, which Windows 11 runs.
 - Nothing else on the machine: the DLLs and the user-dictionary window carry the C runtime in themselves (`.cargo/config.toml`), so no Visual C++ redistributable has to be installed for any of them to load.
-- For building: [Rust](https://rustup.rs/), [Zig](https://ziglang.org/) (used to build the `libjd` core).
+- For building: [Rust](https://rustup.rs/), [Zig](https://ziglang.org/) (used to build the `libjd` core), and Visual Studio's C++ build tools, which Rust links with and the [loader](#loader) is compiled with.
 
 ## Build
 
@@ -17,60 +17,98 @@ cd windows
 cargo build --release
 ```
 
-This builds the workspace's two parts: the DLL at `windows\target\release\ime_jd.dll` and the user-dictionary window at `windows\target\release\ime_jd_userdict.exe`. The build script invokes the Zig core build automatically.
+This builds the workspace's two parts: the IME's DLL at `windows\target\release\ime_jd.dll` and the user-dictionary window at `windows\target\release\ime_jd_userdict.exe`. The build script invokes the Zig core build automatically.
 
-The 32-bit DLL, for 32-bit applications (see [Install](#install)), is a build of its own, at `windows\target\i686-pc-windows-msvc\release\ime_jd.dll`; the core is built for it too:
+The IME for 32-bit applications (see [Install](#install)) is a build of its own, at `windows\target\i686-pc-windows-msvc\release\ime_jd.dll`; the core is built for it too:
 
 ```
 rustup target add i686-pc-windows-msvc
 cargo build --release --target i686-pc-windows-msvc -p jd-windows
 ```
 
-On an ARM64 machine these two builds are the IME for ARM64 and for 32-bit applications. The ARM64 package of a release carries two files more — an x64 build of the DLL, and the forwarder that goes in front of the two 64-bit ones (see [Install](#install)) — which the release workflow adds (`build-windows-ime` in `.github/workflows/release.yml`), on an ARM64 runner:
+What is installed under the IME's name, and registered, is not that DLL but the [loader](#loader) in front of it: a small DLL in C, one for 64-bit applications and one for 32-bit ones.
+
+```
+loader\build.bat x64
+loader\build.bat x86
+```
+
+They are written to `windows\target\loader\x64\ime_jd.dll` and `windows\target\loader\x86\ime_jd_x86.dll`, and carry the IME's manifest, icon and version, which Windows looks for in the DLL that is registered: the resource file cargo compiled for the IME's DLL — `ime_jd.lib` in that build's `OUT_DIR`, under `target\…\release\build\jd-windows-*\out\` — which the script finds under `target\` by itself, or takes as its second argument. A loader needs building again only when `loader\loader.c` has changed.
+
+On an ARM64 machine the two cargo builds are the IME for ARM64 and for 32-bit applications, and the 64-bit loader is `loader\build.bat arm64x`, written to `windows\target\loader\arm64x\ime_jd.dll`: one file that loads into ARM64 and into x64 applications (see [Install](#install)), for which the script needs the C++ build tools for ARM64. The IME for x64 applications, which the ARM64 package of a release carries as well, is a third cargo build:
 
 ```
 rustup target add x86_64-pc-windows-msvc
 cargo build --release --target x86_64-pc-windows-msvc -p jd-windows
-forwarder\build.bat <ime_jd.lib>
 ```
-
-`forwarder\build.bat` needs Visual Studio's C++ build tools for ARM64 and writes `windows\target\forwarder\ime_jd.dll`. Its argument is the resource file cargo compiled for the IME's own DLL — `ime_jd.lib` in that build's `OUT_DIR`, under `target\…\release\build\jd-windows-*\out\` — which gives the forwarder the IME's manifest, icon and version.
 
 ## Install
 
 `register.bat` does the full install:
 
 1. Right-click `register.bat` → **Run as administrator**.
-2. The script copies the DLL (three of them from the ARM64 package, see below), the 32-bit DLL (as `ime_jd_x86.dll`), the user-dictionary window and `update.bat` (what the IME's own [update](#updates) runs) to `C:\Program Files\ime-jd\`, grants AppContainer read access (so UWP apps can load the DLLs), registers both DLLs with `regsvr32` — the 32-bit one with SysWOW64's — and adds **键道用户自造词** to the Start menu for all users.
+2. The script copies to `C:\Program Files\ime-jd\` the two [loaders](#loader), `ime_jd.dll` and `ime_jd_x86.dll`, the IME that goes behind each, under a name of this installation's own, the user-dictionary window and `update.bat` (what the IME's own [update](#updates) runs); grants AppContainer read access (so UWP apps can load the DLLs); registers both loaders with `regsvr32` — the 32-bit one with SysWOW64's — and adds **键道用户自造词** to the Start menu for all users.
 3. Add 键道 to your keyboard list: **Settings → Time & language → Language → Chinese (Simplified) → Options → Add a keyboard → 键道**.
 
-Windows loads an IME into each application in the application's own architecture: 64-bit applications load `ime_jd.dll`, and 32-bit ones — WPS Office, for one — load `ime_jd_x86.dll`, which the 32-bit `regsvr32` registers in the registry they read. Both DLLs register the one input profile, which 32-bit and 64-bit applications share, so 键道 is listed in every application; without the 32-bit DLL, a 32-bit application lists it but cannot switch to it. Started from a 32-bit process (the [update](#updates), clicked in a 32-bit application), the script hands itself over to the 64-bit `cmd`, which sees the real `Program Files` and `System32`.
+Run again, for an upgrade, it installs the new IME beside the one in use and changes nothing else that an application has loaded: applications that are running go over to the new IME by themselves, the next time something is typed in them (see [Loader](#loader)).
 
-**ARM64.** ARM64 Windows runs a third kind of application, x64 ones, and they read the registry that ARM64 applications read: the one DLL registered there has to load into both, which neither an ARM64 nor an x64 DLL does. So the ARM64 package installs three 64-bit files. `ime_jd_arm64.dll` and `ime_jd_x64.dll` are the IME for the two kinds of application. `ime_jd.dll`, the one that is registered, is there a *forwarder* (`forwarder/`): an Arm64X DLL — one file with an ARM64 side and an x64 side — whose every entry point passes the call on to the IME beside it that is built for the application at hand. It finds that DLL by its own path. A DLL that only forwards its exports would leave the finding to Windows, which looks in the forwarding DLL's folder only if that DLL was loaded with `LOAD_WITH_ALTERED_SEARCH_PATH` — as COM loads an IME in a desktop application, but not in a Store app, and not TSF where it loads a text service itself, for its display attributes. `regsvr32` is given the forwarder, and the IME behind it registers the path the call came by (`server_path` in `src/registration.rs`). If the forwarder cannot be registered — it does not load, or does not find the IME — `register.bat` says so and registers `ime_jd_arm64.dll` itself, which leaves x64 applications without 键道 and everything else as it is.
+Windows loads an IME into each application in the application's own architecture: 64-bit applications load `ime_jd.dll`, and 32-bit ones — WPS Office, for one — load `ime_jd_x86.dll`, which the 32-bit `regsvr32` registers in the registry they read. Both register the one input profile, which 32-bit and 64-bit applications share, so 键道 is listed in every application; without the 32-bit loader and IME, a 32-bit application lists it but cannot switch to it. Started from a 32-bit process (the [update](#updates), clicked in a 32-bit application), the script hands itself over to the 64-bit `cmd`, which sees the real `Program Files` and `System32`.
+
+**ARM64.** ARM64 Windows runs a third kind of application, x64 ones, and they read the registry that ARM64 applications read: the one DLL registered there has to load into both, which neither an ARM64 nor an x64 DLL does. So the ARM64 package's `ime_jd.dll` is an Arm64X DLL — one file with an ARM64 side and an x64 side — and behind it are two IMEs, one for either kind of application; each side loads its own. The loader being code, it finds the IME by its own path. A DLL that only forwards its exports to another, which is what an Arm64X file in front of two DLLs usually is, would leave the finding to Windows, which looks in the forwarding DLL's folder only if that DLL was loaded with `LOAD_WITH_ALTERED_SEARCH_PATH` — as COM loads an IME in a desktop application, but not in a Store app, and not TSF where it loads a text service itself, for its display attributes. If the loader cannot be registered there — it does not load, or does not find the IME — `register.bat` says so and registers the IME's ARM64 DLL itself, as what applications load: that leaves x64 applications without 键道, and an upgrade to wait for each application to be started again.
 
 `register.bat` works in two layouts:
-- Run from the repo (uses `target\release\` next to itself, and `target\i686-pc-windows-msvc\release\` for the 32-bit DLL; without that build it installs for 64-bit applications only — on ARM64, for ARM64 ones only).
-- Bundled for distribution (uses the files in the same directory as the script; `ime_jd_arm64.dll` among them makes it the ARM64 package).
+- Run from the repo (uses `target\release\` next to itself, `target\loader\` for the loaders, and `target\i686-pc-windows-msvc\release\` for the 32-bit IME; without the 32-bit loader and IME it installs for 64-bit applications only — and on ARM64, without the x64 build, for ARM64 ones only).
+- Bundled for distribution (uses the files in the same directory as the script: the loaders, and the IME as `jd-x64.dll` and `jd-x86.dll`; `jd-arm64.dll` among them makes it the ARM64 package).
 
-**Checking an installation.** `cargo run --release -p jd-check` says whether the installed IME can be created in a process of the architecture it is built for — `--target i686-pc-windows-msvc` for a 32-bit process, `--target x86_64-pc-windows-msvc` on ARM64 for an x64 one — in the two ways TSF comes by it: through COM, and by loading the registered DLL by its path, each in a process of its own. The workflows that build the packages (`build-on-push.yml`, `release.yml`) run it for every kind of process against each package, installed on its own runner by its `register.bat`, and once more with `--uninstalled` after its `unregister.bat`. Given a DLL's path instead, it checks a build that is not installed.
+**Checking an installation.** `cargo run --release -p jd-check` says whether the installed IME can be created in a process of the architecture it is built for — `--target i686-pc-windows-msvc` for a 32-bit process, `--target x86_64-pc-windows-msvc` on ARM64 for an x64 one — in the two ways TSF comes by it: through COM, and by loading the registered DLL by its path, each in a process of its own; it names the loader that answered and the IME behind it. Given a DLL's path instead, it checks a build that is not installed. And `-- --hand-over <folder>` tries what the loader is there for, with the loader and the IME of a package or of an installation in a folder and a process of their own: the IME is activated, a second installation is made beside the first, and the loader is to have that one's IME active, in the same input mode, once the IME has said it is idle. Nothing is installed or registered for it, and no TSF is in it — the thread manager is a stand-in that keeps what an IME hands one — so it runs wherever a process of that architecture runs. The workflows that build the packages (`build-on-push.yml`, `release.yml`) run all of this for every kind of process against each package on its own runner: the hand-over; then, installed by its `register.bat`, the creation; the same after a second installation over the first; and once more with `--uninstalled` after its `unregister.bat`.
 
 ## Uninstall
 
 Right-click `unregister.bat` → **Run as administrator**.
 
-The script unregisters the COM/TSF entries, removes the Start menu entry, and tries to delete `C:\Program Files\ime-jd\` and its contents. If a host process (Explorer, browser, editor, etc.) still has the DLL mapped, or the user-dictionary window is open, the file delete fails for that copy and the directory stays. Sign out and back in (or reboot) to release the DLL, then re-run the script or delete the folder by hand. Each user's phrases, in `%APPDATA%\ime-jd\`, are left alone.
+The script unregisters the COM/TSF entries, removes the Start menu entry, and tries to delete `C:\Program Files\ime-jd\` and its contents. If a host process (Explorer, browser, editor, etc.) still has a DLL mapped, or the user-dictionary window is open, the file delete fails for that copy and the directory stays. Sign out and back in (or reboot) to release the DLLs, then re-run the script or delete the folder by hand. Each user's phrases, in `%APPDATA%\ime-jd\`, are left alone.
+
+## Loader
+
+Windows loads an IME's DLL into every application the user types in, and a DLL stays loaded for as long as its application runs. An IME that is all in the DLL it registers is therefore replaced, in an application that is running, only when that application is started again: an upgrade would reach the document being written only after it was saved and its application closed and opened again. So what is registered is the *loader* (`loader/loader.c`) — `ime_jd.dll`, and `ime_jd_x86.dll` for 32-bit applications — which has nothing in it that an upgrade needs to change, and the IME is a DLL beside it, under another name with every installation:
+
+```
+C:\Program Files\ime-jd\
+  ime_jd.dll, ime_jd_x86.dll   the loaders: what is registered
+  current                      one line: the id of the installation in use
+  jd-<id>-x64.dll              that installation's IME for 64-bit applications
+  jd-<id>-x86.dll              and for 32-bit ones; on ARM64 also
+                               jd-<id>-arm64.dll, the x64 one being for the
+                               x64 applications there
+  ime_jd_userdict.exe, update.bat
+```
+
+`register.bat` draws an id, copies the IME in under it — so nothing it writes is a file that an application has loaded —, rewrites `current`, and deletes the IME of earlier installations as far as no application has it loaded any more. (A release's package has no `current`, and its IME lies there as `jd-x64.dll`, `jd-x86.dll` and `jd-arm64.dll`: the loader takes those where there is no `current`.)
+
+TSF asks the registered DLL for one object for each thread that uses the IME, activates it, and keeps it for as long as the thread lives; it never asks for another. What the loader hands it is a stand-in, which passes every call on to the IME's own object behind it — and puts another IME's object there once `current` names another installation than the one its IME is from:
+
+- when TSF activates the stand-in, which it does whenever the user switches to 键道 on that thread: an IME that is not active has nothing in flight;
+- while it is active, as soon as the IME is idle — nothing is being composed, and no menu of its own is open. The IME tells the loader of every moment at which it may have become so: the end of each composition, the focus coming back to the application, the focus moving to another of the application's documents. It does so with a message to a window of the stand-in's, so that the loader acts from the application's message loop, after TSF's call into the IME has returned. The loader asks once more whether the IME is idle — a key may have come first —, deactivates it, activates the new one with what TSF had activated the stand-in with, and puts the input mode, 中 or 英, back as it was. TSF is told nothing, and the application notices nothing.
+
+So after an upgrade an application that is running has the new IME from the next key typed in it: coming to the front, it gives the IME word of the focus, and the loader hands over before anything is typed — or, if a code was being typed while the upgrade was installed, after that code. The old IME's DLL stays in the process, unused, until the application ends. A new IME that does not load, or cannot be activated, is left alone, and the old one goes on.
+
+Which installation a thread is running can be read from outside: the title of the stand-in's window on that thread — a message-only window of the class `JdImeLoader` — is that installation's id.
+
+The loader in an application is the one that was installed when the application started. (`register.bat` replaces a loader's file only when the package brings a different one, and applications that are running keep the one they have.) What it asks of an IME's DLL can therefore not change: the COM entry points, and three functions (`src/lib.rs`, `src/loader.rs`) — `JdRegisterServer`, by which the IME registers the loader's path as what applications load, in place of its own; `JdTellWhenIdle`, which gives the IME the window and the message; and `JdIsIdle`, the question the loader asks when the message arrives.
+
+The first installation with a loader, over one without (0.10.1 and earlier), still takes effect in an application only when that application is next started: what such an application has loaded is the IME itself. `register.bat` says which kind of upgrade it has done.
 
 ## Updating during development
 
-`cargo build --release` rebuilds the DLL and the window, and the i686 build above rebuilds the 32-bit DLL. Re-running `register.bat` handles the rest — it unregisters the old copy, renames the locked files out of the way (Windows allows rename-while-loaded, and rename-while-running for the window), copies the new ones, and re-registers.
+`cargo build --release` rebuilds the IME and the window, and the i686 build above rebuilds the 32-bit IME. Re-running `register.bat` does the rest: it installs them beside the ones in use, under a new id, and names that id in `current` (see [Loader](#loader)).
 
-If you've selected 键道 in a running app (Notepad, browser, etc.) you'll need to **close that app and reopen it** before the new code takes effect: Windows doesn't reload a DLL inside a process that already mapped it.
+An application you have 键道 selected in — Notepad, a browser — has the new build at the next key: there is nothing to close and reopen. (The loaders themselves are built again only when `loader\loader.c` has changed, and a changed loader is what applications started from then on load.)
 
 ## Updates
 
-Whenever 键道 is activated in an application, the IME asks GitHub for the latest release at most once a day — shared across all applications through `HKCU\Software\hronro\ime-jd`, and skipped inside AppContainer (Store) apps. When that release is newer than the running DLL, the candidate window shows one extra line, **键道有新版本 vX.Y.Z，点击下载并安装**, until you click it.
+Whenever 键道 is activated in an application, the IME asks GitHub for the latest release at most once a day — shared across all applications through `HKCU\Software\hronro\ime-jd`, and skipped inside AppContainer (Store) apps. When that release is newer than the IME that is running, the candidate window shows one extra line, **键道有新版本 vX.Y.Z，点击下载并安装**, until you click it.
 
-Clicking it downloads that release's zip for the machine's architecture in the background (the 32-bit DLL picks the same one, and on ARM64 so does the x64 one), verifies it against the SHA-256 the feed reports, and runs the installed `update.bat` **elevated** — so you get one UAC prompt, then the update installs itself: `update.bat` unpacks the zip and runs its `register.bat` (the same in-place DLL swap `register.bat` does for a manual upgrade). Nothing that runs elevated comes from a place the user's own programs can write. The download waits in the temporary folder, where any of them could put another file in its place while the prompt is up; so what is started is `cmd` on the `update.bat` under Program Files and no other, with the SHA-256 of what was downloaded, and that script reads the zip once and unpacks — into a folder beside itself — only what has that SHA-256. Applications you already have open keep running the old DLL until you next launch them (Windows can't reload a DLL a process has already mapped), so the new version takes effect in apps started afterwards, or after you sign out and back in. If any step fails, the click falls back to opening the release page so you can upgrade by hand. The notice is retired for that version once clicked, here and in every other application.
+Clicking it downloads that release's zip for the machine's architecture in the background (the 32-bit IME picks the same one, and on ARM64 so does the x64 one), verifies it against the SHA-256 the feed reports, and runs the installed `update.bat` **elevated** — so you get one UAC prompt, then the update installs itself: `update.bat` unpacks the zip and runs its `register.bat`, which does what it does for an upgrade by hand. Nothing that runs elevated comes from a place the user's own programs can write. The download waits in the temporary folder, where any of them could put another file in its place while the prompt is up; so what is started is `cmd` on the `update.bat` under Program Files and no other, with the SHA-256 of what was downloaded, and that script reads the zip once and unpacks — into a folder beside itself — only what has that SHA-256. Applications you have open need not be started again: each has the new version the next time you type in it (see [Loader](#loader)). If any step fails, the click falls back to opening the release page so you can upgrade by hand. The notice is retired for that version once clicked, here and in every other application.
 
 On the secure desktop — the sign-in screen, a UAC prompt — none of this happens: no check, no notice, and the [mode icon](#mode-icon)'s menu is greyed out. Whoever types there has not signed in, and the program they type into runs as SYSTEM, so nothing may be downloaded or started from it. The IME takes TSF's word for where it is (`TF_TMAE_SECUREMODE`), and takes any host that runs as SYSTEM for the secure desktop too.
 
@@ -161,13 +199,17 @@ windows/
                       version read from core/build.zig.zon); libjd itself is
                       located/linked by the `jd` crate's build script
   app.manifest        embedded Win32 manifest (asInvoker, Win 10/11 supportedOS)
-  register.bat        admin installer
+  register.bat        admin installer: the loaders, the IME behind them
+                      under a new id, and `current` naming it
   unregister.bat      admin uninstaller
   update.bat          installed with the IME: checks and unpacks the release
                       its update downloaded, and runs that release's
                       register.bat
   src/
-    lib.rs            DLL entry points (DllMain, DllGetClassObject, DllRegister/UnregisterServer)
+    lib.rs            DLL entry points (DllMain, DllGetClassObject, DllRegister/UnregisterServer),
+                      and the three functions the loader calls
+    loader.rs         what the IME tells the loader in front of it, and
+                      answers it: when it is idle
     factory.rs        IClassFactory
     tip.rs            TextInputProcessor — ITfTextInputProcessor(Ex), ITfKeyEventSink,
                       ITfCompositionSink, ITfDisplayAttributeProvider
@@ -182,7 +224,8 @@ windows/
     mode_icon.rs      the taskbar's mode icon (a language-bar item) and its menu
     settings.rs       what that menu reads, and the helper that changes it
     host.rs           what kind of process the IME is in (AppContainer or not)
-    registration.rs   COM + TSF profile/category registration (HKLM)
+    registration.rs   COM + TSF profile/category registration (HKLM), of the
+                      loader's path or the DLL's own
     guids.rs          CLSID + profile GUID + display attribute GUID
     jd.rs             TSF glue over the shared `jd` crate: UI-thread-local
                       engine context + page arithmetic (engine tests live in
@@ -196,11 +239,16 @@ windows/
                       键道用户自造词 window (ime_jd_userdict.exe, src/window/,
                       dialogs in userdict.rc), which also sets the switches
                       for the mode icon's menu
-  forwarder/          the ARM64 package's ime_jd.dll: an Arm64X DLL in front
-                      of the IME's ARM64 and x64 DLLs (forwarder.c, its
-                      exports in forwarder.def), built with MSVC by build.bat
+  loader/             ime_jd.dll and ime_jd_x86.dll: the DLL that is
+                      registered, in front of the IME's own, which it
+                      replaces with a newer installation's while
+                      applications run (loader.c, its exports in
+                      loader.def); built with MSVC by build.bat, on ARM64
+                      as an Arm64X DLL for ARM64 and x64 applications
   check/              ime_jd_check.exe (package jd-check): creates the
-                      installed IME as TSF does, in a process of the
-                      architecture it is built for; what the workflows
-                      test every package with
+                      installed IME as TSF does, and has a package's loader
+                      hand the IME over to the next installation's
+                      (hand_over.rs), in a process of the architecture it
+                      is built for; what the workflows test every package
+                      with
 ```

@@ -5,18 +5,24 @@ version = "0.0.0"
 edition = "2024"
 
 # Whether the installed IME can be created in a process of the architecture
-# this is built for: what the workflows that build the bundles ask of each,
-# installed on its own runner. Not installed itself, and not part of a plain
-# `cargo build`.
+# this is built for, and whether a bundle's loader hands the IME over from
+# one installation to the next there: what the workflows that build the
+# bundles ask of each, on its own runner. Not installed itself, and not part
+# of a plain `cargo build`.
 [[bin]]
 name = "ime_jd_check"
 path = "src/main.rs"
 
 [dependencies]
+# Named by the code `#[implement]` expands to, as in the IME's crate.
+windows-core = "0.62"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
     "Win32_System_Registry",
+    "Win32_System_Variant",
     "Win32_UI_TextServices",
+    "Win32_UI_WindowsAndMessaging",
 ] }

@@ -14,13 +14,13 @@
 //!      thread, downloads the release zip — verified against the feed's
 //!      SHA-256 — and runs the installed `update.bat` elevated (one UAC
 //!      prompt), which unpacks the zip and runs its `register.bat`.
-//!      `register.bat` does the in-place swap of a DLL that every host
-//!      process has mapped (rename-while-loaded), exactly as a manual
-//!      upgrade does. Anything that fails falls back to opening the release
-//!      page so the user can upgrade by hand. Applications already running
-//!      keep the old DLL until they are next launched — Windows does not
-//!      reload a DLL a process has already mapped — so the install fully
-//!      applies to apps started afterwards (or after sign-out).
+//!      `register.bat` installs the new IME beside this one, exactly as a
+//!      manual upgrade does. Anything that fails falls back to opening the
+//!      release page so the user can upgrade by hand. Applications already
+//!      running are not started again for it: what they have loaded for
+//!      good is the loader in front of this DLL, which hands over to the
+//!      new IME the next time this one is idle (loader.rs,
+//!      windows/loader).
 //!
 //! Nothing that runs elevated comes from a place the user's own programs can
 //! write. The download lies in the user's temporary folder, where any of

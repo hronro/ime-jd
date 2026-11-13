@@ -1,0 +1,7 @@
+; What Windows calls a registered IME's DLL by: the loader's entry points,
+; the same on every side it is built for (build.bat).
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE
+    DllRegisterServer PRIVATE
+    DllUnregisterServer PRIVATE

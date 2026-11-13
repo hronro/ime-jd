@@ -318,14 +318,16 @@ jobs:
         run: gh release upload "${GITHUB_REF_NAME}" -R "${{ github.repository }}" release/* --clobber
 
   # One IME build per Windows Rust target. Shipped as a .zip containing the
-  # IME DLL, the 32-bit one for 32-bit applications, the user-dictionary
-  # window, and the register/unregister/update .bat helpers. The ARM64 .zip
-  # has an x64 DLL as well, for the x64 applications ARM64 Windows runs, and
-  # the forwarder that hands each application the DLL of its own
-  # architecture (windows/forwarder). Before it is shipped, each bundle is
-  # installed on its own runner, as a user installs it, the IME created in a
-  # process of every architecture that runner runs (windows/check), and
-  # uninstalled.
+  # loader, the DLL that gets registered (windows/loader), for 64-bit and
+  # for 32-bit applications, behind each the IME for those applications, the
+  # user-dictionary window, and the register/unregister/update .bat helpers.
+  # The ARM64 .zip has an x64 IME as well, for the x64 applications ARM64
+  # Windows runs, and its loader is one file with a side for either kind.
+  # Before it is shipped, each bundle is tried on its own runner, in a
+  # process of every architecture that runner runs (windows/check): its
+  # loader handing the IME over from one installation to the next; and,
+  # installed as a user installs it, installed once more over itself, and
+  # uninstalled, the IME created and found gone.
   build-windows-ime:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -391,15 +393,19 @@ jobs:
           LIBJD_PATH: ${{ github.workspace }}/prebuilt-libs-x64/lib
         run: cargo build --release --target x86_64-pc-windows-msvc -p jd-windows
 
-      # ime_jd.dll of the ARM64 bundle, with the resources cargo compiled
-      # for the IME's own DLL (windows/build.rs).
-      - name: Build the forwarder
-        if: matrix.arch == 'arm64'
+      # ime_jd.dll and ime_jd_x86.dll of the bundle, with the resources
+      # cargo compiled for the IME's own DLL (windows/build.rs): on ARM64
+      # the 64-bit one is Arm64X, one file for ARM64 and for x64
+      # applications.
+      - name: Build the loaders
         shell: pwsh
         run: |
           $resources = @(Get-Item "windows/target/${{ matrix.target }}/release/build/jd-windows-*/out/ime_jd.lib")
           if ($resources.Count -ne 1) { throw "Expected one build of the IME DLL's resources, found $($resources.Count)." }
-          & windows\forwarder\build.bat $resources[0].FullName
+          foreach ($kind in '${{ matrix.arch == 'arm64' && 'arm64x' || 'x64' }}', 'x86') {
+            & windows\loader\build.bat $kind $resources[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw "The loader was not built for $kind." }
+          }
 
       - name: Stage IME bundle
         shell: bash
@@ -407,26 +413,42 @@ jobs:
           set -euo pipefail
           out="dist/jd-ime-windows-${{ matrix.arch }}"
           mkdir -p "$out"
+          # The loaders under the names that are registered, and behind
+          # them the IME, named for the applications it is built for.
           if [[ "${{ matrix.arch }}" == "arm64" ]]; then
-            # The forwarder under the IME's name, and behind it the IME for
-            # ARM64 applications and for x64 ones.
-            cp windows/target/forwarder/ime_jd.dll "$out/"
-            cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/ime_jd_arm64.dll"
-            cp windows/target/x86_64-pc-windows-msvc/release/ime_jd.dll "$out/ime_jd_x64.dll"
+            cp windows/target/loader/arm64x/ime_jd.dll "$out/"
+            cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/jd-arm64.dll"
+            cp windows/target/x86_64-pc-windows-msvc/release/ime_jd.dll "$out/jd-x64.dll"
           else
-            cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/"
+            cp windows/target/loader/x64/ime_jd.dll "$out/"
+            cp windows/target/${{ matrix.target }}/release/ime_jd.dll "$out/jd-x64.dll"
           fi
-          cp windows/target/i686-pc-windows-msvc/release/ime_jd.dll "$out/ime_jd_x86.dll"
+          cp windows/target/loader/x86/ime_jd_x86.dll "$out/"
+          cp windows/target/i686-pc-windows-msvc/release/ime_jd.dll "$out/jd-x86.dll"
           cp windows/target/${{ matrix.target }}/release/ime_jd_userdict.exe "$out/"
           cp windows/register.bat   "$out/"
           cp windows/unregister.bat "$out/"
           cp windows/update.bat     "$out/"
 
+      # What the loader is there for, before anything is installed: in a
+      # process of each kind, with the bundle's loader and IME in a folder
+      # of their own, an IME that is active handed over to the next
+      # installation's (windows/check/src/hand_over.rs).
+      - name: Hand the IME over in every kind of process
+        working-directory: windows
+        shell: pwsh
+        run: |
+          foreach ($target in '${{ matrix.processes }}'.Split(',')) {
+            cargo run --release --target $target -p jd-check -- --hand-over "${{ github.workspace }}\dist\jd-ime-windows-${{ matrix.arch }}"
+            if ($LASTEXITCODE -ne 0) { throw "The loader did not hand the IME over in a $target process." }
+          }
+
       # The bundle as a user gets it: installed by its register.bat, the IME
       # created in a process of each kind — through COM, as TSF activates
       # it, and by its registered path, as TSF loads it for its display
-      # attributes (windows/check) — and uninstalled by its unregister.bat.
-      # A bundle that fails here is not shipped.
+      # attributes (windows/check) — installed again over itself, as an
+      # upgrade is, and uninstalled by its unregister.bat. A bundle that
+      # fails here is not shipped.
       - name: Install the bundle
         shell: cmd
         run: call dist\jd-ime-windows-${{ matrix.arch }}\register.bat < nul
@@ -439,6 +461,26 @@ jobs:
             cargo run --release --target $target -p jd-check
             if ($LASTEXITCODE -ne 0) { throw "ime-jd was not created in a $target process." }
           }
+
+      - name: Install the bundle over itself
+        shell: cmd
+        run: call dist\jd-ime-windows-${{ matrix.arch }}\register.bat < nul
+
+      - name: Create the IME of the second installation in every kind of process
+        working-directory: windows
+        shell: pwsh
+        run: |
+          foreach ($target in '${{ matrix.processes }}'.Split(',')) {
+            cargo run --release --target $target -p jd-check
+            if ($LASTEXITCODE -ne 0) { throw "ime-jd was not created in a $target process after the second installation." }
+          }
+          # The first installation's IME is gone, unless something on the
+          # runner has loaded it meanwhile; the second one's is what
+          # `current` names.
+          $current = (Get-Content "$env:ProgramW6432\ime-jd\current").Trim()
+          $ime = @(Get-ChildItem "$env:ProgramW6432\ime-jd\jd-*.dll" | ForEach-Object Name)
+          Write-Host "In use: $current. Installed: $($ime -join ', ')"
+          if (-not ($ime -like "jd-$current-*")) { throw "No IME of the installation in use, $current, is installed." }
 
       - name: Uninstall the bundle
         shell: cmd
