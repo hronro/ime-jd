@@ -122,3 +122,65 @@ Description: 键道用户自造词
  offers beside its own, for both its Fcitx 5 and its IBus frontend. The
  input method's menu opens it.
 
+Package: ime-jd-fcitx5
+Architecture: amd64
+Version: 0.11.0-1
+Priority: optional
+Section: utils
+Maintainer: hronro <hronro@gmail.com>
+Installed-Size: 5542
+Depends: fcitx5 (>= 5.0.14)
+Recommends: ime-jd-userdict
+Filename: pool/v0.11.0/jd-ime-v0.11.0-linux-x86_64-fcitx5.deb
+Size: 1715186
+MD5sum: c430ea91680a82e01b3685156c577626
+SHA1: 8742ad508688661325ccbef2de858d43137fb5c0
+SHA256: badaa59ec4527bb9b6f1b46ac719856711773a9b7d7b1755c0672caebf2a0fa4
+SHA512: 9ed3587875f09cc310f39ba936a6ce5cc0e67aec4e7488de83036da6eea85d31e53c84305584e055f594c2410fa74eb338b065f6bbaaf65a2952e73527fd72d1
+Homepage: https://github.com/hronro/ime-jd
+Description: 键道输入法 for Fcitx 5
+ An independent implementation of the 键道 (xkjd) input scheme, with its
+ dictionary built in, as an input method for Fcitx 5. The framework draws
+ the candidate window and the input method's menu.
+
+Package: ime-jd-ibus
+Architecture: amd64
+Version: 0.11.0-1
+Priority: optional
+Section: utils
+Maintainer: hronro <hronro@gmail.com>
+Installed-Size: 5501
+Depends: ibus (>= 1.5.26), libstdc++6
+Recommends: ime-jd-userdict
+Filename: pool/v0.11.0/jd-ime-v0.11.0-linux-x86_64-ibus.deb
+Size: 1708248
+MD5sum: 09df6a8eb22dcf16833d00295447557d
+SHA1: 34b9121fb2839eb04e7c18710e20c5d43b501cf2
+SHA256: 13fa8787906fdfbde41235b82b5b8e223566b6de3973c66dfa3af3b6c8dcecea
+SHA512: af41c560572f14a92677cd4508d379b6629ef93c5386e37f64781d9710904f5a7caf87783a36af6c71a67622aec1b3f94fff47b186bfafae7254d80f89b01af4
+Homepage: https://github.com/hronro/ime-jd
+Description: 键道输入法 for IBus
+ An independent implementation of the 键道 (xkjd) input scheme, with its
+ dictionary built in, as an input method for IBus. The framework draws the
+ candidate window and the input method's menu.
+
+Package: ime-jd-userdict
+Architecture: amd64
+Version: 0.11.0-1
+Priority: optional
+Section: utils
+Maintainer: hronro <hronro@gmail.com>
+Installed-Size: 5541
+Depends: libgtk-4-1 (>= 4.6)
+Filename: pool/v0.11.0/jd-ime-v0.11.0-linux-x86_64-userdict.deb
+Size: 1714948
+MD5sum: 29da0da51a09ad33ba3798dad6d9f64d
+SHA1: 555340fc19ff29ae61cf0a4e26c462d7469ba360
+SHA256: afff865f85fedbe3acfac890a6d4399ffad5747dd58fcb26f0d112b7636309e6
+SHA512: fd6d89eb6b9b8604a1422812ac65e2127da848f69c7d44e67a006d946ef19e0069ac1f65676998f1ddb72ccb5e327ab281f37869ca594402e9512db33e9f9db9
+Homepage: https://github.com/hronro/ime-jd
+Description: 键道用户自造词
+ The window that edits 键道's user dictionary, the phrases the input method
+ offers beside its own, for both its Fcitx 5 and its IBus frontend. The
+ input method's menu opens it.
+
