@@ -123,7 +123,7 @@ ctx.extend_candidates(strip.len() as u32, PAGE, &mut strip);
 - **Candidates are addressed by flat index.** `read_range` fills your own buffer and `extend_candidates` appends onto a `Vec` — the natural shape for a candidate strip. Reads are pure: they never change what the engine's automatic commits resolve to, so prefetch freely, and call `set_anchor` when the user's view moves.
 - **`&mut self` statically enforces the single-thread contract.** A single `JdContext` must not be called concurrently; distinct contexts are fully independent.
 - **`check_abi` runs once per process**, comparing this crate's hand-written `#[repr(C)]` declarations against `jd_abi_layout`. A silent drift would corrupt memory.
-- **Linking is owned by this crate's build.rs** (`links = "jd"`): a prebuilt bundle pointed at by `LIBJD_PATH` takes precedence; otherwise it builds `core/` with zig. Dependents' build scripts can read the library directory and chosen linkage from `DEP_JD_LIBDIR` / `DEP_JD_LINKAGE` (the CLI uses these to emit an rpath for dynamically-linked dev builds).
+- **Linking is owned by this crate's build.rs** (`links = "jd"`): a prebuilt bundle pointed at by `LIBJD_PATH` takes precedence; otherwise it builds `core/` with zig. Either way a changed library is linked again at the next build: the script watches the core's sources when it builds them, and the `LIBJD_PATH` folder when it is given one — the folder rather than the files in it, since zig installs a build it has cached with the time that build was first made. Dependents' build scripts can read the library directory and chosen linkage from `DEP_JD_LIBDIR` / `DEP_JD_LINKAGE` (the CLI uses these to emit an rpath for dynamically-linked dev builds).
 
 ## Tests
 

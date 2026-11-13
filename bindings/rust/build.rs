@@ -28,6 +28,17 @@ fn main() {
     // prebuilt bundle), or we build the core ourselves with zig and use
     // core/zig-out/lib — or, cross-compiling, a zig-out of this build's own.
     let libs_dir: PathBuf = if let Ok(libjd_path) = env::var("LIBJD_PATH") {
+        // A prebuilt libjd is this script's input, as the core's sources are
+        // when it builds one itself (below). Unwatched, a library rebuilt
+        // under the same LIBJD_PATH — with a new dictionary, say — would
+        // never be copied to OUT_DIR and linked: Cargo would run the script
+        // again only when the variable itself changes. It is the folder that
+        // is watched and not the archive in it, because Cargo goes by
+        // modification times, and zig installs a build it has in its cache
+        // with the time that build was first made — which is before this
+        // script last ran, when it is an earlier build that comes back. The
+        // folder's own time, though, is when the file was put there.
+        println!("cargo:rerun-if-changed={libjd_path}");
         PathBuf::from(libjd_path)
     } else {
         let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
