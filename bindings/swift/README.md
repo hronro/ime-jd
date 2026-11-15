@@ -73,10 +73,22 @@ let engine = Engine(userDict: dict)         // nil (the default) = built-in dict
 
 A line that does not parse never fails the build: the engine skips it, counts it in `invalid`, and notes it. A `UserDictError` is for the call as a whole — too many phrases (`line` names the first one past the cap, `status.isLineError`) or too much text. The report's `notes` are the engine's own: one per line it skipped (`malformed` / `badKeys` / `badValue`), one per line it dropped (`repeatsLine` / `repeatsBuiltIn`, with the line repeated in `other`) and one per kept phrase whose code is already taken (`codeInBuiltIn` / `codeInLine`, with the counts in `builtIn` and `peers`) — the phrase works, listed first, but the code is shared (重码). A context's dictionary is fixed for its lifetime: to adopt an edited dictionary, create a new `Engine` and drop the candidates read from the old one first. `dict.blob` / `UserDict(blob:)` / `UserDict.check` round-trip the bytes for a frontend that caches them; a blob from another build of libjd comes back as `.stale`, which just means "rebuild".
 
+### Reverse lookup
+
+`lookupCodes` goes the other way — the codes a value is typed with, from the built-in tables and the engine's user dictionary, and where the value sits on each:
+
+```swift
+for code in engine.lookupCodes("着") {   // o #1, fe #0, qe #0, …
+    print(code.keys, code.index, code.isUser)
+}
+```
+
+`index` is the value's position in the candidate list after typing exactly `keys` — 0 is what space commits — and `isUser` marks a code from the user dictionary. Codes come in candidate order: shorter first, ties key by key, a user phrase's code ahead of a built-in word's on the same keys. It is a pure read, so it can run mid-composition.
+
 ## Contents
 
-- **`Engine.swift`** — RAII wrapper around `jd_context` (`deinit` calls `jd_deinit`), created over the built-in dictionary alone or with a `UserDict`. Mutating calls return an `EngineState`; candidates come from `readRange(from:count:)`, which fills a Swift array directly. It also verifies `jd.h`'s struct layout and limits against the compiled library once per process.
-- **`Candidate.swift`** — `Candidate` and `EngineState`. A `Candidate` wraps the C `query_option` and materializes its `String`s **on access**: values point into a dictionary blob (libjd's embedded one, or the user dictionary the engine retains) and hints are inline bytes, so nothing has to be copied and a long candidate strip pays no String cost for rows nobody scrolls to. The one lifetime rule is documented there: a candidate read from an engine with a user dictionary must not outlive that engine.
+- **`Engine.swift`** — RAII wrapper around `jd_context` (`deinit` calls `jd_deinit`), created over the built-in dictionary alone or with a `UserDict`. Mutating calls return an `EngineState`; candidates come from `readRange(from:count:)`, which fills a Swift array directly, and `lookupCodes(_:)` answers the reverse question with `Code`s. It also verifies `jd.h`'s struct layout and limits against the compiled library once per process.
+- **`Candidate.swift`** — `Candidate`, `Code` and `EngineState`. A `Candidate` wraps the C `query_option` and materializes its `String`s **on access**: values point into a dictionary blob (libjd's embedded one, or the user dictionary the engine retains) and hints are inline bytes, so nothing has to be copied and a long candidate strip pays no String cost for rows nobody scrolls to. The one lifetime rule is documented there: a candidate read from an engine with a user dictionary must not outlive that engine.
 - **`UserDict.swift`** — the runtime user dictionary: `UserDict.build` compiles `value<TAB>keys` text into the blob and returns the engine's notes (skipped lines, dropped duplicates, shared codes), `Engine(userDict:)` reads it in place, and `blob` / `init(blob:)` / `check` wrap cached bytes. The `UserDict` owns its aligned storage; the `Engine` retains it.
 - **`KeyAction.swift`** — the semantic key-action enum shared by each frontend's key gate / dispatch layer.
 - **`UserDictFile.swift`** — the phrases file in libjd's table format, as a client keeps it: lenient line parsing for display, serialization (a header comment plus one `value<TAB>keys` line per phrase) and the FNV-1a hash that tags a build with the text it came from. No rules of its own — libjd judges every line. Where the file lives is each frontend's business.

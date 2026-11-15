@@ -134,4 +134,51 @@ final class EngineSmokeTests: XCTestCase {
 
         XCTAssertEqual(held.map(\.value), before)
     }
+
+    // MARK: - Reverse lookup
+
+    func testLookupCodesListsEveryCodeShortestFirst() {
+        let engine = Engine()
+        XCTAssertEqual(engine.lookupCodes("的").map(\.keys), ["d", "deuiua", "dkuiua"])
+        XCTAssertTrue(engine.lookupCodes("的").allSatisfy { $0.index == 0 && !$0.isUser })
+
+        // Each code types the value back at its index.
+        let codes = engine.lookupCodes("着")
+        XCTAssertEqual(codes.count, 11)
+        XCTAssertEqual(codes.first, Code(keys: "o", index: 1, isUser: false))
+        for code in codes {
+            engine.reset()
+            for byte in code.keys.utf8 { engine.pressKey(byte) }
+            XCTAssertEqual(engine.readRange(from: code.index, count: 1).first?.value, "着", code.keys)
+        }
+
+        XCTAssertEqual(engine.lookupCodes("不在词库里的词"), [])
+        XCTAssertEqual(engine.lookupCodes(""), [])
+    }
+
+    func testLookupCodesLeavesTheCompositionAlone() {
+        let engine = Engine()
+        let before = engine.pressKey(UInt8(ascii: "b"))
+        _ = engine.lookupCodes("的")
+        XCTAssertEqual(engine.state, before)
+        XCTAssertEqual(engine.pressKey(UInt8(ascii: " ")).commit, "不")
+    }
+
+    func testLookupCodesMergesTheUserDictionary() throws {
+        // 20 codes for one phrase: more than lookupCodes makes room for at first.
+        let keys = (0..<20).map { "zq" + String(UnicodeScalar(UInt8(ascii: "a") + UInt8($0))) }
+        let text = "的\tzzzzzz\n测试词\td\n" + keys.map { "测试词\t\($0)\n" }.joined()
+        let (dict, _) = try UserDict.build(text, sourceTag: 0)
+        let engine = Engine(userDict: dict)
+
+        XCTAssertEqual(engine.lookupCodes("的"), [
+            Code(keys: "d", index: 1, isUser: false), // 测试词 leads `d` now
+            Code(keys: "deuiua", index: 0, isUser: false),
+            Code(keys: "dkuiua", index: 0, isUser: false),
+            Code(keys: "zzzzzz", index: 0, isUser: true),
+        ])
+        let mine = engine.lookupCodes("测试词")
+        XCTAssertEqual(mine.map(\.keys), ["d"] + keys)
+        XCTAssertTrue(mine.allSatisfy { $0.isUser && $0.index == 0 })
+    }
 }

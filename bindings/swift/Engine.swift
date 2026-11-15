@@ -96,6 +96,33 @@ final class Engine {
         return raw.prefix(written).map(Candidate.init(raw:))
     }
 
+    /// The codes `value` is typed with, from the built-in tables and this
+    /// engine's user dictionary, in candidate order: shorter codes first,
+    /// ties key by key (a-z, then `;`), a user phrase's code ahead of a
+    /// built-in word's on the same keys. `value` is matched exactly, byte for
+    /// byte; an unknown or empty one has no codes.
+    ///
+    /// A pure read: the composition and the anchor are untouched.
+    func lookupCodes(_ value: String) -> [Code] {
+        var value = value
+        return value.withUTF8 { bytes -> [Code] in
+            guard let base = bytes.baseAddress, !bytes.isEmpty else { return [] }
+            let text = UnsafeRawPointer(base).assumingMemoryBound(to: CChar.self)
+            // No value in the built-in tables has more than a dozen codes;
+            // a longer list is answered with its total, so ask once more.
+            var raw = [jd_code](repeating: jd_code(), count: 16)
+            var total = 0
+            while true {
+                total = raw.withUnsafeMutableBufferPointer { out in
+                    Int(jd_lookup_codes(ctx, text, bytes.count, out.baseAddress, UInt32(out.count)))
+                }
+                if total <= raw.count { break }
+                raw = [jd_code](repeating: jd_code(), count: total)
+            }
+            return raw.prefix(total).map(Code.init(raw:))
+        }
+    }
+
     // MARK: - ABI guard
 
     /// `jd.h` declares these structs by hand, so it can drift from the
@@ -131,6 +158,14 @@ final class Engine {
         precondition(
             Int(jd_abi_layout(UInt32(JD_ABI_SIZEOF_USER_DICT_NOTE))) == MemoryLayout<jd_user_dict_note>.stride,
             "libjd jd_user_dict_note layout mismatch — core/include/jd.h is out of sync with the library"
+        )
+        precondition(
+            Int(jd_abi_layout(UInt32(JD_ABI_SIZEOF_CODE))) == MemoryLayout<jd_code>.stride,
+            "libjd jd_code layout mismatch — core/include/jd.h is out of sync with the library"
+        )
+        precondition(
+            Int(jd_abi_layout(UInt32(JD_ABI_CODE_CAP))) == Int(JD_CODE_CAP),
+            "libjd code capacity mismatch — core/include/jd.h is out of sync with the library"
         )
         precondition(
             Int(jd_abi_layout(UInt32(JD_ABI_USER_DICT_MAX_ENTRIES))) == UserDict.maxEntries,

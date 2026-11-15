@@ -59,6 +59,33 @@ struct Candidate: Equatable {
     }
 }
 
+/// One code a value is typed with — see `Engine.lookupCodes(_:)`. Plain
+/// owned values: a code has nothing pointing into a dictionary blob.
+struct Code: Equatable {
+    /// The keys: a-z, and `;` in the built-in symbol codes.
+    let keys: String
+    /// Where the value sits in the candidate list after typing exactly `keys`
+    /// with nothing in flight — 0 is what space commits. It counts the
+    /// engine's user phrases on the same code, which lead the built-in words.
+    let index: UInt32
+    /// The code comes from the engine's user dictionary, not the built-in
+    /// tables.
+    let isUser: Bool
+}
+
+extension Code {
+    /// Internal, not fileprivate: `Engine.lookupCodes` (a separate file in
+    /// the same target) builds these from the buffer libjd wrote into.
+    init(raw: jd_code) {
+        keys = withUnsafeBytes(of: raw.keys) { buf in
+            let end = buf.firstIndex(of: 0) ?? buf.count
+            return String(decoding: buf[0..<end], as: UTF8.self)
+        }
+        index = raw.index
+        isUser = raw.flags & UInt32(JD_CODE_USER) != 0
+    }
+}
+
 /// What the engine holds after an operation.
 ///
 /// `commit` is the last operation's committed text, already joined from the
