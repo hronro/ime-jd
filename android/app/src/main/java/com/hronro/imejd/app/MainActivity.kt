@@ -89,6 +89,12 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(this@MainActivity, UserDictActivity::class.java))
             }
         }
+        val codeLookupBtn = tonalButton().apply {
+            text = getString(R.string.code_lookup)
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, CodeLookupActivity::class.java))
+            }
+        }
         // Key-press feedback toggles, the ones the built-in keyboards also
         // offer (Gboard/AOSP; the iOS keyboard always clicks — extensions
         // have no settings surface there). They write the prefs KeyFeedback
@@ -129,6 +135,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(switchBtn, lp)
         root.addView(previewBtn, lp)
         root.addView(userDictBtn, lp)
+        root.addView(codeLookupBtn, lp)
         root.addView(soundSwitch, lp)
         root.addView(vibrationSwitch, lp)
         updates?.let {
@@ -164,6 +171,10 @@ class MainActivity : AppCompatActivity() {
             intent.getStringExtra(UserDictActivity.EXTRA_SEED)?.let { UserDictActivity.seed(this, it) }
             if (intent.getBooleanExtra(UserDictActivity.EXTRA_OPEN, false)) {
                 startActivity(Intent(this, UserDictActivity::class.java))
+            }
+            // QA: `--es jd.lookup 着` opens 编码反查 with the word looked up.
+            intent.getStringExtra(CodeLookupActivity.EXTRA_QUERY)?.let {
+                startActivity(Intent(this, CodeLookupActivity::class.java).putExtra(CodeLookupActivity.EXTRA_QUERY, it))
             }
         }
         // QA fast-path (the iOS -preview launch arg's counterpart): forward to

@@ -34,6 +34,13 @@
             android:parentActivityName=".app.MainActivity"
             android:exported="false" />
 
+        <!-- 编码反查: which codes type a word. -->
+        <activity
+            android:name=".app.CodeLookupActivity"
+            android:label="@string/code_lookup"
+            android:parentActivityName=".app.MainActivity"
+            android:exported="false" />
+
         <!-- The IME itself: a Service the system binds to. This is the mandatory
              JVM entry point — Android has no native IME entry point. -->
         <service

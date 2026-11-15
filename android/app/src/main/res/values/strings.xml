@@ -17,6 +17,9 @@
     <string name="key_vibration">按键振动</string>
     <string name="try_hint">在此试打：输入 jd 试试</string>
     <string name="user_dict">用户自造词</string>
+    <string name="code_lookup">编码反查</string>
+    <string name="code_lookup_hint">输入或粘贴要查询的词</string>
+    <string name="code_lookup_submit">查询</string>
 
     <!-- The user dictionary's screen (UserDictActivity). -->
     <string name="user_dict_enabled">启用用户自造词</string>

@@ -16,12 +16,13 @@ android/
         ime/JdInputMethodService.kt   # the IME service; InputConnection host; lifecycle
         ui/                     # KeyLayout, KeyboardView, key plane, key previews, candidate bar/grid, theme
         userdict/               # the user dictionary: phrases file, per-row verdicts, the store
-        app/                    # MainActivity (enable flow, settings, updates), KeyboardPreviewActivity (embedded try-out), UserDictActivity (用户自造词)
+        lookup/                 # CodeLookupReport — 编码反查's wording (port of the Swift clients' shared source)
+        app/                    # MainActivity (enable flow, settings, updates), KeyboardPreviewActivity (embedded try-out), UserDictActivity (用户自造词), CodeLookupActivity (编码反查)
         update/                 # release-feed model + daily check (UpdateChecker) + APK download/install (UpdateInstaller)
     src/autoUpdate/
       AndroidManifest.xml       # updater permissions + receiver, merged only with -PjdAutoUpdate=true
     src/androidTest/            # session, store, layout and field-policy tests (instrumented; drive the real engine)
-    src/test/                   # JVM unit tests: the update feed model, the phrases file's format
+    src/test/                   # JVM unit tests: the update feed model, the phrases file's format, 编码反查's wording
   scripts/build-libjd.sh        # zig core per-ABI + NDK-clang JNI shim (../bindings/java) → src/main/jniLibs/<abi>/
 ```
 
@@ -66,6 +67,10 @@ The user's own phrases (用户自造词) are merged into every candidate list on
 
 **Moving the file.** **从文件导入…** opens the system's document picker (any type: a text file that lost its extension is plain data to the system) and appends the file's rows as they are; the picked file must be UTF-8 and hold a phrase line, and the one other check is the engine's own build of the result, so an import that would push the file over `libjd`'s caps — phrases or text size, as on every client — changes nothing and says why. The screen compares nothing, so importing a file twice shows the engine's grey copies, and **移除重复词条** deletes exactly the rows the engine flags as duplicates, after a confirmation with the counts, keeping the first of each. **导出到文件…** writes the file itself through the system's save dialog — the device's storage, Drive, any document provider — byte for byte what the engine reads, so what one device exports another imports as it is.
 
+## Code lookup
+
+**编码反查** on the main screen (`app/CodeLookupActivity.kt`) answers the reverse question: which codes type a word. A field and a 查询 button sit at the top — the word is typed, with 键道 or any keyboard, or pasted, and the keyboard's search action runs the query too — and the word's codes are listed below, shortest first. Where the word is not the first candidate on a code, the row says which candidate it is (第 2 个候选); a code from the user dictionary says 自造词. The lookup reads the dictionaries the keyboard types with — the user dictionary only while it is switched on — through libjd's `jd_lookup_codes` (`Engine.lookupCodes` in the binding), so its candidate numbers count the user's phrases that lead a code. A word with no codes says so, and whether the user dictionary was searched. The words are those of the macOS and iOS clients (`lookup/CodeLookupReport.kt`, a port of `bindings/swift/CodeLookupReport.swift`).
+
 ## Updates
 
 The in-app updater is a **build flag**, off by default: `./gradlew assembleRelease -PjdAutoUpdate=true` (the default lives in `gradle.properties`). Only GitHub-distributed APKs need it — `release.yml` and `build-on-push.yml` pass the flag — while an app-store build leaves it off and ships a plain APK: no permissions at all, no receiver (`src/autoUpdate/AndroidManifest.xml` is merged only when the flag is on), no update UI, and R8 strips `update/` behind the false `BuildConfig.AUTO_UPDATE` constant. Check a built APK with `aapt2 dump badging app.apk | grep uses-permission`.
@@ -77,12 +82,12 @@ The check can be turned off with the **自动检查更新** switch; **检查更�
 ## Tests
 
 ```sh
-./gradlew :app:testDebugUnitTest            # JVM: the update feed model, the phrases file (no device)
+./gradlew :app:testDebugUnitTest            # JVM: the update feed model, the phrases file, 编码反查's wording (no device)
 ./gradlew :app:connectedDebugAndroidTest    # needs a running device/emulator
 (cd ../bindings/java && ./gradlew test)     # JVM: the engine wrapper itself (no device)
 ```
 
-`InputSessionTest` (instrumented, because it drives the real engine through JNI) covers the `InputSession` dispatch core: composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, raw commit, cancel, a user dictionary's phrases and swapping it. `FieldPolicyTest` pins the field policy — numeric classes open on ?123, text classes on letters, every password variation and every field that asks for ASCII (and only those) get direct input. `UserDictStoreTest` drives the store against temporary files (the cache included), and the JVM `UserDictFileTest` the file's line format and hash. The wrapper's own contract — `Engine` and `UserDict` against the real engine — is the binding's to test, on the JVM: see `../bindings/java`.
+`InputSessionTest` (instrumented, because it drives the real engine through JNI) covers the `InputSession` dispatch core: composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, raw commit, cancel, a user dictionary's phrases and swapping it. `FieldPolicyTest` pins the field policy — numeric classes open on ?123, text classes on letters, every password variation and every field that asks for ASCII (and only those) get direct input. `UserDictStoreTest` drives the store against temporary files (the cache included), and the JVM `UserDictFileTest` the file's line format and hash; the JVM `CodeLookupReportTest` covers 编码反查's wording over codes made by hand. The wrapper's own contract — `Engine` and `UserDict` against the real engine — is the binding's to test, on the JVM: see `../bindings/java`.
 
 For UI screenshots without enabling the IME, the embedded preview takes QA intent extras (the counterpart of the iOS app's `-preview`/`-numbers`/`-symbols`/`-type` launch args), forwarded through the launcher activity:
 
@@ -93,7 +98,7 @@ adb shell am start -n com.hronro.imejd/.app.MainActivity \
 
 `--es jd.field number|decimal|phone|datetime|password|visiblePassword|numberPassword|email|uri|text` gives the field that input type: with `jd.preview` the embedded keyboard opens the way the IME would over it; without, it types the launcher's try-field instead, so the real IME can be driven over such a field.
 
-`--es jd.userdict "词<TAB>编码;词<TAB>编码"` seeds the user dictionary with these phrases (replacing the file) and switches it on, before the preview opens, so `--es jd.userdict "$(printf '键道\tzzzzzz')" --ez jd.preview true --es jd.type zzzzz` shows the phrase in the preview's bar with no taps; `adb shell` hands the command to the device's shell, so quote the TAB there. `--ez jd.userdict_list true` opens the 用户自造词 screen.
+`--es jd.userdict "词<TAB>编码;词<TAB>编码"` seeds the user dictionary with these phrases (replacing the file) and switches it on, before the preview opens, so `--es jd.userdict "$(printf '键道\tzzzzzz')" --ez jd.preview true --es jd.type zzzzz` shows the phrase in the preview's bar with no taps; `adb shell` hands the command to the device's shell, so quote the TAB there. `--ez jd.userdict_list true` opens the 用户自造词 screen, and `--es jd.lookup 着` opens 编码反查 with the word already looked up (after the seed, so a seeded phrase is found).
 
 ## Architecture notes
 
