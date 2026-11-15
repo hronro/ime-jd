@@ -232,6 +232,10 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         return true
     }
 
+    func windowWillClose(_ notification: Notification) {
+        if let window { NSApp.yieldActivation(afterClosing: window) }
+    }
+
     // MARK: - Model
 
     private func currentFileText() -> String? {
