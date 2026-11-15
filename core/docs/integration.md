@@ -79,6 +79,18 @@ unsigned int    jd_read_range(jd_context *ctx, unsigned int start,
 
 unsigned int    jd_abi_layout(unsigned int what);
 
+/* Reverse lookup — see the section below. */
+#define JD_CODE_CAP 8
+
+typedef struct {
+  char keys[JD_CODE_CAP];
+  unsigned int index, flags;
+} jd_code;
+
+unsigned int    jd_lookup_codes(jd_context *ctx, const char *value,
+                                size_t value_len, jd_code *out,
+                                unsigned int out_cap);
+
 /* User dictionary — see the section below. */
 typedef struct {
   unsigned int line, flags, other, builtin, peers;
@@ -124,6 +136,7 @@ No function returns a struct by value, so there is no sret shim on any target.
 | `jd_state_ptr(ctx)`           | Address of this context's state block. Stable for its whole lifetime.        |
 | `jd_read_range(...)`          | Copy a window of candidates into caller memory. Pure — see below.            |
 | `jd_scratch_ptr(ctx)`         | A context-owned buffer usable as `jd_read_range`'s `out`.                    |
+| `jd_lookup_codes(...)`        | The codes a value is typed with, and its candidate index on each. Pure — see [Reverse lookup](#reverse-lookup). |
 | `jd_abi_layout(what)`         | Struct sizes and limits, for checking hand-written declarations.             |
 | `jd_user_dict_blob_bound(...)`| How big a buffer `jd_user_dict_build` needs for this text, notes included.   |
 | `jd_user_dict_build(...)`     | Compile `value<TAB>keys` text into a blob, in your buffer, stamped with your source tag. A line that does not parse is skipped, not fatal; the notes left past the blob say which, along with the dropped lines and the phrases on shared codes. |
@@ -246,9 +259,27 @@ assert(jd_abi_layout(JD_ABI_USER_DICT_MAX_ENTRIES)   == JD_USER_DICT_MAX_ENTRIES
 assert(jd_abi_layout(JD_ABI_USER_DICT_VALUE_MAX)     == JD_USER_DICT_VALUE_MAX);
 assert(jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_INFO)   == sizeof(jd_user_dict_info));
 assert(jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_NOTE)   == sizeof(jd_user_dict_note));
+assert(jd_abi_layout(JD_ABI_SIZEOF_CODE)             == sizeof(jd_code));
+assert(jd_abi_layout(JD_ABI_CODE_CAP)                == JD_CODE_CAP);
 ```
 
 Run them once at init. Unknown queries return 0.
+
+## Reverse lookup
+
+`jd_lookup_codes` goes the other way from the keystroke path: given a value, it lists the codes that type it — from the built-in tables and from the user dictionary the context was created with.
+
+```c
+jd_code codes[16];
+unsigned int n = jd_lookup_codes(ctx, "着", strlen("着"), codes, 16);
+/* n == 11: "o" index 1, "fe" index 0, "qe" index 0, …, "qzouia" index 0 */
+```
+
+- **What a code says.** `keys` is the code, NUL-terminated. `index` is where the value sits in the candidate list after typing exactly those keys with nothing in flight — the index `jd_read_range` returns it at, so 0 means space commits it. A user phrase on the same code comes first (see [What the engine does with it](#what-the-engine-does-with-it)), so a built-in word's `index` counts the context's phrases there. `JD_CODE_USER` in `flags` marks a code from the user dictionary.
+- **Order.** Candidate order: shorter codes first, then key by key (a-z, then `;`), and a user phrase's code ahead of a built-in word's on the same keys. A value listed twice on one code is one code, at its first index.
+- **Sizing.** The return value is how many codes there are in all; only the first `out_cap` are written. Pass `NULL, 0` to count them, or size the buffer generously — no value in the built-in tables has more than a dozen codes.
+- **Matching.** `value` is compared byte for byte: not trimmed, not normalized, no prefix or partial match. An empty value, or one no dictionary holds, has no codes. Only dictionary codes are reported: a punctuation key (`,` for `，`) is not a code.
+- **Purity and cost.** The composition, the anchor and the state block are untouched, so a lookup can run mid-composition. It allocates nothing, and costs one binary search over the built-in tables plus a pass over the user dictionary's phrases — a microsecond or two.
 
 ## User dictionary
 
@@ -330,7 +361,7 @@ The blob is your memory and the engine reads it in place:
 Two details matter for a JS host:
 
 - **State lives at a fixed address.** `jd_state_ptr(ctx)` is constant for the context's lifetime, so read it once and then read the fields straight out of `memory` after each call. On wasm32 `jd_state` is 20 bytes: two 4-byte pointers, one byte, three bytes of padding, then two u32s. `query_option` is 12 bytes: a 4-byte pointer then the 8-byte inline hint. Verify both with `jd_abi_layout` rather than trusting the arithmetic.
-- **A JS host cannot allocate inside linear memory**, so it has no buffer to give `jd_read_range`. Use `jd_scratch_ptr(ctx)` as the `out` argument and decode larger windows in chunks; `jd_abi_layout(JD_ABI_SCRATCH_OPTIONS)` reports its capacity.
+- **A JS host cannot allocate inside linear memory**, so it has no buffer to give `jd_read_range`. Use `jd_scratch_ptr(ctx)` as the `out` argument and decode larger windows in chunks; `jd_abi_layout(JD_ABI_SCRATCH_OPTIONS)` reports its capacity. The value and the output of `jd_lookup_codes` likewise live in `jd_alloc` blocks (`jd_code` is 16 bytes on every target).
 - **A user dictionary needs host buffers inside linear memory**, for the text handed to `jd_user_dict_build`, for the blob it writes, and for the blob handed to `jd_init`. Get them from `jd_alloc` / `jd_free`, which wrap the module's own allocator; a separate `WebAssembly.Memory` would be invisible to the module, and carving a region out of its memory by hand would collide with its heap. Copy the blob out of linear memory to cache it, copy a cached blob back into a `jd_alloc` block before `jd_init`, and keep that block alive until `jd_deinit`. Calling `jd_init` with no arguments passes zeros, which means no user dictionary.
 
 ## Key routing for IMEs

@@ -14,6 +14,9 @@ const builtin = @import("builtin");
 const testing = std.testing;
 const fmt = @import("./blob_format.zig");
 
+/// The blob's header, for the generator's log line.
+pub const Header = fmt.Header;
+
 const ALPHA: usize = 27;
 
 /// Domain invariant: the longest key sequence a dictionary entry may have.
@@ -58,7 +61,10 @@ pub const Entry = struct {
 pub const Trie = struct {
     nodes: []const fmt.Node,
     values: []const fmt.Value,
-    child_indices: []const u32,
+    /// Every value index, sorted by the value's bytes, then by index.
+    by_value: []const u32,
+    /// Key of node `k + 1` (see `fmt.Header` — nodes are numbered
+    /// breadth-first, so child slot `k` is node `k + 1`).
     child_keys: []const u8,
     strings: []const u8,
 
@@ -75,35 +81,104 @@ pub const Trie = struct {
     /// O(1) — just header read + slice header construction.
     pub fn fromBytes(bytes: []align(4) const u8) !Trie {
         if (bytes.len < @sizeOf(fmt.Header)) return error.BlobTooSmall;
-        const header_ptr: *const fmt.Header = @ptrCast(@alignCast(bytes.ptr));
+        const h: *const fmt.Header = @ptrCast(@alignCast(bytes.ptr));
+        if (h.node_count == 0) return error.BlobTooSmall;
+        if (bytes.len < fmt.blobSize(h.node_count, h.values_count, h.strings_total)) return error.BlobTooSmall;
 
-        const offsets = fmt.PoolOffsets.compute(
-            header_ptr.node_count,
-            header_ptr.values_count,
-            header_ptr.child_indices_total,
-            header_ptr.child_keys_total,
-        );
-
-        const nodes_bytes = bytes[offsets.nodes..][0 .. header_ptr.node_count * @sizeOf(fmt.Node)];
-        const values_bytes = bytes[offsets.values..][0 .. header_ptr.values_count * @sizeOf(fmt.Value)];
-        const child_idx_bytes = bytes[offsets.child_indices..][0 .. header_ptr.child_indices_total * @sizeOf(u32)];
-        const child_keys = bytes[offsets.child_keys..][0..header_ptr.child_keys_total];
-        const strings = bytes[offsets.strings..][0..header_ptr.strings_total];
+        const offsets = fmt.PoolOffsets.compute(h.node_count, h.values_count);
+        const nodes_bytes = bytes[offsets.nodes..][0 .. h.node_count * @sizeOf(fmt.Node)];
+        const values_bytes = bytes[offsets.values..][0 .. h.values_count * @sizeOf(fmt.Value)];
+        const by_value_bytes = bytes[offsets.by_value..][0 .. h.values_count * @sizeOf(u32)];
 
         return .{
             .nodes = std.mem.bytesAsSlice(fmt.Node, @as([]align(4) const u8, @alignCast(nodes_bytes))),
             .values = std.mem.bytesAsSlice(fmt.Value, @as([]align(4) const u8, @alignCast(values_bytes))),
-            .child_indices = std.mem.bytesAsSlice(u32, @as([]align(4) const u8, @alignCast(child_idx_bytes))),
-            .child_keys = child_keys,
-            .strings = strings,
-            .frontier_cap = header_ptr.frontier_cap,
-            .path_buf_cap = header_ptr.path_buf_cap,
-            .max_value_len = header_ptr.max_value_len,
+            .by_value = std.mem.bytesAsSlice(u32, @as([]align(4) const u8, @alignCast(by_value_bytes))),
+            .child_keys = bytes[offsets.child_keys..][0..fmt.childKeysTotal(h.node_count)],
+            .strings = bytes[offsets.strings..][0..h.strings_total],
+            .frontier_cap = h.frontier_cap,
+            .path_buf_cap = h.path_buf_cap,
+            .max_value_len = h.max_value_len,
         };
     }
 
     pub fn root(self: *const Trie) *const Node {
-        return @ptrCast(&self.nodes[0]);
+        return self.nodeAt(0);
+    }
+
+    pub inline fn nodeAt(self: *const Trie, index: u32) *const Node {
+        return @ptrCast(&self.nodes[index]);
+    }
+
+    /// The node's index — its position in breadth-first order.
+    pub inline fn indexOf(self: *const Trie, node: *const Node) u32 {
+        return @intCast(@as([*]const fmt.Node, @ptrCast(node)) - self.nodes.ptr);
+    }
+
+    /// The node that holds value `value_index`: the last node whose values
+    /// start at or before it. `values_start` never decreases in node order
+    /// and every later node starts past this value, so that node owns it.
+    pub fn nodeOfValue(self: *const Trie, value_index: u32) u32 {
+        return lastAtOrBefore(self.nodes, value_index, valuesStartOf);
+    }
+
+    /// The parent of node `index` (not the root): the node whose child
+    /// slots hold slot `index - 1`, found the same way as `nodeOfValue`.
+    pub fn parentOf(self: *const Trie, index: u32) u32 {
+        std.debug.assert(index != 0);
+        return lastAtOrBefore(self.nodes, index - 1, childrenStartOf);
+    }
+
+    /// The key sequence that reaches node `index`, written into `buf`.
+    /// At most `MAX_KEYS_LEN` parent steps.
+    pub fn codeOf(self: *const Trie, index: u32, buf: *[MAX_KEYS_LEN]u8) []const u8 {
+        var n = index;
+        var at: usize = MAX_KEYS_LEN;
+        while (n != 0) : (n = self.parentOf(n)) {
+            at -= 1;
+            buf[at] = self.child_keys[n - 1];
+        }
+        const len = MAX_KEYS_LEN - at;
+        std.mem.copyForwards(u8, buf[0..len], buf[at..]);
+        return buf[0..len];
+    }
+
+    /// The indices of every value whose bytes are exactly `value`,
+    /// ascending — which is node order, so the codes they sit on come out
+    /// shortest first, ties by key rank. One binary search.
+    pub fn valuesEqualTo(self: *const Trie, value: []const u8) []const u32 {
+        const lo, const hi = std.sort.equalRange(u32, self.by_value, ValueKey{ .trie = self, .value = value }, ValueKey.cmp);
+        return self.by_value[lo..hi];
+    }
+
+    /// `by_value`'s order: a value's bytes, then its index.
+    const ValueKey = struct {
+        trie: *const Trie,
+        value: []const u8,
+
+        fn cmp(key: ValueKey, item: u32) std.math.Order {
+            return std.mem.order(u8, key.value, key.trie.values[item].bytes(key.trie.strings));
+        }
+    };
+
+    fn valuesStartOf(n: fmt.Node) u32 {
+        return n.values_start;
+    }
+
+    fn childrenStartOf(n: fmt.Node) u32 {
+        return n.children_start;
+    }
+
+    /// Index of the last node whose `field` is ≤ `target`. `field` must be
+    /// non-decreasing in node order and node 0's must be 0.
+    fn lastAtOrBefore(nodes: []const fmt.Node, target: u32, comptime field: fn (fmt.Node) u32) u32 {
+        var lo: usize = 0; // invariant: field(nodes[lo]) <= target
+        var hi: usize = nodes.len; // invariant: everything at or past hi is > target
+        while (hi - lo > 1) {
+            const mid = lo + (hi - lo) / 2;
+            if (field(nodes[mid]) <= target) lo = mid else hi = mid;
+        }
+        return @intCast(lo);
     }
 
     /// Wrapper that gives us `count`/`width`/getChild/values/etc. methods on
@@ -132,32 +207,17 @@ pub const Trie = struct {
         }
 
         pub fn getChild(self: *const NodeView, trie: *const Trie, key: u8) ?*const NodeView {
-            const w = self.inner.width();
-            const start = self.inner.children_start;
-            var i: usize = 0;
-            while (i < w) : (i += 1) {
-                if (trie.child_keys[start + i] == key) {
-                    const node_idx = trie.child_indices[start + i];
-                    return @ptrCast(&trie.nodes[node_idx]);
-                }
-            }
-            return null;
+            return self.getChildByIndex(trie, self.indexOfChild(trie, key) orelse return null);
         }
 
         pub fn getChildByIndex(self: *const NodeView, trie: *const Trie, index: usize) ?*const NodeView {
             if (index >= self.inner.width()) return null;
-            const node_idx = trie.child_indices[self.inner.children_start + index];
-            return @ptrCast(&trie.nodes[node_idx]);
+            return trie.nodeAt(self.inner.children_start + @as(u32, @intCast(index)) + 1);
         }
 
         pub fn indexOfChild(self: *const NodeView, trie: *const Trie, key: u8) ?usize {
-            const w = self.inner.width();
-            const start = self.inner.children_start;
-            var i: usize = 0;
-            while (i < w) : (i += 1) {
-                if (trie.child_keys[start + i] == key) return i;
-            }
-            return null;
+            const keys = trie.child_keys[self.inner.children_start..][0..self.inner.width()];
+            return std.mem.findScalar(u8, keys, key);
         }
 
         pub fn keyOfChildByIndex(self: *const NodeView, trie: *const Trie, index: usize) ?u8 {
@@ -228,7 +288,8 @@ pub fn buildBlob(
     records[0] = .{ .key = 0, .next_sibling = 0, .child_node = 0 };
     var record_count: u32 = 1;
 
-    // ---- Phase 1: walk entries, build trie shape, count values ----
+    // ---- Phase 1: walk entries, build trie shape (nodes numbered in
+    // insertion order for now), count values ----
     // Hard errors, not asserts: this code runs in the generator's
     // `fast` build, where `std.debug.assert` compiles to nothing —
     // a violated invariant here must fail the build, not ship as UB.
@@ -245,7 +306,7 @@ pub fn buildBlob(
         for (e.keys) |k| {
             // Reject bytes outside the a-z + ';' alphabet. Without this, one
             // bad dictionary line can give a node a 28th distinct child and
-            // overflow Phase 4's fixed [ALPHA] insertion buffers — silent
+            // overflow Phase 2's fixed [ALPHA] insertion buffers — silent
             // stack corruption in the generator's `fast` build.
             if (!isValidKeyByte(k)) return error.EntryKeyOutsideAlphabet;
             var rec_idx = nodes[cur].first_child;
@@ -276,30 +337,77 @@ pub fn buildBlob(
     }
     const NC: u32 = node_count;
 
-    // ---- Phase 2: subtree counts (children always have higher index than
+    // ---- Phase 2: renumber breadth-first, children in keyRank order.
+    // Visiting node `i` (new numbering) hands its children the next free
+    // numbers, so its child slots start at `next - 1` and the child pool
+    // needs no indices (see `fmt.Header`). Everything below works in the
+    // new numbering; `old_of` maps back for the per-node build data. ----
+    var old_of = try allocator.alloc(u32, NC);
+    defer allocator.free(old_of);
+    var new_of = try allocator.alloc(u32, NC);
+    defer allocator.free(new_of);
+    var widths = try allocator.alloc(u8, NC);
+    defer allocator.free(widths);
+    var children_start = try allocator.alloc(u32, NC);
+    defer allocator.free(children_start);
+    var child_keys = try allocator.alloc(u8, fmt.childKeysTotal(NC));
+    defer allocator.free(child_keys);
+    {
+        old_of[0] = 0;
+        new_of[0] = 0;
+        var next: u32 = 1;
+        var i: u32 = 0;
+        while (i < NC) : (i += 1) {
+            var keys_tmp: [ALPHA]u8 = undefined;
+            var nodes_tmp: [ALPHA]u32 = undefined;
+            var w: usize = 0;
+            var rec_idx = nodes[old_of[i]].first_child;
+            while (rec_idx != 0) : (rec_idx = records[rec_idx].next_sibling) {
+                // Guaranteed by the alphabet check in Phase 1 (≤ 27 distinct
+                // bytes); re-checked here because the fixed [ALPHA] buffers
+                // and the u8 width field depend on it directly.
+                if (w == ALPHA) return error.NodeTooWide;
+                const k = records[rec_idx].key;
+                const kr = keyRank(k);
+                var ins = w;
+                while (ins > 0 and keyRank(keys_tmp[ins - 1]) > kr) : (ins -= 1) {
+                    keys_tmp[ins] = keys_tmp[ins - 1];
+                    nodes_tmp[ins] = nodes_tmp[ins - 1];
+                }
+                keys_tmp[ins] = k;
+                nodes_tmp[ins] = records[rec_idx].child_node;
+                w += 1;
+            }
+            widths[i] = @intCast(w);
+            children_start[i] = next - 1;
+            for (keys_tmp[0..w], nodes_tmp[0..w]) |k, old| {
+                child_keys[next - 1] = k;
+                old_of[next] = old;
+                new_of[old] = next;
+                next += 1;
+            }
+        }
+        std.debug.assert(next == NC);
+    }
+
+    // ---- Phase 3: subtree counts (children always have higher index than
     // their parent, so a reverse pass is post-order) ----
     var counts = try allocator.alloc(u32, NC);
     defer allocator.free(counts);
     {
-        var i: usize = 0;
-        while (i < NC) : (i += 1) counts[i] = nodes[i].value_count;
-    }
-    {
         var i: usize = NC;
         while (i > 0) {
             i -= 1;
-            var rec_idx = nodes[i].first_child;
-            while (rec_idx != 0) : (rec_idx = records[rec_idx].next_sibling) {
-                counts[i] += counts[records[rec_idx].child_node];
-            }
+            counts[i] = nodes[old_of[i]].value_count;
+            for (children_start[i] + 1..children_start[i] + 1 + widths[i]) |c| counts[i] += counts[c];
         }
     }
     // The root's subtree count is the global maximum, and the packed node
     // stores counts in 24 bits (fmt.Node.pack asserts that only in `debug`).
     if (counts[0] > 0x00FF_FFFF) return error.TooManyValuesTotal;
 
-    // ---- Phase 2b: subtree node count + path bytes, for sizing the per-
-    // context BFS buffers in `jd_init`. Same reverse-pass shape as Phase 2:
+    // ---- Phase 3b: subtree node count + path bytes, for sizing the per-
+    // context BFS buffers in `jd_init`. Same reverse-pass shape as Phase 3:
     //   node_count[i] = 1 + Σ node_count[child]
     //   path_bytes[i] = Σ (node_count[child] + path_bytes[child])
     // We then take the max over non-root indices — `NodePagination.init` is
@@ -309,93 +417,25 @@ pub fn buildBlob(
     defer allocator.free(subtree_node_count);
     var subtree_path_bytes = try allocator.alloc(u32, NC);
     defer allocator.free(subtree_path_bytes);
-    {
-        var i: usize = 0;
-        while (i < NC) : (i += 1) {
-            subtree_node_count[i] = 1;
-            subtree_path_bytes[i] = 0;
-        }
-    }
+    var frontier_cap: u32 = 0;
+    var path_buf_cap: u32 = 0;
     {
         var i: usize = NC;
         while (i > 0) {
             i -= 1;
-            var rec_idx = nodes[i].first_child;
-            while (rec_idx != 0) : (rec_idx = records[rec_idx].next_sibling) {
-                const c = records[rec_idx].child_node;
+            subtree_node_count[i] = 1;
+            subtree_path_bytes[i] = 0;
+            for (children_start[i] + 1..children_start[i] + 1 + widths[i]) |c| {
                 subtree_node_count[i] += subtree_node_count[c];
                 subtree_path_bytes[i] += subtree_node_count[c] + subtree_path_bytes[c];
             }
-        }
-    }
-    var frontier_cap: u32 = 0;
-    var path_buf_cap: u32 = 0;
-    {
-        var i: usize = 1; // skip root
-        while (i < NC) : (i += 1) {
-            if (subtree_node_count[i] > frontier_cap) frontier_cap = subtree_node_count[i];
-            if (subtree_path_bytes[i] > path_buf_cap) path_buf_cap = subtree_path_bytes[i];
+            if (i == 0) break; // skip root
+            frontier_cap = @max(frontier_cap, subtree_node_count[i]);
+            path_buf_cap = @max(path_buf_cap, subtree_path_bytes[i]);
         }
     }
 
-    // ---- Phase 3: per-node widths + child pool offsets ----
-    var widths = try allocator.alloc(u8, NC);
-    defer allocator.free(widths);
-    var child_off = try allocator.alloc(u32, NC);
-    defer allocator.free(child_off);
-    var child_total: u32 = 0;
-    {
-        var i: u32 = 0;
-        while (i < NC) : (i += 1) {
-            child_off[i] = child_total;
-            var w: usize = 0;
-            var rec_idx = nodes[i].first_child;
-            while (rec_idx != 0) : (rec_idx = records[rec_idx].next_sibling) {
-                w += 1;
-            }
-            // Guaranteed by the alphabet check in Phase 1 (≤ 27 distinct
-            // bytes); re-checked here because Phase 4's fixed [ALPHA]
-            // buffers and the u8 width field depend on it directly.
-            if (w > ALPHA) return error.NodeTooWide;
-            widths[i] = @intCast(w);
-            child_total += @intCast(w);
-        }
-    }
-
-    // ---- Phase 4: emit sorted child keys + indices (sorted by keyRank) ----
-    var child_keys = try allocator.alloc(u8, child_total);
-    defer allocator.free(child_keys);
-    var child_indices = try allocator.alloc(u32, child_total);
-    defer allocator.free(child_indices);
-    {
-        var i: u32 = 0;
-        while (i < NC) : (i += 1) {
-            var keys_tmp: [ALPHA]u8 = undefined;
-            var nodes_tmp: [ALPHA]u32 = undefined;
-            var w: usize = 0;
-            var rec_idx = nodes[i].first_child;
-            while (rec_idx != 0) : (rec_idx = records[rec_idx].next_sibling) {
-                const k = records[rec_idx].key;
-                const cn = records[rec_idx].child_node;
-                const kr = keyRank(k);
-                var ins = w;
-                while (ins > 0 and keyRank(keys_tmp[ins - 1]) > kr) : (ins -= 1) {
-                    keys_tmp[ins] = keys_tmp[ins - 1];
-                    nodes_tmp[ins] = nodes_tmp[ins - 1];
-                }
-                keys_tmp[ins] = k;
-                nodes_tmp[ins] = cn;
-                w += 1;
-            }
-            var j: usize = 0;
-            while (j < w) : (j += 1) {
-                child_keys[child_off[i] + j] = keys_tmp[j];
-                child_indices[child_off[i] + j] = nodes_tmp[j];
-            }
-        }
-    }
-
-    // ---- Phase 5: value offsets per node ----
+    // ---- Phase 4: value offsets per node, in node order ----
     var value_offset = try allocator.alloc(u32, NC);
     defer allocator.free(value_offset);
     var values_total: u32 = 0;
@@ -406,12 +446,13 @@ pub fn buildBlob(
             // values_len is a u8 in the blob node; more entries than that
             // sharing one exact key sequence would truncate silently and
             // desync count() from the actual value list.
-            if (nodes[i].value_count > std.math.maxInt(u8)) return error.TooManyValuesPerNode;
-            values_total += nodes[i].value_count;
+            const vc = nodes[old_of[i]].value_count;
+            if (vc > std.math.maxInt(u8)) return error.TooManyValuesPerNode;
+            values_total += vc;
         }
     }
 
-    // ---- Phase 6: walk entries again, place each value at its node's
+    // ---- Phase 5: walk entries again, place each value at its node's
     // slot in the value pool, and concatenate the string payload ----
     var strings: std.ArrayList(u8) = .empty;
     defer strings.deinit(allocator);
@@ -437,16 +478,38 @@ pub fn buildBlob(
         const str_start: u32 = @intCast(strings.items.len);
         try strings.appendSlice(allocator, e.value);
         try strings.append(allocator, 0); // null terminator so we can hand out [:0]const u8
-        values[fill_pos[cur]] = .{
+        const n = new_of[cur];
+        values[fill_pos[n]] = .{
             .str_start = str_start,
             .str_len = @intCast(e.value.len),
         };
-        fill_pos[cur] += 1;
+        fill_pos[n] += 1;
+    }
+
+    // ---- Phase 6: the reverse index — every value index, ordered by the
+    // value's bytes and then by index, so equal values sit together in
+    // node order (shortest code first) ----
+    const by_value = try allocator.alloc(u32, values_total);
+    defer allocator.free(by_value);
+    for (by_value, 0..) |*slot, i| slot.* = @intCast(i);
+    {
+        const Order = struct {
+            values: []const fmt.Value,
+            strings: []const u8,
+            fn lessThan(ctx: @This(), a: u32, b: u32) bool {
+                return switch (std.mem.order(u8, ctx.values[a].bytes(ctx.strings), ctx.values[b].bytes(ctx.strings))) {
+                    .lt => true,
+                    .gt => false,
+                    .eq => a < b,
+                };
+            }
+        };
+        std.sort.pdq(u32, by_value, Order{ .values = values, .strings = strings.items }, Order.lessThan);
     }
 
     // ---- Phase 7: assemble the final blob ----
-    const offsets = fmt.PoolOffsets.compute(NC, values_total, child_total, child_total);
-    const total = offsets.strings + strings.items.len;
+    const offsets = fmt.PoolOffsets.compute(NC, values_total);
+    const total = fmt.blobSize(NC, values_total, strings.items.len);
     const buf = try allocator.alignedAlloc(u8, .@"4", total);
     @memset(buf, 0);
 
@@ -454,8 +517,6 @@ pub fn buildBlob(
     header.* = .{
         .node_count = NC,
         .values_count = values_total,
-        .child_keys_total = child_total,
-        .child_indices_total = child_total,
         .strings_total = @intCast(strings.items.len),
         .frontier_cap = frontier_cap,
         .path_buf_cap = path_buf_cap,
@@ -469,8 +530,8 @@ pub fn buildBlob(
             nodes_dst[i] = .{
                 .count_and_width = fmt.Node.pack(counts[i], widths[i]),
                 .values_start = value_offset[i],
-                .children_start = child_off[i],
-                .values_len = @intCast(nodes[i].value_count),
+                .children_start = children_start[i],
+                .values_len = @intCast(nodes[old_of[i]].value_count),
                 ._pad = .{ 0, 0, 0 },
             };
         }
@@ -480,10 +541,10 @@ pub fn buildBlob(
         values,
     );
     @memcpy(
-        std.mem.bytesAsSlice(u32, buf[offsets.child_indices..][0 .. child_total * @sizeOf(u32)]),
-        child_indices,
+        std.mem.bytesAsSlice(u32, buf[offsets.by_value..][0 .. values_total * @sizeOf(u32)]),
+        by_value,
     );
-    @memcpy(buf[offsets.child_keys..][0..child_total], child_keys);
+    @memcpy(buf[offsets.child_keys..][0..child_keys.len], child_keys);
     @memcpy(buf[offsets.strings..][0..strings.items.len], strings.items);
 
     // The struct writes above all use host-native u32 storage. If the
@@ -501,23 +562,14 @@ pub fn buildBlob(
 /// the call, the blob is in the opposite endianness from `current_endian`.
 ///
 /// The function only touches the u32 fields (header, node, value,
-/// child-indices); u8 fields (`Node.values_len`, child keys, strings) and
+/// by-value index); u8 fields (`Node.values_len`, child keys, strings) and
 /// padding bytes are left untouched.
 fn byteSwapBlob(buf: []align(4) u8, current_endian: std.lang.Endian) void {
     const node_count = std.mem.readInt(u32, buf[0..4], current_endian);
     const values_count = std.mem.readInt(u32, buf[4..8], current_endian);
-    const child_keys_total = std.mem.readInt(u32, buf[8..12], current_endian);
-    const child_indices_total = std.mem.readInt(u32, buf[12..16], current_endian);
+    const offsets = fmt.PoolOffsets.compute(node_count, values_count);
 
-    const offsets = fmt.PoolOffsets.compute(
-        node_count,
-        values_count,
-        child_indices_total,
-        child_keys_total,
-    );
-
-    // Header: 8 u32 fields starting at offset 0.
-    for (0..8) |i| swap32At(buf, i * 4);
+    for (0..fmt.HEADER_WORDS) |i| swap32At(buf, i * 4);
 
     // Nodes: 3 u32 fields per Node (count_and_width, values_start,
     // children_start); the trailing u8 + padding doesn't need swapping.
@@ -535,9 +587,9 @@ fn byteSwapBlob(buf: []align(4) u8, current_endian: std.lang.Endian) void {
         swap32At(buf, off + 4);
     }
 
-    // Child indices: one u32 each.
-    for (0..child_indices_total) |i| {
-        swap32At(buf, offsets.child_indices + i * 4);
+    // By-value index: one u32 per value.
+    for (0..values_count) |i| {
+        swap32At(buf, offsets.by_value + i * 4);
     }
 }
 
@@ -687,7 +739,7 @@ test "entries with keys longer than MAX_KEYS_LEN are a hard error" {
 
 test "entries with keys outside the a-z ';' alphabet are a hard error" {
     // Uppercase, digits, and whitespace are the likely dictionary typos;
-    // each must fail the build instead of overflowing Phase 4's fixed
+    // each must fail the build instead of overflowing Phase 2's fixed
     // [ALPHA] insertion buffers in the generator's `fast` build.
     inline for (.{ "A", "0", " ", "a-", "a\tb" }) |keys| {
         try testing.expectError(error.EntryKeyOutsideAlphabet, buildTrie(testing.allocator, &.{
@@ -775,4 +827,101 @@ test "buildBlob produces a byte-swapped blob for cross-endian targets" {
     try testing.expectEqualStrings("丙", ab.values(&t).at(1));
     const ac = a.getChild(&t, 'c').?;
     try testing.expectEqualStrings("丁", ac.values(&t).at(0));
+}
+
+test "nodes are numbered breadth-first, children in key-rank order" {
+    var th = try buildTrie(testing.allocator, &.{
+        .{ .keys = "ba", .value = "1" },
+        .{ .keys = ";", .value = "2" },
+        .{ .keys = "a", .value = "3" },
+        .{ .keys = "b", .value = "4" },
+        .{ .keys = "abc", .value = "5" },
+    });
+    defer th.deinit(testing.allocator);
+    const t = &th.trie;
+    // Depth 1 in rank order (a, b, ';'), then depth 2 (ab, ba), then abc —
+    // and every non-root node's own key is the child slot just before it.
+    const want = [_][]const u8{ "", "a", "b", ";", "ab", "ba", "abc" };
+    try testing.expectEqual(want.len, t.nodes.len);
+    for (want, 0..) |keys, i| {
+        var node = t.root();
+        for (keys) |k| node = node.getChild(t, k).?;
+        try testing.expectEqual(@as(u32, @intCast(i)), t.indexOf(node));
+        var buf: [MAX_KEYS_LEN]u8 = undefined;
+        try testing.expectEqualStrings(keys, t.codeOf(@intCast(i), &buf));
+    }
+}
+
+test "codeOf and nodeOfValue invert the trie for every value" {
+    var th = try buildTrie(testing.allocator, &.{
+        .{ .keys = "nkhz", .value = "你好" },
+        .{ .keys = "nk", .value = "你" },
+        .{ .keys = "nk", .value = "您" },
+        .{ .keys = "z", .value = "在" },
+        .{ .keys = "zzzzzz", .value = "在" },
+        .{ .keys = ";;", .value = "：" },
+        .{ .keys = "nkh", .value = "你会" },
+    });
+    defer th.deinit(testing.allocator);
+    const t = &th.trie;
+    // Walk the trie depth-first and check every value maps back to the
+    // path that reached it.
+    const Walk = struct {
+        fn go(trie: *const Trie, node: *const Trie.Node, path: []u8, depth: usize) !void {
+            const vs = node.values(trie);
+            for (0..vs.len()) |i| {
+                const v: u32 = node.inner.values_start + @as(u32, @intCast(i));
+                try testing.expectEqual(trie.indexOf(node), trie.nodeOfValue(v));
+                var buf: [MAX_KEYS_LEN]u8 = undefined;
+                try testing.expectEqualStrings(path[0..depth], trie.codeOf(trie.nodeOfValue(v), &buf));
+            }
+            for (0..node.getWidth()) |i| {
+                path[depth] = node.keyOfChildByIndex(trie, i).?;
+                try go(trie, node.getChildByIndex(trie, i).?, path, depth + 1);
+            }
+        }
+    };
+    var path: [MAX_KEYS_LEN]u8 = undefined;
+    try Walk.go(t, t.root(), &path, 0);
+}
+
+test "valuesEqualTo finds every code of a value, shortest first" {
+    var th = try buildTrie(testing.allocator, &.{
+        .{ .keys = "zzzzzz", .value = "在" },
+        .{ .keys = "nk", .value = "你" },
+        .{ .keys = "zb", .value = "在" },
+        .{ .keys = "z", .value = "在" },
+        .{ .keys = "ab", .value = "在" },
+        .{ .keys = "zb", .value = "在在" }, // a longer value with the same prefix
+        .{ .keys = "y", .value = "圧" }, // a value sorting right after 在
+    });
+    defer th.deinit(testing.allocator);
+    const t = &th.trie;
+
+    const hits = t.valuesEqualTo("在");
+    var codes: [4][]const u8 = undefined;
+    var bufs: [4][MAX_KEYS_LEN]u8 = undefined;
+    try testing.expectEqual(@as(usize, 4), hits.len);
+    for (hits, 0..) |v, i| {
+        try testing.expectEqualStrings("在", t.values[v].bytes(t.strings));
+        codes[i] = t.codeOf(t.nodeOfValue(v), &bufs[i]);
+    }
+    try testing.expectEqualStrings("z", codes[0]);
+    try testing.expectEqualStrings("ab", codes[1]);
+    try testing.expectEqualStrings("zb", codes[2]);
+    try testing.expectEqualStrings("zzzzzz", codes[3]);
+
+    try testing.expectEqual(@as(usize, 1), t.valuesEqualTo("在在").len);
+    try testing.expectEqual(@as(usize, 0), t.valuesEqualTo("").len);
+    try testing.expectEqual(@as(usize, 0), t.valuesEqualTo("在在在").len);
+    try testing.expectEqual(@as(usize, 0), t.valuesEqualTo("不").len);
+}
+
+test "an empty trie has just the root" {
+    var th = try buildTrie(testing.allocator, &.{});
+    defer th.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), th.trie.nodes.len);
+    try testing.expectEqual(@as(usize, 0), th.trie.child_keys.len);
+    try testing.expectEqual(@as(usize, 0), th.trie.valuesEqualTo("x").len);
+    try testing.expect(th.trie.root().getChild(&th.trie, 'a') == null);
 }

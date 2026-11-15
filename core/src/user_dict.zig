@@ -387,6 +387,41 @@ pub const UserDict = struct {
         return total;
     }
 
+    /// How many entries sit on exactly `keys` (key bytes) — the phrases a
+    /// built-in word on that code is listed after.
+    pub fn countOn(self: *const UserDict, keys: []const u8) u32 {
+        if (keys.len == 0 or keys.len > MAX_KEYS_LEN) return 0;
+        var buf: [MAX_KEYS_LEN]u8 = undefined;
+        return self.rangeFor(keys.len, ranksOf(keys, &buf)).len();
+    }
+
+    /// The first entry at or after `from` whose value is exactly `value`,
+    /// in blob order — key length, then key rank, then source order. A
+    /// linear scan: the dictionary is capped at `MAX_ENTRIES`.
+    pub fn findValue(self: *const UserDict, value: []const u8, from: u32) ?u32 {
+        var i = from;
+        while (i < self.entries.len) : (i += 1) {
+            const e = &self.entries[i];
+            if (e.value_len == value.len and
+                std.mem.eql(u8, self.strings[e.value_off..][0..e.value_len], value)) return i;
+        }
+        return null;
+    }
+
+    /// Entry `i`'s keys as key bytes, written into `buf`.
+    pub fn keysOf(self: *const UserDict, i: u32, buf: *[MAX_KEYS_LEN]u8) []const u8 {
+        const ranks = self.entries[i].ranks();
+        for (ranks, 0..) |r, j| buf[j] = trie_mod.keyOfRank(r);
+        return buf[0..ranks.len];
+    }
+
+    /// Entry `i`'s position among the entries on its own code — its
+    /// candidate index there, since a user phrase leads the built-in words.
+    pub fn indexOnCode(self: *const UserDict, i: u32) u32 {
+        const e = &self.entries[i];
+        return i - self.rangeFor(e.keys_len, e.ranks()).start;
+    }
+
     /// Whether any entry sits at or below the key-byte prefix — the user
     /// dictionary's half of "does this node have a child".
     pub fn hasPath(self: *const UserDict, prefix_keys: []const u8) bool {

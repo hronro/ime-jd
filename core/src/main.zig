@@ -8,6 +8,7 @@ const punc_mod = @import("./punc.zig");
 const tables = @import("./tables.zig");
 const punc_tables = @import("./punctuation_marks.zig");
 const user_dict = @import("./user_dict.zig");
+const lookup = @import("./lookup.zig");
 
 const QueryOption = pagination.QueryOption;
 const JdState = query.JdState;
@@ -16,6 +17,7 @@ const UserDictReport = user_dict.Report;
 const UserDictNote = user_dict.Note;
 const UserDictInfo = user_dict.Info;
 const UserDictStatus = user_dict.Status;
+const Code = lookup.Code;
 
 /// Whether we're compiling for a WebAssembly target. Selects the allocator.
 const is_wasm = builtin.target.cpu.arch.isWasm();
@@ -264,6 +266,21 @@ export fn jd_read_range(
     return ctxOf(handle).readRange(start, count, out[0..out_cap]);
 }
 
+/// The codes `value` is typed with in this context — its built-in tables
+/// and its user dictionary. A pure read: the composition is untouched.
+export fn jd_lookup_codes(
+    handle: *JdContext,
+    value: ?[*]const u8,
+    value_len: usize,
+    out: ?[*]Code,
+    out_cap: u32,
+) u32 {
+    const ctx = ctxOf(handle);
+    const dict: ?*const UserDict = if (ctx.user_dict) |*d| d else null;
+    const dest: []Code = if (out) |p| p[0..out_cap] else &.{};
+    return lookup.codesOf(ctx.trie, dict, textSlice(value, value_len), dest);
+}
+
 export fn jd_deinit(handle: *JdContext) void {
     shared_allocator.free(ctxOf(handle).raw);
 }
@@ -293,6 +310,8 @@ const AbiQuery = enum(u32) {
     user_dict_value_max = 7,
     sizeof_user_dict_info = 8,
     sizeof_user_dict_note = 9,
+    sizeof_code = 10,
+    code_cap = 11,
 };
 
 export fn jd_abi_layout(what: u32) u32 {
@@ -308,6 +327,8 @@ export fn jd_abi_layout(what: u32) u32 {
         @backingInt(AbiQuery.user_dict_value_max) => user_dict.VALUE_MAX,
         @backingInt(AbiQuery.sizeof_user_dict_info) => @sizeOf(UserDictInfo),
         @backingInt(AbiQuery.sizeof_user_dict_note) => @sizeOf(UserDictNote),
+        @backingInt(AbiQuery.sizeof_code) => @sizeOf(Code),
+        @backingInt(AbiQuery.code_cap) => @intCast(lookup.CODE_CAP),
         // Unknown queries are a benign 0 rather than a trap.
         else => 0,
     };
@@ -540,6 +561,8 @@ test "jd_abi_layout reports the real struct sizes" {
         @as(u32, @sizeOf(UserDictNote)),
         jd_abi_layout(@backingInt(AbiQuery.sizeof_user_dict_note)),
     );
+    try std.testing.expectEqual(@as(u32, @sizeOf(Code)), jd_abi_layout(@backingInt(AbiQuery.sizeof_code)));
+    try std.testing.expectEqual(@as(u32, lookup.CODE_CAP), jd_abi_layout(@backingInt(AbiQuery.code_cap)));
     // Unknown queries are a benign 0 rather than a trap.
     try std.testing.expectEqual(@as(u32, 0), jd_abi_layout(9999));
 }
@@ -804,4 +827,144 @@ test "jd_alloc hands out aligned blocks a host can build into and free" {
     var out: [1]QueryOption = undefined;
     try std.testing.expectEqual(@as(u32, 1), jd_read_range(handle, 0, 1, &out, 1));
     try std.testing.expectEqualStrings("测试词", std.mem.sliceTo(out[0].value, 0));
+}
+
+// =========================================================================
+// Tests — reverse lookup through the C ABI, against the real tables.
+// =========================================================================
+
+fn codeKeys(code: *const Code) []const u8 {
+    return std.mem.sliceTo(&code.keys, 0);
+}
+
+/// What typing `keys` into a fresh `handle` lists at candidate `index` —
+/// the property every code `jd_lookup_codes` reports must satisfy.
+fn candidateAfterTyping(handle: *JdContext, keys: []const u8, index: u32) ?[]const u8 {
+    jd_reset(handle);
+    for (keys) |k| jd_press_key(handle, k);
+    if (jd_state_ptr(handle).commit_a != null) return null; // a key committed instead of composing
+    var one: [1]QueryOption = undefined;
+    if (jd_read_range(handle, index, 1, &one, 1) != 1) return null;
+    return std.mem.sliceTo(one[0].value, 0);
+}
+
+fn expectCodes(handle: *JdContext, value: []const u8, want: []const []const u8) !void {
+    var out: [16]Code = undefined;
+    const n = jd_lookup_codes(handle, value.ptr, value.len, &out, out.len);
+    try std.testing.expectEqual(@as(u32, @intCast(want.len)), n);
+    for (want, out[0..want.len]) |keys, *c| {
+        try std.testing.expectEqualStrings(keys, codeKeys(c));
+        try std.testing.expectEqualStrings(value, candidateAfterTyping(handle, keys, c.index) orelse return error.NotTypeable);
+    }
+}
+
+test "jd_lookup_codes finds every built-in code of a value, shortest first" {
+    const handle = jd_init(null, 0) orelse return error.OutOfMemory;
+    defer jd_deinit(handle);
+
+    try expectCodes(handle, "的", &.{ "d", "deuiua", "dkuiua" });
+    try expectCodes(handle, "键道", &.{"jmdzi"});
+    try expectCodes(handle, "：", &.{";;"});
+    // The value with the most codes in the tables.
+    try expectCodes(handle, "着", &.{ "o", "fe", "qe", "flo", "fzou", "qzou", "feouia", "flouia", "fzouia", "qeouia", "qzouia" });
+
+    var out: [4]Code = undefined;
+    try std.testing.expectEqual(@as(u32, 0), jd_lookup_codes(handle, "不在词库里的词".ptr, "不在词库里的词".len, &out, out.len));
+    try std.testing.expectEqual(@as(u32, 0), jd_lookup_codes(handle, null, 0, &out, out.len));
+    // Counting needs no buffer at all.
+    try std.testing.expectEqual(@as(u32, 3), jd_lookup_codes(handle, "的".ptr, "的".len, null, 0));
+}
+
+test "jd_lookup_codes leaves the composition alone" {
+    const handle = jd_init(null, 0) orelse return error.OutOfMemory;
+    defer jd_deinit(handle);
+
+    jd_press_key(handle, 'b');
+    const before = jd_state_ptr(handle).*;
+    var out: [4]Code = undefined;
+    _ = jd_lookup_codes(handle, "的".ptr, "的".len, &out, out.len);
+    try std.testing.expectEqualDeep(before, jd_state_ptr(handle).*);
+    jd_press_key(handle, ' ');
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("不", joined(handle, &buf) orelse return error.NoCommit);
+}
+
+test "every code jd_lookup_codes reports types its value at its index" {
+    // Sweep a spread of the real dictionary: look each value up, then type
+    // each code it reports into a fresh composition and read the candidate
+    // at the reported index. Also check nothing is missed: the codes must
+    // be exactly the distinct nodes that hold the value.
+    const t = TrieCell.get();
+    const handle = jd_init(null, 0) orelse return error.OutOfMemory;
+    defer jd_deinit(handle);
+
+    var checked: usize = 0;
+    var v: u32 = 0;
+    while (v < t.values.len) : (v += 97) {
+        const value = t.values[v].bytes(t.strings);
+        var out: [16]Code = undefined;
+        const n = jd_lookup_codes(handle, value.ptr, value.len, &out, out.len);
+        try std.testing.expect(n >= 1 and n <= out.len);
+
+        var nodes_with_value: u32 = 0;
+        var last: ?u32 = null;
+        for (t.valuesEqualTo(value)) |hit| {
+            const node = t.nodeOfValue(hit);
+            if (last != node) nodes_with_value += 1;
+            last = node;
+        }
+        try std.testing.expectEqual(nodes_with_value, n);
+
+        for (out[0..n], 0..) |*c, i| {
+            if (i > 0) {
+                const prev = codeKeys(&out[i - 1]);
+                try std.testing.expect(prev.len <= codeKeys(c).len);
+            }
+            try std.testing.expectEqualStrings(value, candidateAfterTyping(handle, codeKeys(c), c.index) orelse return error.NotTypeable);
+            checked += 1;
+        }
+    }
+    try std.testing.expect(checked > 1000);
+}
+
+test "jd_lookup_codes merges the context's user dictionary" {
+    // "zzzzzz" is free in the built-in tables; 的 sits on `d` first.
+    try std.testing.expect(!baseHasPath("zzzzzz"));
+
+    var blob = try HostBlob.build(
+        "的\tzzzzzz\n" ++
+            "测试词\td\n" ++ // on 的's code: 的 is now candidate 1 there
+            "的\td\n" ++ // repeats the built-in word → dropped, not reported twice
+            "键道\tjd\n",
+    );
+    defer blob.deinit();
+    const handle = blob.init() orelse return error.InitFailed;
+    defer jd_deinit(handle);
+
+    var out: [8]Code = undefined;
+    const n = jd_lookup_codes(handle, "的".ptr, "的".len, &out, out.len);
+    try std.testing.expectEqual(@as(u32, 4), n);
+    const want = [_]struct { []const u8, u32, u32 }{
+        .{ "d", 1, 0 },
+        .{ "deuiua", 0, 0 },
+        .{ "dkuiua", 0, 0 },
+        .{ "zzzzzz", 0, lookup.CodeFlag.user },
+    };
+    for (want, out[0..n]) |w, *c| {
+        try std.testing.expectEqualStrings(w[0], codeKeys(c));
+        try std.testing.expectEqual(w[1], c.index);
+        try std.testing.expectEqual(w[2], c.flags);
+        try std.testing.expectEqualStrings("的", candidateAfterTyping(handle, w[0], c.index) orelse return error.NotTypeable);
+    }
+
+    try expectCodes(handle, "键道", &.{ "jd", "jmdzi" });
+    try expectCodes(handle, "测试词", &.{"d"});
+
+    // The same lookup on a context without the dictionary sees none of it.
+    const plain = jd_init(null, 0) orelse return error.OutOfMemory;
+    defer jd_deinit(plain);
+    try std.testing.expectEqual(@as(u32, 0), jd_lookup_codes(plain, "测试词".ptr, "测试词".len, &out, out.len));
+    try std.testing.expectEqual(@as(u32, 3), jd_lookup_codes(plain, "的".ptr, "的".len, &out, out.len));
+    try std.testing.expectEqualStrings("d", codeKeys(&out[0]));
+    try std.testing.expectEqual(@as(u32, 0), out[0].index);
 }

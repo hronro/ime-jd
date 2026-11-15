@@ -22,19 +22,26 @@
 
 const std = @import("std");
 
-/// 32-byte fixed header at offset 0 of the blob.
+/// 24-byte fixed header at offset 0 of the blob.
 /// Pool offsets are computed at runtime from the counts here.
 ///
 /// No magic/version fields: the blob is regenerated from source every build
 /// (`scripts/gen_trie.zig` → `trie.bin` → `@embedFile`), so generator and
 /// runtime are always in lockstep within this monorepo.
+///
+/// Nodes are numbered breadth-first from the root (index 0), each node's
+/// children in `keyRank` order. That makes the child pool implicit: the
+/// children of every node, laid end to end in node order, are nodes 1, 2,
+/// 3, … — so child slot `k` *is* node `k + 1`, and a node's own key is
+/// `child_keys[index - 1]`. It also makes node order the order candidates
+/// are enumerated in (shorter codes first, ties by key rank), and lets the
+/// parent of node `n` be found by a binary search for the child slot
+/// `n - 1` over the nodes' `children_start` — which is what turns a value
+/// back into its code.
 pub const Header = extern struct {
     node_count: u32,
     values_count: u32,
-
-    // Pool sizes (in elements, not bytes).
-    child_keys_total: u32,
-    child_indices_total: u32,
+    /// Bytes in the strings pool, NULs included.
     strings_total: u32,
 
     // Worst-case BFS state sizes — computed in `buildBlob`, consumed by
@@ -51,6 +58,9 @@ pub const Header = extern struct {
     max_value_len: u32,
 };
 
+/// Number of u32 fields in `Header` — what a cross-endian build swaps.
+pub const HEADER_WORDS: usize = @sizeOf(Header) / @sizeOf(u32);
+
 /// 16-byte fixed-layout node. `_pad` is unused but keeps the struct
 /// 4-aligned so an array of Nodes is naturally aligned for u32 reads.
 pub const Node = extern struct {
@@ -61,10 +71,12 @@ pub const Node = extern struct {
     count_and_width: u32,
 
     // Offset into values_pool where this node's values list starts.
+    // Non-decreasing in node order, like `children_start`.
     values_start: u32,
 
-    // Offset into child_indices_pool (and parallel child_keys_pool) where
-    // this node's children list starts.
+    // Slot in child_keys where this node's children start. The child in
+    // slot `k` is node `k + 1` (see `Header`), so the children are nodes
+    // `children_start + 1 ..= children_start + width`.
     children_start: u32,
 
     // Number of values directly at this node (usually 0–3).
@@ -100,50 +112,47 @@ pub const Value = extern struct {
     }
 };
 
+/// Every non-root node has exactly one incoming edge, so the child pool
+/// holds one key per node but the root.
+pub fn childKeysTotal(node_count: usize) usize {
+    return node_count -| 1;
+}
+
 /// Compute total blob size for given pool counts. Generator uses this to
 /// size its output buffer; runtime uses it as a sanity check.
-pub fn blobSize(
-    node_count: usize,
-    values_count: usize,
-    child_indices_total: usize,
-    child_keys_total: usize,
-    strings_total: usize,
-) usize {
-    return @sizeOf(Header) +
-        node_count * @sizeOf(Node) +
-        values_count * @sizeOf(Value) +
-        child_indices_total * @sizeOf(u32) +
-        // child_keys are 1-byte; we round up to maintain alignment for
-        // anything that might follow (currently nothing — but it's cheap
-        // safety for future fields).
-        std.mem.alignForward(usize, child_keys_total, 4) +
-        strings_total;
+pub fn blobSize(node_count: usize, values_count: usize, strings_total: usize) usize {
+    return PoolOffsets.compute(node_count, values_count).strings + strings_total;
 }
 
 /// Pool offsets within the blob. Used by both the generator (to know
 /// where to write each pool) and the runtime (to know where to read).
+///
+///   [Header][Node × node_count][Value × values_count]
+///   [u32 × values_count: by_value][u8 × node_count − 1: child_keys, padded to 4]
+///   [strings]
+///
+/// `by_value` lists every value index once, sorted by the value's bytes
+/// and then by index — so the values equal to a string are one binary
+/// search away and come out in node order, i.e. shortest code first.
 pub const PoolOffsets = struct {
     nodes: usize,
     values: usize,
-    child_indices: usize,
+    by_value: usize,
     child_keys: usize,
     strings: usize,
 
-    pub fn compute(
-        node_count: usize,
-        values_count: usize,
-        child_indices_total: usize,
-        child_keys_total: usize,
-    ) PoolOffsets {
+    pub fn compute(node_count: usize, values_count: usize) PoolOffsets {
         const nodes = @sizeOf(Header);
         const values = nodes + node_count * @sizeOf(Node);
-        const child_indices = values + values_count * @sizeOf(Value);
-        const child_keys = child_indices + child_indices_total * @sizeOf(u32);
-        const strings = child_keys + std.mem.alignForward(usize, child_keys_total, 4);
+        const by_value = values + values_count * @sizeOf(Value);
+        const child_keys = by_value + values_count * @sizeOf(u32);
+        // child_keys are 1-byte; round up to keep the strings pool — and
+        // anything that might follow it — 4-aligned.
+        const strings = child_keys + std.mem.alignForward(usize, childKeysTotal(node_count), 4);
         return .{
             .nodes = nodes,
             .values = values,
-            .child_indices = child_indices,
+            .by_value = by_value,
             .child_keys = child_keys,
             .strings = strings,
         };

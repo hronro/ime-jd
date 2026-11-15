@@ -400,6 +400,65 @@ unsigned int jd_read_range(jd_context *ctx, unsigned int start,
  */
 query_option *jd_scratch_ptr(jd_context *ctx);
 
+/* ------------------------------------------------------------------------
+ * Reverse lookup
+ *
+ * The other direction from the keystroke path: given a value, the codes it
+ * is typed with.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Inline code capacity, including the NUL terminator. A code is at most 6
+ * keys; the library hard-errors at build time if that ever outgrows this
+ * array.
+ */
+#define JD_CODE_CAP 8
+
+/**
+ * One code a value is typed with.
+ *
+ * `keys` is the code, NUL-terminated: a-z, and `;` in the built-in symbol
+ * codes. `index` is the value's position in the candidate list after typing
+ * exactly these keys with nothing in flight — the index jd_read_range
+ * returns it at, so 0 is what space commits. It counts the context's user
+ * phrases on the same code, which lead the built-in words.
+ */
+typedef struct {
+  char keys[JD_CODE_CAP];
+  unsigned int index;
+  /** JD_CODE_* bits. */
+  unsigned int flags;
+} jd_code;
+
+/** The code comes from the context's user dictionary, not the built-in tables. */
+#define JD_CODE_USER 0x1u
+
+/**
+ * The codes `value` is typed with in this context: from the built-in tables
+ * and from the user dictionary the context was created with. `value` is
+ * `value_len` bytes of UTF-8 compared byte for byte — it is not trimmed or
+ * normalized — and need not be NUL-terminated.
+ *
+ * The codes go into `out`, which has room for `out_cap` entries, in
+ * candidate order: shorter codes first, ties key by key (a-z, then `;`), and
+ * a user phrase's code ahead of a built-in word's on the same keys. Returns
+ * how many codes there are in all, which may be more than `out_cap` — only
+ * the first `out_cap` are written — so NULL and 0 count them. Returns 0 for
+ * a value no dictionary holds, and for an empty one.
+ *
+ * A value listed twice on one code is one code, reported at its first
+ * index. Dictionary codes only: a punctuation key (`,` for `，`) is not a
+ * code.
+ *
+ * A pure read, like jd_read_range: the composition, the anchor and the
+ * state block are untouched, and nothing is allocated. Cost: one binary
+ * search over the built-in tables, a few more per code to spell it out, and
+ * one pass over the user dictionary's phrases.
+ */
+unsigned int jd_lookup_codes(jd_context *ctx, const char *value,
+                             size_t value_len, jd_code *out,
+                             unsigned int out_cap);
+
 /* Queries for jd_abi_layout. */
 #define JD_ABI_SIZEOF_STATE 0
 #define JD_ABI_SIZEOF_OPTION 1
@@ -411,6 +470,8 @@ query_option *jd_scratch_ptr(jd_context *ctx);
 #define JD_ABI_USER_DICT_VALUE_MAX 7
 #define JD_ABI_SIZEOF_USER_DICT_INFO 8
 #define JD_ABI_SIZEOF_USER_DICT_NOTE 9
+#define JD_ABI_SIZEOF_CODE 10
+#define JD_ABI_CODE_CAP 11
 
 /**
  * Layout self-check. This header and the language bindings declare these

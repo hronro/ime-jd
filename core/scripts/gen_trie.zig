@@ -149,17 +149,30 @@ pub fn main(init: std.process.Init.Minimal) !void {
     , .{fingerprint});
     try out_dir.writeFile(io, .{ .sub_path = "trie_blob_module.zig", .data = module_src });
 
-    // Re-parse the blob locally to surface the worst-case caps it embedded.
-    // These dictate per-context memory in `jd_init`; logging them gives early
-    // visibility into the per-context resident size.
+    // Surface the worst-case caps the blob embedded. These dictate
+    // per-context memory in `jd_init`; logging them gives early visibility
+    // into the per-context resident size. The header is read in the
+    // target's byte order — the blob is not in the host's when they differ,
+    // so it cannot be parsed here as a `Trie`.
     //
     // Write to stdout (not stderr): zig build's Run step captures stderr when
     // a step has output args, then renders it as a "failed command" even on
     // exit 0. Informational lines belong on stdout.
-    const t = try trie.Trie.fromBytes(blob);
+    const header = std.mem.bytesToValue(trie.Header, blob[0..@sizeOf(trie.Header)]);
+    const field = struct {
+        fn get(v: u32, endian: std.lang.Endian) u32 {
+            return if (endian == builtin.target.cpu.arch.endian()) v else @byteSwap(v);
+        }
+    }.get;
     const msg = try arena.print(
         "gen_trie: {d} entries → {d} bytes blob (frontier_cap={d}, path_buf_cap={d}, max_value_len={d})\n",
-        .{ entries.len, blob.len, t.frontier_cap, t.path_buf_cap, t.max_value_len },
+        .{
+            entries.len,
+            blob.len,
+            field(header.frontier_cap, target_endian),
+            field(header.path_buf_cap, target_endian),
+            field(header.max_value_len, target_endian),
+        },
     );
     try std.Io.File.stdout().writeStreamingAll(io, msg);
 }
