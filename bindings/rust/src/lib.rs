@@ -29,6 +29,9 @@
 //! Tell the engine what the user is actually looking at with
 //! [`JdContext::set_anchor`].
 //!
+//! The other direction — the codes a value is typed with, and the candidate
+//! index it has on each — is [`JdContext::lookup_codes`].
+//!
 //! One [`JdContext`] must not be used from multiple threads concurrently
 //! (the C contract); taking `&mut self` on every method enforces that
 //! statically. Distinct contexts are fully independent.
@@ -120,6 +123,55 @@ impl PartialEq for Candidate {
 }
 
 impl Eq for Candidate {}
+
+/// Inline code capacity, including the NUL terminator. Mirrors `JD_CODE_CAP`
+/// in `core/include/jd.h`; verified against the library at startup.
+pub const CODE_CAP: usize = 8;
+
+/// One code a value is typed with — see [`JdContext::lookup_codes`].
+#[repr(C)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Code {
+    /// NUL-terminated ASCII.
+    keys: [u8; CODE_CAP],
+    index: u32,
+    flags: u32,
+}
+
+impl Code {
+    /// `JD_CODE_USER`.
+    const USER: u32 = 0x1;
+
+    /// The keys: a-z, and `;` in the built-in symbol codes.
+    pub fn keys(&self) -> &str {
+        let end = self.keys.iter().position(|&b| b == 0).unwrap_or(CODE_CAP);
+        std::str::from_utf8(&self.keys[..end]).unwrap_or("")
+    }
+
+    /// Where the value sits in the candidate list after typing exactly
+    /// [`Self::keys`] with nothing in flight — 0 is what space commits. It
+    /// counts the context's user phrases on the same code, which lead the
+    /// built-in words.
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// Whether the code comes from the context's user dictionary rather than
+    /// the built-in tables.
+    pub fn is_user(&self) -> bool {
+        self.flags & Self::USER != 0
+    }
+}
+
+impl fmt::Debug for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Code")
+            .field("keys", &self.keys())
+            .field("index", &self.index)
+            .field("user", &self.is_user())
+            .finish()
+    }
+}
 
 /// A commit, delivered as up to three pieces so the library needs no buffer of
 /// its own: two immortal strings and one literal byte, concatenated in field
@@ -754,6 +806,13 @@ mod ffi {
             out: *mut super::Candidate,
             out_cap: u32,
         ) -> u32;
+        pub fn jd_lookup_codes(
+            ctx: *mut JdContext,
+            value: *const c_char,
+            value_len: usize,
+            out: *mut super::Code,
+            out_cap: u32,
+        ) -> u32;
         pub fn jd_abi_layout(what: u32) -> u32;
         pub fn jd_user_dict_blob_bound(phrases: *const c_char, phrases_len: usize) -> usize;
         pub fn jd_user_dict_build(
@@ -781,6 +840,8 @@ const JD_ABI_USER_DICT_MAX_ENTRIES: u32 = 6;
 const JD_ABI_USER_DICT_VALUE_MAX: u32 = 7;
 const JD_ABI_SIZEOF_USER_DICT_INFO: u32 = 8;
 const JD_ABI_SIZEOF_USER_DICT_NOTE: u32 = 9;
+const JD_ABI_SIZEOF_CODE: u32 = 10;
+const JD_ABI_CODE_CAP: u32 = 11;
 
 static ABI_CHECK: Once = Once::new();
 
@@ -789,7 +850,7 @@ static ABI_CHECK: Once = Once::new();
 /// is worth one comparison per process.
 fn check_abi() {
     ABI_CHECK.call_once(|| {
-        let (state, option, hint, report, max_entries, value_max, info, note) = unsafe {
+        let (state, option, hint, report, max_entries, value_max, info, note, code, code_cap) = unsafe {
             (
                 ffi::jd_abi_layout(JD_ABI_SIZEOF_STATE) as usize,
                 ffi::jd_abi_layout(JD_ABI_SIZEOF_OPTION) as usize,
@@ -799,8 +860,19 @@ fn check_abi() {
                 ffi::jd_abi_layout(JD_ABI_USER_DICT_VALUE_MAX),
                 ffi::jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_INFO) as usize,
                 ffi::jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_NOTE) as usize,
+                ffi::jd_abi_layout(JD_ABI_SIZEOF_CODE) as usize,
+                ffi::jd_abi_layout(JD_ABI_CODE_CAP) as usize,
             )
         };
+        assert_eq!(
+            code,
+            size_of::<Code>(),
+            "libjd jd_code layout mismatch — bindings/rust is out of sync with core"
+        );
+        assert_eq!(
+            code_cap, CODE_CAP,
+            "libjd code capacity mismatch — bindings/rust is out of sync with core"
+        );
         assert_eq!(
             note,
             size_of::<ffi::JdUserDictNote>(),
@@ -953,6 +1025,45 @@ impl JdContext {
         let n =
             unsafe { ffi::jd_read_range(self.handle.as_ptr(), start, cap, out.as_mut_ptr(), cap) };
         n as usize
+    }
+
+    /// Write the codes `value` is typed with into `out` and return how many
+    /// there are in all — which may be more than `out.len()`; only the first
+    /// `out.len()` are written, so an empty slice counts them. Candidate
+    /// order: shorter codes first, ties key by key (a-z, then `;`), a user
+    /// phrase's code ahead of a built-in word's on the same keys. `value` is
+    /// matched exactly, byte for byte.
+    ///
+    /// A pure read: the composition and the anchor are untouched, and
+    /// nothing is allocated.
+    pub fn lookup_codes_into(&self, value: &str, out: &mut [Code]) -> usize {
+        let cap: u32 = out.len().try_into().unwrap_or(u32::MAX);
+        // SAFETY: the value is read for `len` bytes only; `out` has room for
+        // `cap` entries. The library writes nothing else.
+        let n = unsafe {
+            ffi::jd_lookup_codes(
+                self.handle.as_ptr(),
+                value.as_ptr().cast::<c_char>(),
+                value.len(),
+                out.as_mut_ptr(),
+                cap,
+            )
+        };
+        n as usize
+    }
+
+    /// The codes `value` is typed with, from the built-in tables and this
+    /// context's user dictionary, in candidate order — see
+    /// [`Self::lookup_codes_into`]. Empty for a value neither holds.
+    pub fn lookup_codes(&self, value: &str) -> Vec<Code> {
+        let mut out = vec![Code::default(); 16];
+        let n = self.lookup_codes_into(value, &mut out);
+        if n > out.len() {
+            out.resize(n, Code::default());
+            self.lookup_codes_into(value, &mut out);
+        }
+        out.truncate(n);
+        out
     }
 
     /// Collect a window of candidates into a fresh `Vec`.

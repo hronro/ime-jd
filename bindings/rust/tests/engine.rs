@@ -3,7 +3,7 @@
 //! layout matches, the trie blob loads, contexts are independent, and reads
 //! never disturb the commit anchor.
 
-use jd::{Candidate, JdContext, UserDict, UserDictNote, UserDictStatus};
+use jd::{Candidate, Code, JdContext, UserDict, UserDictNote, UserDictStatus};
 
 #[test]
 fn loads_blob_and_returns_candidates() {
@@ -529,4 +529,65 @@ fn a_static_blob_is_used_in_place_and_check_peeks_without_taking_over() {
     let leaked: &'static [u8] = Box::leak(shifted.into_boxed_slice());
     let err = UserDict::from_static_blob(&leaked[1..]).unwrap_err();
     assert_eq!(err.status, UserDictStatus::Misaligned);
+}
+
+fn keys(codes: &[Code]) -> Vec<&str> {
+    codes.iter().map(Code::keys).collect()
+}
+
+#[test]
+fn lookup_codes_lists_every_code_shortest_first() {
+    let mut ctx = JdContext::new().expect("jd_init failed");
+    let codes = ctx.lookup_codes("的");
+    assert_eq!(keys(&codes), ["d", "deuiua", "dkuiua"]);
+    assert!(codes.iter().all(|c| c.index() == 0 && !c.is_user()));
+
+    // Each code types the value back at its index.
+    for code in ctx.lookup_codes("着") {
+        ctx.reset();
+        for &k in code.keys().as_bytes() {
+            ctx.press_key(k);
+        }
+        let at = ctx.candidates(code.index(), 1);
+        assert_eq!(at[0].value(), "着", "{code:?}");
+    }
+
+    assert!(ctx.lookup_codes("不在词库里的词").is_empty());
+    assert!(ctx.lookup_codes("").is_empty());
+}
+
+#[test]
+fn lookup_codes_into_counts_past_a_short_buffer_and_leaves_the_composition() {
+    let mut ctx = JdContext::new().expect("jd_init failed");
+    ctx.press_key(b'b');
+    let before = ctx.state();
+
+    let mut one = [Code::default(); 1];
+    assert_eq!(ctx.lookup_codes_into("着", &mut one), 11);
+    assert_eq!(one[0].keys(), "o");
+    assert_eq!(one[0].index(), 1);
+    assert_eq!(ctx.lookup_codes_into("着", &mut []), 11);
+    assert_eq!(ctx.lookup_codes("着").len(), 11);
+
+    assert_eq!(ctx.state(), before);
+    ctx.press_key(b' ');
+    assert_eq!(ctx.commit().unwrap().to_string(), "不");
+}
+
+#[test]
+fn lookup_codes_merges_the_user_dictionary() {
+    let (dict, _) = phrase_dict("的\tzzzzzz\n测试词\td\n");
+    let ctx = JdContext::with_user_dict(dict).expect("jd_init failed");
+
+    let codes = ctx.lookup_codes("的");
+    assert_eq!(keys(&codes), ["d", "deuiua", "dkuiua", "zzzzzz"]);
+    // 测试词 now leads `d`, so 的 is its second candidate there.
+    assert_eq!(codes[0].index(), 1);
+    assert!(!codes[0].is_user());
+    assert!(codes[3].is_user());
+
+    let mine = ctx.lookup_codes("测试词");
+    assert_eq!(keys(&mine), ["d"]);
+    assert_eq!(mine[0].index(), 0);
+    assert!(mine[0].is_user());
 }

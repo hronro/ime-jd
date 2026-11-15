@@ -108,6 +108,19 @@ Map the text file too when rebuilding — `build` only reads it, and `std::str::
 
 To change dictionaries, build the new one and create a new context with it; the old context goes away with the old dictionary.
 
+### Reverse lookup
+
+`lookup_codes` goes the other way — the codes a value is typed with, from the built-in tables and the context's user dictionary, and where the value sits on each:
+
+```rust
+for code in ctx.lookup_codes("着") {
+    // "o" #1 — 着 is the second candidate on `o` — then "fe" #0, "qe" #0, …
+    println!("{} #{}{}", code.keys(), code.index(), if code.is_user() { " (mine)" } else { "" });
+}
+```
+
+It is a pure read, so it can run mid-composition. `lookup_codes_into` writes into your own `&mut [Code]` instead and returns the total, which may exceed the buffer.
+
 For an append-only candidate strip, use `extend_candidates` instead of `candidates`:
 
 ```rust
@@ -131,4 +144,4 @@ ctx.extend_candidates(strip.len() as u32, PAGE, &mut strip);
 cargo test
 ```
 
-The integration tests link the real dictionary and cover the FFI smoke contract, context independence, candidate retention across later engine calls, `Send`-ness, window clipping, the anchor's independence from reads, and the user dictionary (merge order, user-only codes, build errors, cached-blob round trips).
+The integration tests link the real dictionary and cover the FFI smoke contract, context independence, candidate retention across later engine calls, `Send`-ness, window clipping, the anchor's independence from reads, reverse lookup (order, indices, short buffers, user phrases), and the user dictionary (merge order, user-only codes, build errors, cached-blob round trips).
