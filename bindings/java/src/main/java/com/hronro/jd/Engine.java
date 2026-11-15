@@ -1,5 +1,6 @@
 package com.hronro.jd;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -12,7 +13,8 @@ import org.jspecify.annotations.Nullable;
  * <p>Candidates are addressed by flat index, not by page. {@link #readRange}
  * is a pure read: it never changes what the engine's own commits resolve to,
  * so a candidate strip can prefetch as far ahead as it likes. Tell the engine
- * what the user actually sees with {@link #setAnchor}.
+ * what the user actually sees with {@link #setAnchor}. {@link #lookupCodes}
+ * answers the reverse question: the codes a value is typed with.
  *
  * <p>Like the libjd context it wraps, an engine must not be used from two
  * threads at once; distinct engines are independent. It holds native memory
@@ -20,6 +22,8 @@ import org.jspecify.annotations.Nullable;
  */
 public final class Engine implements AutoCloseable {
     private static final int READ_CHUNK = Jni.readChunk();
+    /** {@code JD_CODE_USER}. */
+    private static final int CODE_USER = 0x1;
 
     // The native handle: the context, plus this engine's copy of the user
     // dictionary's blob (jd_jni.c). 0 once closed.
@@ -97,6 +101,30 @@ public final class Engine implements AutoCloseable {
             if (chunk.size() < want) {
                 break; // the end of the list
             }
+        }
+        return out;
+    }
+
+    /**
+     * The codes {@code value} is typed with, from the built-in tables and this
+     * engine's user dictionary, in candidate order: shorter codes first, ties
+     * key by key (a-z, then {@code ;}), a user phrase's code ahead of a
+     * built-in word's on the same keys. {@code value} is matched exactly; an
+     * unknown or empty one has no codes.
+     *
+     * <p>A pure read: the composition and the anchor are untouched.
+     */
+    public List<Code> lookupCodes(String value) {
+        long live = live();
+        if (value.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Object[] found = Jni.lookupCodes(live, value.getBytes(StandardCharsets.UTF_8));
+        String[] keys = (String[]) found[0];
+        int[] details = (int[]) found[1];
+        List<Code> out = new ArrayList<>(keys.length);
+        for (int i = 0; i < keys.length; i++) {
+            out.add(new Code(keys[i], details[2 * i], (details[2 * i + 1] & CODE_USER) != 0));
         }
         return out;
     }

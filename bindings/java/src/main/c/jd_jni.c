@@ -12,8 +12,8 @@
 // as a byte[] and the report as an int[], `userDictCheck` a cached blob's
 // verdict as a long[], and `init` copies a blob into memory of its own,
 // because jd_init reads the blob in place for the context's whole lifetime and
-// a JVM array can move. The only classes built here are EngineState and
-// Candidate (see JNI_OnLoad).
+// a JVM array can move. `lookupCodes` returns plain arrays too. The only
+// classes built here are EngineState and Candidate (see JNI_OnLoad).
 //
 // The functions' names and types come from com_hronro_jd_Jni.h, which javac -h
 // writes from Jni.java. Both native builds compile this file against it with
@@ -42,7 +42,8 @@ static jmethodID g_candidate_ctor;  // (Ljava/lang/String;Ljava/lang/String;)V
 static jclass    g_arraylist_cls;
 static jmethodID g_arraylist_ctor;  // (I)V
 static jmethodID g_arraylist_add;   // (Ljava/lang/Object;)Z
-static jclass    g_object_cls;      // java/lang/Object, for userDictBuild's pair
+static jclass    g_object_cls;      // java/lang/Object, for userDictBuild's and lookupCodes' pairs
+static jclass    g_string_cls;      // java/lang/String, for lookupCodes' keys
 
 // Fails the library load with an UnsatisfiedLinkError saying `why`. ART swaps
 // whatever is pending for a generic "JNI_ERR returned from JNI_OnLoad", so an
@@ -101,6 +102,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
 
     g_object_cls = global_class(env, "java/lang/Object");
     if (g_object_cls == NULL) return fail_load(env, missing);
+    g_string_cls = global_class(env, "java/lang/String");
+    if (g_string_cls == NULL) return fail_load(env, missing);
 
     // This file reads libjd's structs through the hand-written jd.h, so a
     // drift between the header and the compiled library would corrupt memory
@@ -112,7 +115,9 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
         jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_NOTE) != sizeof(jd_user_dict_note) ||
         jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_INFO) != sizeof(jd_user_dict_info) ||
         jd_abi_layout(JD_ABI_USER_DICT_MAX_ENTRIES) != JD_USER_DICT_MAX_ENTRIES ||
-        jd_abi_layout(JD_ABI_USER_DICT_VALUE_MAX) != JD_USER_DICT_VALUE_MAX) {
+        jd_abi_layout(JD_ABI_USER_DICT_VALUE_MAX) != JD_USER_DICT_VALUE_MAX ||
+        jd_abi_layout(JD_ABI_SIZEOF_CODE) != sizeof(jd_code) ||
+        jd_abi_layout(JD_ABI_CODE_CAP) != JD_CODE_CAP) {
         return fail_load(env, "jd_jni: libjd's struct layout or limits differ from jd.h");
     }
 
@@ -364,6 +369,63 @@ JNIEXPORT jint JNICALL
 Java_com_hronro_jd_Jni_readChunk(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
     return (jint)READ_CHUNK;
+}
+
+// The codes UTF-8 `value` is typed with, as a two-element Object[]:
+//   [0] the keys, a String[] (ASCII, so NewStringUTF is exact);
+//   [1] an int[] of two ints per code: its candidate index, its JD_CODE_* flags.
+// Both in libjd's order. NULL with OutOfMemoryError pending when memory runs out.
+JNIEXPORT jobjectArray JNICALL
+Java_com_hronro_jd_Jni_lookupCodes(JNIEnv *env, jclass cls, jlong handle, jbyteArray value) {
+    (void)cls;
+    jd_context *c = ctx_of(handle);
+    const jsize value_len = (*env)->GetArrayLength(env, value);
+    jbyte *bytes = (*env)->GetByteArrayElements(env, value, NULL);
+    if (bytes == NULL) return NULL; // OutOfMemoryError pending
+
+    // No value in the built-in tables has more than a dozen codes; a longer
+    // list is answered with its total, so ask once more with room for it.
+    jd_code local[16];
+    jd_code *codes = local;
+    unsigned int n = jd_lookup_codes(c, (const char *)bytes, (size_t)value_len, codes, 16);
+    if (n > 16) {
+        codes = (jd_code *)malloc((size_t)n * sizeof(jd_code));
+        if (codes == NULL) {
+            (*env)->ReleaseByteArrayElements(env, value, bytes, JNI_ABORT);
+            throw_oom(env, "lookup buffer");
+            return NULL;
+        }
+        n = jd_lookup_codes(c, (const char *)bytes, (size_t)value_len, codes, n);
+    }
+    (*env)->ReleaseByteArrayElements(env, value, bytes, JNI_ABORT);
+
+    jobjectArray out = NULL;
+    jobjectArray keys = (*env)->NewObjectArray(env, (jsize)n, g_string_cls, NULL);
+    jintArray details = keys != NULL ? (*env)->NewIntArray(env, (jsize)(2 * n)) : NULL;
+    if (details != NULL) {
+        unsigned int i = 0;
+        for (; i < n; i++) {
+            // The inline keys are NUL-padded and at most JD_CODE_CAP - 1 long.
+            char z[JD_CODE_CAP + 1];
+            for (int k = 0; k < JD_CODE_CAP; k++) z[k] = codes[i].keys[k];
+            z[JD_CODE_CAP] = '\0';
+            jstring key = (*env)->NewStringUTF(env, z);
+            if (key == NULL) break;
+            (*env)->SetObjectArrayElement(env, keys, (jsize)i, key);
+            (*env)->DeleteLocalRef(env, key);
+            const jint row[2] = { (jint)codes[i].index, (jint)codes[i].flags };
+            (*env)->SetIntArrayRegion(env, details, (jsize)(2 * i), 2, row);
+        }
+        if (i == n) {
+            out = (*env)->NewObjectArray(env, 2, g_object_cls, NULL);
+            if (out != NULL) {
+                (*env)->SetObjectArrayElement(env, out, 0, keys);
+                (*env)->SetObjectArrayElement(env, out, 1, details);
+            }
+        }
+    }
+    if (codes != local) free(codes);
+    return out;
 }
 
 // ---- the user dictionary: UserDict's half of Jni ----

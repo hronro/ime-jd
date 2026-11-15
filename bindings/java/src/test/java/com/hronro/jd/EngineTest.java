@@ -30,6 +30,7 @@ class EngineTest {
         assertThrows(IllegalStateException.class, () -> e.setAnchor(0));
         assertThrows(IllegalStateException.class, e::getState);
         assertThrows(IllegalStateException.class, () -> e.readRange(0, 4));
+        assertThrows(IllegalStateException.class, () -> e.lookupCodes("的"));
     }
 
     @Test
@@ -148,6 +149,70 @@ class EngineTest {
             assertEquals(EngineState.EMPTY, a.reset());
             assertTrue(a.getState().isEmpty());
             assertTrue(b.getState().isComposing());
+        }
+    }
+
+    private static void type(Engine e, String keys) {
+        for (byte b : keys.getBytes(java.nio.charset.StandardCharsets.US_ASCII)) {
+            e.pressKey(b);
+        }
+    }
+
+    @Test
+    void lookupCodesListsEveryCodeShortestFirst() {
+        try (Engine e = new Engine()) {
+            assertEquals(
+                    List.of(new Code("d", 0, false), new Code("deuiua", 0, false), new Code("dkuiua", 0, false)),
+                    e.lookupCodes("的"));
+
+            // Each code types the value back at its index.
+            List<Code> codes = e.lookupCodes("着");
+            assertEquals(11, codes.size());
+            assertEquals(new Code("o", 1, false), codes.get(0));
+            for (Code code : codes) {
+                e.reset();
+                type(e, code.keys());
+                assertEquals("着", e.readRange(code.index(), 1).get(0).value(), code.keys());
+            }
+
+            assertTrue(e.lookupCodes("不在词库里的词").isEmpty());
+            assertTrue(e.lookupCodes("").isEmpty());
+        }
+    }
+
+    @Test
+    void lookupCodesLeavesTheCompositionAlone() {
+        try (Engine e = new Engine()) {
+            EngineState before = e.pressKey((byte) 'b');
+            e.lookupCodes("的");
+            assertEquals(before, e.getState());
+            assertEquals("不", e.pressKey((byte) ' ').commit());
+        }
+    }
+
+    @Test
+    void lookupCodesMergesTheUserDictionary() throws UserDictException {
+        // 20 codes for one phrase: more than the native side makes room for at first.
+        StringBuilder text = new StringBuilder("的\tzzzzzz\n测试词\td\n");
+        List<String> extra = new java.util.ArrayList<>();
+        for (char c = 'a'; c < 'a' + 20; c++) {
+            extra.add("zq" + c);
+            text.append("测试词\tzq").append(c).append('\n');
+        }
+        UserDict dict = UserDict.build(text.toString(), 0).dict();
+        try (Engine e = new Engine(dict)) {
+            assertEquals(
+                    List.of(
+                            new Code("d", 1, false), // 测试词 leads `d` now
+                            new Code("deuiua", 0, false),
+                            new Code("dkuiua", 0, false),
+                            new Code("zzzzzz", 0, true)),
+                    e.lookupCodes("的"));
+            List<Code> mine = e.lookupCodes("测试词");
+            assertEquals(21, mine.size());
+            assertEquals("d", mine.get(0).keys());
+            assertEquals(extra, mine.subList(1, 21).stream().map(Code::keys).toList());
+            assertTrue(mine.stream().allMatch(c -> c.user() && c.index() == 0));
         }
     }
 }

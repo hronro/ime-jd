@@ -100,6 +100,18 @@ try {
 }
 ```
 
+### Reverse lookup
+
+`lookupCodes` goes the other way — the codes a value is typed with, from the built-in tables and the engine's user dictionary, and where the value sits on each:
+
+```java
+for (Code code : engine.lookupCodes("着")) {   // o #1, fe #0, qe #0, …
+    System.out.println(code.keys() + " #" + code.index() + (code.user() ? " (mine)" : ""));
+}
+```
+
+`index` is the value's position in the candidate list after typing exactly `keys` — 0 is what space commits — and `user` marks a code from the user dictionary. Codes come in candidate order: shorter first, ties key by key, a user phrase's code ahead of a built-in word's on the same keys. It is a pure read, so it can run mid-composition.
+
 ## The native library
 
 Two shared libraries make up the native half: `libjd`, the engine, and `libjdjni`, the shim. `System.loadLibrary("jdjni")` loads the shim, whose `DT_NEEDED` pulls in `libjd`, so both must sit where the runtime looks for native libraries. Both are built per platform by whoever ships them:
@@ -112,7 +124,7 @@ The shim links the *dynamic* libjd: the static archive uses local-exec TLS reloc
 ## Design
 
 - **The native methods are all in one class.** `Jni` declares every one of them, package-private, and `javac -h` writes their C declarations into `build/generated/jni/`. Both native builds compile the shim against them with `-Werror=missing-prototypes`, so a C function whose name or types no longer match fails the build instead of the first call. At load time, `JNI_OnLoad` checks libjd's struct layout and limits against `jd.h` and finds the two classes it builds; anything amiss fails the load with an `UnsatisfiedLinkError` that says why.
-- **JNI has to copy, so it copies only what is asked for.** The Rust and Swift bindings hand out pointers into libjd's dictionary; JNI has to build JVM objects. `readRange` builds Strings for exactly the window requested, in chunks of 64 per native call, so a strip that has fetched 900 candidates but shows 9 pays for 9. A user dictionary crosses as plain arrays (the blob a `byte[]`, the report an `int[]`), and each `Engine` copies the blob into native memory of its own, because `jd_init` reads it in place for the context's whole lifetime and a JVM array can move. `UserDict` keeps its bytes to itself: `fromBlob` copies the array it is given and `getBlob` hands out a copy.
+- **JNI has to copy, so it copies only what is asked for.** The Rust and Swift bindings hand out pointers into libjd's dictionary; JNI has to build JVM objects. `readRange` builds Strings for exactly the window requested, in chunks of 64 per native call, so a strip that has fetched 900 candidates but shows 9 pays for 9. A user dictionary crosses as plain arrays (the blob a `byte[]`, the report an `int[]`), and so do `lookupCodes`' results (the keys a `String[]`, each code's index and flags an `int[]`), which the Java side turns into `Code` records, and each `Engine` copies the blob into native memory of its own, because `jd_init` reads it in place for the context's whole lifetime and a JVM array can move. `UserDict` keeps its bytes to itself: `fromBlob` copies the array it is given and `getBlob` hands out a copy.
 - **Shrinking needs no rules from the app.** `EngineState` and `Candidate` are constructed from C, a reference R8 cannot see. `META-INF/proguard/jd.pro` in the jar keeps their names and constructors, and the names of `Jni`'s natives, and R8 reads it from the dependency on its own. It must stay in step with the `FindClass` calls in `jd_jni.c`.
 - **Java 17's language, Android 7's library.** Records compile down to Android's minimum (D8 desugars them), but the JDK *classes* the binding calls must exist on API 24: no `List.of` (API 30), no `java.lang.ref.Cleaner` (API 33). That is also why an `Engine` is closed explicitly rather than cleaned up behind your back.
 - **Errors are values or one checked exception.** What the build says about individual lines comes back in the report; `UserDictException` is only for a call that failed as a whole.
@@ -123,4 +135,4 @@ The shim links the *dynamic* libjd: the static archive uses local-exec TLS reloc
 ./gradlew test
 ```
 
-The tests run on the JVM running Gradle, under HotSpot's JNI checker (`-Xcheck:jni`), against libjd and the shim built for this machine; no emulator. They cover the engine wrapper (use after close, chunked reads, the anchor's independence from reads, literal appends, hints, results as values) and the user dictionary (merge order, user-only codes, notes, the caps, cached blobs). The build needs [`zig`](https://ziglang.org) 0.17.0, and a JDK that Gradle 8.11 runs on (17 to 23). The shim compiles against the `jni.h` of `JAVA_HOME`, or of the `java` on PATH; set `JNI_INCLUDE` to a JDK's `include/` directory if neither has one (Android Studio's bundled JBR does not).
+The tests run on the JVM running Gradle, under HotSpot's JNI checker (`-Xcheck:jni`), against libjd and the shim built for this machine; no emulator. They cover the engine wrapper (use after close, chunked reads, the anchor's independence from reads, literal appends, hints, results as values, reverse lookup) and the user dictionary (merge order, user-only codes, notes, the caps, cached blobs). The build needs [`zig`](https://ziglang.org) 0.17.0, and a JDK that Gradle 8.11 runs on (17 to 23). The shim compiles against the `jni.h` of `JAVA_HOME`, or of the `java` on PATH; set `JNI_INCLUDE` to a JDK's `include/` directory if neither has one (Android Studio's bundled JBR does not).

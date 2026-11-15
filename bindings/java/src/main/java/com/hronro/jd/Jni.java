@@ -51,6 +51,13 @@ final class Jni {
     /** The most candidates one {@link #readRange} returns. */
     static native int readChunk();
 
+    /**
+     * The codes UTF-8 {@code value} is typed with, in candidate order: {keys,
+     * details}. The keys are a String[]; the details an int[] of two ints per
+     * code, its candidate index and its JD_CODE_* flags.
+     */
+    static native Object[] lookupCodes(long handle, byte[] value);
+
     /** A cached blob, validated exactly as jd_init would: {status, entries, source tag}. */
     static native long[] userDictCheck(byte[] blob);
 
