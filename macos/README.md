@@ -66,7 +66,7 @@ Implementation: `JdIME/UserDict/` — `UserDictLocation.swift` (only the file's 
 
 ## Code lookup
 
-**编码反查…** in the Input menu answers the reverse question: which codes type a word. It opens a small window in the IME process (so the word can be typed there with 键道, or pasted with ⌘V); **查询** shows the word's codes in a sheet, shortest first. Where the word is not the first candidate on a code, the line says which candidate it is (`o（第 2 个候选）`); a code from the user dictionary is marked `自造词`. The lookup reads the same dictionaries the IME types with — the user dictionary only while **启用用户自造词** is on — through libjd's `jd_lookup_codes`, so its candidate numbers count the user's phrases that lead a code. Implementation: `JdIME/Lookup/` (`CodeLookupReport.swift` words the result and is covered by `JdIMETests/CodeLookupReportTests.swift`).
+**编码反查…** in the Input menu answers the reverse question: which codes type a word. It opens a small window in the IME process (so the word can be typed there with 键道, or pasted with ⌘V); **查询** shows the word's codes in a sheet, shortest first. Where the word is not the first candidate on a code, the line says which candidate it is (`o（第 2 个候选）`); a code from the user dictionary is marked `自造词`. The lookup reads the same dictionaries the IME types with — the user dictionary only while **启用用户自造词** is on — through libjd's `jd_lookup_codes`, so its candidate numbers count the user's phrases that lead a code. Implementation: `JdIME/Lookup/`; the wording is `bindings/swift/CodeLookupReport.swift`, shared with the iOS app and covered here by `JdIMETests/CodeLookupReportTests.swift`.
 
 ## Uninstall
 

@@ -121,7 +121,7 @@ final class CodeLookupWindowController: NSWindowController, NSWindowDelegate, NS
 
         let alert = NSAlert()
         alert.messageText = report.title
-        alert.informativeText = report.body
+        alert.informativeText = report.text
         alert.addButton(withTitle: "好")
         alert.beginSheetModal(for: window) { [weak self] _ in
             self?.focusField()

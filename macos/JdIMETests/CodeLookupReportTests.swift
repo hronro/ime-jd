@@ -1,20 +1,21 @@
 import XCTest
 @testable import JdIME
 
-/// 编码反查's wording, over codes from the real engine.
+/// 编码反查's wording as the macOS window shows it — `CodeLookupReport.text`
+/// — over codes from the real engine.
 final class CodeLookupReportTests: XCTestCase {
     func testEveryCodeIsListedAndALaterCandidateSaysWhichItIs() {
         let report = CodeLookupReport(query: "着", codes: Engine().lookupCodes("着"), userDictEnabled: false)
         XCTAssertTrue(report.found)
         XCTAssertEqual(report.title, "「着」的编码")
-        let lines = report.body.components(separatedBy: "\n")
+        let lines = report.text.components(separatedBy: "\n")
         XCTAssertEqual(lines.first, "o（第 2 个候选）")
         XCTAssertEqual(Array(lines[1...]), ["fe", "qe", "flo", "fzou", "qzou", "feouia", "flouia", "fzouia", "qeouia", "qzouia"])
     }
 
     func testACodeWhereTheWordComesFirstStandsAlone() {
         let report = CodeLookupReport(query: "的", codes: Engine().lookupCodes("的"), userDictEnabled: false)
-        XCTAssertEqual(report.body, "d\ndeuiua\ndkuiua")
+        XCTAssertEqual(report.text, "d\ndeuiua\ndkuiua")
     }
 
     func testUserPhrasesAreMarkedAndCountTowardTheCandidateNumber() throws {
@@ -22,20 +23,20 @@ final class CodeLookupReportTests: XCTestCase {
         let engine = Engine(userDict: dict)
         let report = CodeLookupReport(query: "的", codes: engine.lookupCodes("的"), userDictEnabled: true)
         XCTAssertEqual(
-            report.body,
+            report.text,
             "d（第 2 个候选）\ndeuiua\ndkuiua\nzzzzzz（自造词）"
         )
         let mine = CodeLookupReport(query: "测试词", codes: engine.lookupCodes("测试词"), userDictEnabled: true)
-        XCTAssertEqual(mine.body, "d（自造词）")
+        XCTAssertEqual(mine.text, "d（自造词）")
     }
 
     func testNotFoundSaysWhereItLooked() {
         let enabled = CodeLookupReport(query: "不在词库里的词", codes: [], userDictEnabled: true)
         XCTAssertFalse(enabled.found)
         XCTAssertEqual(enabled.title, "没有找到「不在词库里的词」")
-        XCTAssertEqual(enabled.body, "内置词库和用户自造词中都没有这个词。")
+        XCTAssertEqual(enabled.text, "内置词库和用户自造词中都没有这个词。")
         let disabled = CodeLookupReport(query: "词", codes: [], userDictEnabled: false)
-        XCTAssertEqual(disabled.body, "内置词库中没有这个词。用户自造词未启用，不在查询范围内。")
+        XCTAssertEqual(disabled.text, "内置词库中没有这个词。用户自造词未启用，不在查询范围内。")
     }
 
     func testALongQueryIsCutShortInTheTitle() {
