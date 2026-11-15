@@ -1,6 +1,6 @@
 # 键道输入法 for Windows
 
-Rust implementation of 键道输入法 as a Windows TSF Text Input Processor. Like Windows' own Chinese IMEs it has a 中 and an 英 mode, switched with Shift — see [中 and 英](#中-and-英). Besides the built-in dictionary it carries the user's own phrases, edited in a small window of their own — see [User dictionary](#user-dictionary) — and keeps its settings in the menu of its mode icon in the taskbar — see [Mode icon](#mode-icon).
+Rust implementation of 键道输入法 as a Windows TSF Text Input Processor. Like Windows' own Chinese IMEs it has a 中 and an 英 mode, switched with Shift — see [中 and 英](#中-and-英). Besides the built-in dictionary it carries the user's own phrases, edited in a small window of their own — see [User dictionary](#user-dictionary) — and keeps its settings in the menu of its mode icon in the taskbar — see [Mode icon](#mode-icon) — where it also looks up which codes type a word — see [Code lookup](#code-lookup).
 
 ## Requirements
 
@@ -66,7 +66,7 @@ Windows loads an IME into each application in the application's own architecture
 
 Right-click `unregister.bat` → **Run as administrator**.
 
-The script unregisters the COM/TSF entries, removes the Start menu entry, and tries to delete `C:\Program Files\ime-jd\` and its contents. If a host process (Explorer, browser, editor, etc.) still has a DLL mapped, or the user-dictionary window is open, the file delete fails for that copy and the directory stays. Sign out and back in (or reboot) to release the DLLs, then re-run the script or delete the folder by hand. Each user's phrases, in `%APPDATA%\ime-jd\`, are left alone.
+The script unregisters the COM/TSF entries, removes the Start menu entry, and tries to delete `C:\Program Files\ime-jd\` and its contents. If a host process (Explorer, browser, editor, etc.) still has a DLL mapped, or the user-dictionary window or the 编码反查 dialog is open, the file delete fails for that copy and the directory stays. Sign out and back in (or reboot) to release the DLLs, then re-run the script or delete the folder by hand. Each user's phrases, in `%APPDATA%\ime-jd\`, are left alone.
 
 ## Loader
 
@@ -126,11 +126,12 @@ TSF hands the IME a key in one of two ways, and the switch works by either. An a
 
 While 键道 is the input method of the window in front, Windows shows the IME's mode icon in the taskbar, left of the input indicator — where Windows' own IMEs show their mode and keep their settings. It shows the [input mode](#中-and-英), 中 or 英, drawn in the taskbar's own glyph colour (white on a dark taskbar, black on a light one, the theme's text colour in high contrast) at the taskbar's scale, and redrawn when the mode, the theme or the scale changes. Its size is the one Microsoft's IME requirements give: 16 pixels at 100% in the taskbar, and 20 on the secure desktop — a UAC prompt, the sign-in screen — whose input indicator takes a larger icon. A left click switches the mode, as Shift does; a right click opens the menu:
 
+- **编码反查...** opens the [code lookup](#code-lookup).
 - **用户自造词...** opens the [user-dictionary window](#user-dictionary).
 - **启用用户自造词** is the user dictionary's switch.
 - **自动检查更新** is the [update check](#updates)'s switch.
 
-The menu belongs to the application in front, which keeps the focus, but an application is not always a place to change settings from: a packaged app (the new Notepad, Terminal) has its registry writes redirected into a private copy no other application reads, and a sandboxed one may write nothing. So the IME only reads the settings there. Each item starts `ime_jd_userdict.exe` instead — the window, or `--user-dict on|off` / `--check-updates on|off`, which set one switch and exit — and what a packaged app starts runs outside its package, as an ordinary process of the user's. A sandboxed app (a Store app, the Start menu's search box) is the exception: what it starts stays in its sandbox, and Microsoft's IME requirements treat an IME that gets around that as malware. There the menu does not open — the window in front belongs to another process — and the settings are a click away in any desktop application. Nor does the menu open from the keyboard (Win+B and the arrow keys reach the icon, but leave the taskbar in front); the window, with the user dictionary's switch, is in the Start menu.
+The menu belongs to the application in front, which keeps the focus, but an application is not always a place to change settings from: a packaged app (the new Notepad, Terminal) has its registry writes redirected into a private copy no other application reads, and a sandboxed one may write nothing. So the IME only reads the settings there. Each item starts `ime_jd_userdict.exe` instead — the window, `--lookup` for the code lookup, or `--user-dict on|off` / `--check-updates on|off`, which set one switch and exit — and what a packaged app starts runs outside its package, as an ordinary process of the user's. A sandboxed app (a Store app, the Start menu's search box) is the exception: what it starts stays in its sandbox, and Microsoft's IME requirements treat an IME that gets around that as malware. There the menu does not open — the window in front belongs to another process — and the settings are a click away in any desktop application. Nor does the menu open from the keyboard (Win+B and the arrow keys reach the icon, but leave the taskbar in front); the window, with the user dictionary's switch, is in the Start menu.
 
 Implementation: `src/mode_icon.rs` (the TSF language-bar item under `GUID_LBI_INPUTMODE`, its icon and its menu; the TIP registers `GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT` for it) and `src/settings.rs` (what the menu reads, and how it has the helper change it).
 
@@ -154,7 +155,13 @@ The user's own phrases (用户自造词) are merged into every candidate list on
 - Enter or a double-click edits a phrase, Delete deletes, Ctrl+A selects everything, Alt plus an underlined letter presses that button, Esc closes, and the context menu carries the row commands.
 - `ime_jd_userdict.exe --file <path>` opens the window on another file, for trying it out: it grants nothing and remembers no placement, but the switch is still the real one.
 
-Implementation: `userdict/` (package `jd-userdict`). Its library is shared with the DLL — `file.rs` (the location, the line format, atomic writes, the change stamp), `switch.rs` (the registry switches, the update check's too) and `access.rs` (the sandbox grants). Its binary is the window, `src/window/`: `mod.rs` (the dialog, from `userdict.rc`), `entry.rs` (the 新建/编辑 dialog), `table.rs` (the phrase list and its operations), `store.rs` (reading, building and writing the file), `problem.rs` (the engine's verdict on a line, in the words every client uses) and `watch.rs` (the watcher on the folder and on the switches). On the DLL's side, `src/user_dict.rs` loads and reloads the dictionary, and `jd.rs` swaps a thread's engine for one over the new dictionary when nothing is composing. `cargo test` covers the format, the switches, the grants, the list operations against temporary files, the DLL's loading, and the mode icon's drawing.
+Implementation: `userdict/` (package `jd-userdict`). Its library is shared with the DLL — `file.rs` (the location, the line format, atomic writes, the change stamp), `switch.rs` (the registry switches, the update check's too) and `access.rs` (the sandbox grants). Its binary is the window, `src/window/`: `mod.rs` (the dialog, from `userdict.rc`), `entry.rs` (the 新建/编辑 dialog), `table.rs` (the phrase list and its operations), `store.rs` (reading, building and writing the file), `problem.rs` (the engine's verdict on a line, in the words every client uses) and `watch.rs` (the watcher on the folder and on the switches). On the DLL's side, `src/user_dict.rs` loads and reloads the dictionary, and `jd.rs` swaps a thread's engine for one over the new dictionary when nothing is composing. `cargo test` covers the format, the switches, the grants, the list operations against temporary files, the DLL's loading, the mode icon's drawing, and the code lookup's answers.
+
+## Code lookup
+
+**编码反查...** in the [mode icon](#mode-icon)'s menu answers the reverse question: which codes type a word. It opens a small dialog, where the word can be typed with 键道 itself or pasted; **查询** (or Enter) answers in a message box over it, one code per line, shortest first. Where the word is not the first candidate on a code, the line says which candidate it is (`o（第 2 个候选）`); a code from the user dictionary is marked `自造词`. When nothing types the word, the answer says whether the user's phrases were searched too. Closing the answer leaves the word selected, so the next one replaces it. While a code is being typed in the field, Enter and Esc are the IME's, as everywhere: they put the letters in as they are or drop them, and look nothing up.
+
+The dialog is `ime_jd_userdict.exe --lookup`, a desktop process like the menu's other items, so it opens from a packaged app too; starting it again brings the open one forward. It reads what the IME types with — the built-in dictionary and, while **启用用户自造词** is on, the phrases file, read afresh for every query — through `libjd`'s `jd_lookup_codes`, so its candidate numbers count the user's phrases that lead a code. A file that cannot be loaded at all is left out (the applications keep typing with the one they loaded last). Implementation: `userdict/src/lookup/` — `mod.rs` the dialog (`IDD_LOOKUP` in `userdict.rc`), `report.rs` the answer's wording, tested over the real engine.
 
 ## Keys in 中
 
@@ -238,7 +245,8 @@ windows/
                       phrases file, the switches, the sandbox grants) and the
                       键道用户自造词 window (ime_jd_userdict.exe, src/window/,
                       dialogs in userdict.rc), which also sets the switches
-                      for the mode icon's menu
+                      for the mode icon's menu and is its 编码反查 dialog
+                      (--lookup, src/lookup/)
   loader/             ime_jd.dll and ime_jd_x86.dll: the DLL that is
                       registered, in front of the IME's own, which it
                       replaces with a newer installation's while

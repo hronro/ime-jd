@@ -27,7 +27,7 @@
 
 mod entry;
 mod problem;
-mod prompt;
+pub(crate) mod prompt;
 mod store;
 mod table;
 mod watch;
@@ -173,9 +173,32 @@ thread_local! {
     static WINDOW: RefCell<Option<Rc<Window>>> = const { RefCell::new(None) };
 }
 
-pub(super) fn instance() -> HINSTANCE {
+pub(crate) fn instance() -> HINSTANCE {
     // SAFETY: the module handle of this executable.
     unsafe { GetModuleHandleW(None) }.map(Into::into).unwrap_or_default()
+}
+
+/// Register `class`, the window class a dialog template names: a dialog's,
+/// carrying the seal for the title bar and the taskbar.
+pub(crate) fn register_dialog_class(class: PCWSTR) -> Result<()> {
+    // SAFETY: class registration on this thread.
+    unsafe {
+        // The seal, embedded by build.rs as icon 1.
+        let icon = LoadIconW(Some(instance()), PCWSTR(1 as _)).unwrap_or_default();
+        let class = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(dialog_class_proc),
+            cbWndExtra: DLGWINDOWEXTRA as i32,
+            hInstance: instance(),
+            hIcon: icon,
+            hIconSm: icon,
+            hCursor: LoadCursorW(None, IDC_ARROW)?,
+            lpszClassName: class,
+            ..Default::default()
+        };
+        RegisterClassExW(&class);
+    }
+    Ok(())
 }
 
 /// Bring an open window forward. Returns whether there was one.
@@ -202,21 +225,7 @@ pub fn run(path: PathBuf, remember_placement: bool) -> Result<()> {
             dwICC: ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES,
         };
         let _ = InitCommonControlsEx(&controls);
-
-        // The seal, embedded by build.rs as icon 1.
-        let icon = LoadIconW(Some(instance()), PCWSTR(1 as _)).unwrap_or_default();
-        let class = WNDCLASSEXW {
-            cbSize: size_of::<WNDCLASSEXW>() as u32,
-            lpfnWndProc: Some(dialog_class_proc),
-            cbWndExtra: DLGWINDOWEXTRA as i32,
-            hInstance: instance(),
-            hIcon: icon,
-            hIconSm: icon,
-            hCursor: LoadCursorW(None, IDC_ARROW)?,
-            lpszClassName: CLASS,
-            ..Default::default()
-        };
-        RegisterClassExW(&class);
+        register_dialog_class(CLASS)?;
 
         LAUNCH.with(|launch| {
             *launch.borrow_mut() = Some(Launch {
@@ -1220,7 +1229,7 @@ fn high_contrast() -> bool {
     }
 }
 
-pub(super) fn window_text(hwnd: HWND) -> String {
+pub(crate) fn window_text(hwnd: HWND) -> String {
     // SAFETY: the buffer's length is passed along with it.
     unsafe {
         let len = GetWindowTextLengthW(hwnd).max(0) as usize;

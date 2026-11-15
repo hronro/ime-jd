@@ -1,6 +1,6 @@
 //! The window's questions and notices, as task dialogs: the system's own
 //! message box, with a main instruction, a body, and buttons named for what
-//! they do.
+//! they do. 编码反查 answers in one too, under its own title.
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Controls::{
@@ -29,6 +29,18 @@ pub enum Icon {
 /// Returns the id chosen — [`CANCEL`] when the dialog is dismissed, or
 /// could not be shown at all.
 pub fn ask(owner: HWND, icon: Icon, instruction: &str, content: &str, buttons: &[(i32, &str)]) -> i32 {
+    ask_as(TITLE, owner, icon, instruction, content, buttons)
+}
+
+/// [`ask`], under `title` rather than the user dictionary's.
+fn ask_as(
+    title: &str,
+    owner: HWND,
+    icon: Icon,
+    instruction: &str,
+    content: &str,
+    buttons: &[(i32, &str)],
+) -> i32 {
     let labels: Vec<HSTRING> = buttons.iter().map(|&(_, label)| HSTRING::from(label)).collect();
     let buttons: Vec<TASKDIALOG_BUTTON> = buttons
         .iter()
@@ -38,7 +50,7 @@ pub fn ask(owner: HWND, icon: Icon, instruction: &str, content: &str, buttons: &
             pszButtonText: PCWSTR(label.as_ptr()),
         })
         .collect();
-    let title = HSTRING::from(TITLE);
+    let title = HSTRING::from(title);
     let instruction = HSTRING::from(instruction);
     let content = HSTRING::from(content);
     let config = TASKDIALOGCONFIG {
@@ -71,4 +83,9 @@ pub fn ask(owner: HWND, icon: Icon, instruction: &str, content: &str, buttons: &
 /// A notice with a single 好.
 pub fn tell(owner: HWND, icon: Icon, instruction: &str, content: &str) {
     ask(owner, icon, instruction, content, &[(OK, "好")]);
+}
+
+/// [`tell`], under `title` rather than the user dictionary's.
+pub fn tell_as(title: &str, owner: HWND, icon: Icon, instruction: &str, content: &str) {
+    ask_as(title, owner, icon, instruction, content, &[(OK, "好")]);
 }

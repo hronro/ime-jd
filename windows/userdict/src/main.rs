@@ -7,13 +7,15 @@
 //! That menu changes the IME's switches through it too: `--user-dict on|off`
 //! and `--check-updates on|off` set one and exit, so the change is made by a
 //! desktop process of the user's own, whichever application the menu was
-//! opened from (windows/src/settings.rs).
+//! opened from (windows/src/settings.rs). And its 编码反查 is `--lookup`, a
+//! dialog of its own (lookup/), which a second start brings forward too.
 //!
 //! `--file <path>` edits that file instead of the user's own, to try the
 //! window out — screenshots, QA — without touching the real phrases: such a
 //! window grants nothing, remembers no placement and stands beside one
 //! already open. The switch is the user's either way.
 
+mod lookup;
 mod window;
 
 use std::ffi::{OsStr, OsString};
@@ -34,6 +36,14 @@ fn main() {
         [flag, path] if flag == "--file" => Some(PathBuf::from(path)),
         [flag, state] if flag == "--user-dict" || flag == "--check-updates" => {
             set_switch(flag, state);
+            return;
+        }
+        [flag] if flag == "--lookup" => {
+            if !lookup::activate_existing()
+                && let Err(error) = lookup::run()
+            {
+                lookup::report_startup_failure(&error.message());
+            }
             return;
         }
         _ => None,

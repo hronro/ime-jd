@@ -10,7 +10,7 @@ edition = "2024"
 [lib]
 name = "jd_userdict"
 
-# The 用户自造词 window.
+# The 用户自造词 window, and the 编码反查 dialog (--lookup).
 [[bin]]
 name = "ime_jd_userdict"
 path = "src/main.rs"

@@ -1,12 +1,13 @@
 //! The IME's settings, as the menu of its mode icon (mode_icon.rs) shows and
 //! changes them: the user dictionary — its window and its switch — and the
-//! daily update check (jd_userdict::switch keeps both switches).
+//! daily update check (jd_userdict::switch keeps both switches); and the
+//! menu's 编码反查.
 //!
 //! The menu runs in whichever application is in front, and the IME reads the
 //! switches there but writes them nowhere: a packaged application (the new
 //! Notepad, Terminal) has its registry writes redirected into a private copy
 //! of the key that no other application reads. Every item starts
-//! `ime_jd_userdict.exe`, beside this DLL, instead — the window, or its
+//! `ime_jd_userdict.exe`, beside this DLL, instead — a window of its, or its
 //! command line that sets one switch — and what a packaged application
 //! starts runs outside the package, as an ordinary process of the user's.
 //!
@@ -50,6 +51,11 @@ pub fn current() -> Settings {
 
 pub fn open_user_dict_window() {
     start_helper("");
+}
+
+/// 编码反查: the helper's dialog that looks up a word's codes.
+pub fn open_code_lookup() {
+    start_helper("--lookup");
 }
 
 pub fn set_user_dict(on: bool) {

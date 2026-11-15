@@ -10,7 +10,7 @@
 //! way Windows draws its own tray glyphs, and drawn again when the mode, the
 //! theme or the scale changes. A click on it reaches the IME in the
 //! application in front, whose window keeps the focus. A left click switches
-//! the mode, as Shift does; a right click opens the menu — the user
+//! the mode, as Shift does; a right click opens the menu — 编码反查, the user
 //! dictionary's window and switch, and the daily update check (settings.rs).
 //! In a Store app the menu does not open — the window in front belongs to
 //! another process — and a sandbox could change none of it anyway
@@ -92,9 +92,10 @@ const ENGLISH_TOOLTIP: &str = "英文模式（Shift 切换）";
 const OWNER_CLASS: PCWSTR = w!("JdImeModeIconOwner");
 
 // The menu's items.
-const ITEM_USER_DICT_WINDOW: u32 = 1;
-const ITEM_USER_DICT: u32 = 2;
-const ITEM_UPDATE_CHECKS: u32 = 3;
+const ITEM_CODE_LOOKUP: u32 = 1;
+const ITEM_USER_DICT_WINDOW: u32 = 2;
+const ITEM_USER_DICT: u32 = 3;
+const ITEM_UPDATE_CHECKS: u32 = 4;
 
 /// The one connection `ITfSource` hands out: TSF's sink for this item.
 const SINK_COOKIE: u32 = 1;
@@ -318,6 +319,13 @@ fn show_menu(secure: bool, at: POINT) {
         let _ = AppendMenuW(
             menu,
             flags(false),
+            ITEM_CODE_LOOKUP as usize,
+            w!("编码反查(&L)..."),
+        );
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(
+            menu,
+            flags(false),
             ITEM_USER_DICT_WINDOW as usize,
             w!("用户自造词(&U)..."),
         );
@@ -363,6 +371,7 @@ fn show_menu(secure: bool, at: POINT) {
         chosen.0 as u32
     };
     match chosen {
+        ITEM_CODE_LOOKUP => settings::open_code_lookup(),
         ITEM_USER_DICT_WINDOW => settings::open_user_dict_window(),
         ITEM_USER_DICT => settings::set_user_dict(!current.user_dict),
         ITEM_UPDATE_CHECKS => settings::set_update_checks(!current.update_checks),
