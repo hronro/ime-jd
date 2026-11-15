@@ -64,6 +64,10 @@ The user's own phrases (用户自造词) are merged into every candidate list on
 
 Implementation: `JdIME/UserDict/` — `UserDictLocation.swift` (only the file's location: the format — lenient line parsing for display, serialization, hashing — is shared source at `bindings/swift/UserDictFile.swift`, as is `bindings/swift/UserDictProblem.swift`, the engine's per-row verdict with its status text, which the window maps onto its rows by line), `UserDictStore.swift` (load, build, watch, the toggle, last-good fallback) and `UserDictWindowController.swift` (the window, which maps the build's notes onto its rows by line); the engine-side wrapper is `bindings/swift/UserDict.swift`, and `InputController.syncEngine()` is where a session adopts a changed dictionary. Tests: `JdIMETests/UserDictTests.swift` (the wrapper, against the real engine), `UserDictFileTests.swift`, `UserDictStoreTests.swift` (including the file watcher) and `UserDictWindowTests.swift` (the window's model operations against a visible window).
 
+## Code lookup
+
+**编码反查…** in the Input menu answers the reverse question: which codes type a word. It opens a small window in the IME process (so the word can be typed there with 键道, or pasted with ⌘V); **查询** shows the word's codes in a sheet, shortest first. Where the word is not the first candidate on a code, the line says which candidate it is (`o（第 2 个候选）`); a code from the user dictionary is marked `自造词`. The lookup reads the same dictionaries the IME types with — the user dictionary only while **启用用户自造词** is on — through libjd's `jd_lookup_codes`, so its candidate numbers count the user's phrases that lead a code. Implementation: `JdIME/Lookup/` (`CodeLookupReport.swift` words the result and is covered by `JdIMETests/CodeLookupReportTests.swift`).
+
 ## Uninstall
 
 1. Remove **键道** from the input-source list: **System Settings** → **Keyboard** → **Edit…** next to *Input Sources*, select **键道**, then press **−**.
@@ -91,4 +95,4 @@ xcodebuild \
     test
 ```
 
-Tests cover the engine's FFI smoke contract (reverse lookup included) and the user-dictionary wrapper (both mirroring `bindings/rust/tests/engine.rs`), every branch of the `NSEvent → KeyAction` gate, the update feed model, the user-dictionary file and store, and the candidate panel's lifetime (`IMKServer` keeps an unretained pointer to the newest `IMKCandidates`, so the IME must own exactly one, for the whole process). The engine wrapper under test (`Engine` / `Candidate` / `UserDict` / `KeyAction`) is shared source at `bindings/swift/`, compiled into both this project and `ios/`.
+Tests cover the engine's FFI smoke contract (reverse lookup included), the code lookup's wording, and the user-dictionary wrapper (both mirroring `bindings/rust/tests/engine.rs`), every branch of the `NSEvent → KeyAction` gate, the update feed model, the user-dictionary file and store, and the candidate panel's lifetime (`IMKServer` keeps an unretained pointer to the newest `IMKCandidates`, so the IME must own exactly one, for the whole process). The engine wrapper under test (`Engine` / `Candidate` / `UserDict` / `KeyAction`) is shared source at `bindings/swift/`, compiled into both this project and `ios/`.

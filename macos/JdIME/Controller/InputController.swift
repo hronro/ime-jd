@@ -83,8 +83,8 @@ final class InputController: IMKInputController {
     /// dropdown). IMK asks for this every time the menu opens, so the items
     /// can reflect live state: the version, an update the daily check found,
     /// a check or download in flight, the auto-check toggle, and the user
-    /// dictionary's toggle and status. Items with a nil action are the
-    /// disabled status lines.
+    /// dictionary's toggle and status. 编码反查 sits in a group of its own.
+    /// Items with a nil action are the disabled status lines.
     override func menu() -> NSMenu! {
         let updates = UpdateManager.shared
         let menu = NSMenu(title: "键道")
@@ -108,6 +108,9 @@ final class InputController: IMKInputController {
         let autoCheck = menuItem("自动检查更新", #selector(toggleAutoCheck(_:)))
         autoCheck.state = updates.isAutoCheckEnabled ? .on : .off
         menu.addItem(autoCheck)
+
+        menu.addItem(.separator())
+        menu.addItem(menuItem("编码反查…", #selector(openCodeLookup(_:))))
 
         menu.addItem(.separator())
         let store = UserDictStore.shared
@@ -148,6 +151,10 @@ final class InputController: IMKInputController {
 
     @objc private func openUserDictWindow(_ sender: Any?) {
         UserDictWindowController.shared.show()
+    }
+
+    @objc private func openCodeLookup(_ sender: Any?) {
+        CodeLookupWindowController.shared.show()
     }
 
     // MARK: - User dictionary
