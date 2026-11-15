@@ -30,8 +30,17 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let root: UIViewController = CommandLine.arguments.contains("-preview")
             ? KeyboardPreviewViewController()
             : RootViewController()
+        let navigation = UINavigationController(rootViewController: root)
+        // `-lookup <word>` QA launch arg: open 编码反查 on top of the guide
+        // with the word already looked up, for screenshots with no taps.
+        if let i = CommandLine.arguments.firstIndex(of: "-lookup"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            navigation.pushViewController(
+                CodeLookupViewController(query: CommandLine.arguments[i + 1]), animated: false
+            )
+        }
         let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = UINavigationController(rootViewController: root)
+        window.rootViewController = navigation
         window.makeKeyAndVisible()
         self.window = window
     }

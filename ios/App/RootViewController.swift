@@ -25,8 +25,9 @@ final class RootViewController: UIViewController {
         let note = makeFullAccessNote()
         let openSettings = makeOpenSettingsButton()
         let userDict = makeUserDictButton()
+        let codeLookup = makeCodeLookupButton()
 
-        let content = UIStackView(arrangedSubviews: [hero, header, stepsCard, note, openSettings, userDict])
+        let content = UIStackView(arrangedSubviews: [hero, header, stepsCard, note, openSettings, userDict, codeLookup])
         content.axis = .vertical
         content.spacing = 16
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -35,6 +36,7 @@ final class RootViewController: UIViewController {
         content.setCustomSpacing(12, after: stepsCard)   // card → reassurance note
         content.setCustomSpacing(24, after: note)        // note → primary button
         content.setCustomSpacing(12, after: openSettings) // primary → user dictionary
+        content.setCustomSpacing(12, after: userDict)     // user dictionary → code lookup
         scrollView.addSubview(content)
 
         let bottomBar = makeBottomBar()
@@ -76,6 +78,10 @@ final class RootViewController: UIViewController {
 
     private func openUserDict() {
         navigationController?.pushViewController(UserDictListViewController(), animated: true)
+    }
+
+    private func openCodeLookup() {
+        navigationController?.pushViewController(CodeLookupViewController(), animated: true)
     }
 
     // MARK: - Hero
@@ -212,6 +218,12 @@ final class RootViewController: UIViewController {
     private func makeUserDictButton() -> UIView {
         let button = makeButton(title: "用户自造词", prominent: false, systemImage: "character.book.closed")
         button.onTap { [weak self] in self?.openUserDict() }
+        return button
+    }
+
+    private func makeCodeLookupButton() -> UIView {
+        let button = makeButton(title: "编码反查", prominent: false, systemImage: "text.magnifyingglass")
+        button.onTap { [weak self] in self?.openCodeLookup() }
         return button
     }
 

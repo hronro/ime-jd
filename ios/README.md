@@ -7,7 +7,7 @@ A native iOS **custom keyboard extension** for the 键道 (jd) input method, bui
 ```
 ios/
   project.yml                 # XcodeGen spec (source of truth; .xcodeproj is gitignored)
-  App/                        # container app (instructions, in-app keyboard preview, the user-dictionary list)
+  App/                        # container app (instructions, in-app keyboard preview, the user-dictionary list, 编码反查)
     UserDict/                 # UserDictStore — the app's side of the user dictionary (no UIKit; tested hostless)
     JdIME.entitlements        # the App Group the user dictionary is handed over through
   Keyboard/
@@ -67,6 +67,10 @@ This split is what the platform allows, verified on an iPhone 16 Pro Max running
 
 Implementation: `App/UserDict/UserDictStore.swift` (the writer: file, blob, switch, per-row verdicts, the import's reader and checked save, the export copy, the duplicates' removal), `App/UserDictListViewController.swift` (the screen, the picker and the share sheet), `Keyboard/Engine/UserDictContainer.swift` (paths, the switch, the keyboard's loader and change stamp), `InputSession.init(userDict:)` / `replaceDictionary`, and `KeyboardViewController.syncUserDict`. Tests: `KeyboardTests/UserDictContainerTests.swift`, `UserDictStoreTests.swift` and the user-dictionary cases in `InputSessionTests.swift`.
 
+## Code lookup
+
+编码反查 in the container app answers the reverse question: which codes type a word. Its page has a field and a 查询 button at the top — the word is typed, with 键道 or any keyboard, or pasted — and lists the word's codes below, shortest first. Where the word is not the first candidate on a code, the row says which candidate it is (第 2 个候选); a code from the user dictionary says 自造词. The lookup reads the dictionaries the keyboard types with — the user dictionary only while it is switched on — through libjd's `jd_lookup_codes`, so its candidate numbers count the user's phrases that lead a code. A word with no codes says so, and whether the user dictionary was searched. The wording is `bindings/swift/CodeLookupReport.swift`, shared with the macOS client; the page is `App/CodeLookupViewController.swift`; tests: `KeyboardTests/CodeLookupReportTests.swift`.
+
 ## Tests
 
 ```sh
@@ -74,7 +78,7 @@ xcodebuild -project JdIME-iOS.xcodeproj -scheme JdIME-iOS \
   -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 18 Pro' test
 ```
 
-`KeyboardTests` covers the `InputSession` dispatch core (composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, a user dictionary's phrases and swapping it), `KeyboardTheme` resolution (style gate, appearance, return-key tinting), and the user dictionary's store and hand-off (`UserDictStoreTests`, `UserDictContainerTests`) against a temporary directory standing in for the App Group container.
+`KeyboardTests` covers the `InputSession` dispatch core (composition never leaks to the host, punctuation commits, candidate selection, backspace semantics, space-commits-top, a user dictionary's phrases and swapping it), `KeyboardTheme` resolution (style gate, appearance, return-key tinting), the user dictionary's store and hand-off (`UserDictStoreTests`, `UserDictContainerTests`) against a temporary directory standing in for the App Group container, and 编码反查's wording over the real engine (`CodeLookupReportTests`).
 
 ### QA launch args (in-app preview)
 
@@ -90,6 +94,7 @@ The container app's preview screen takes launch args for screenshot-driven QA (`
 - `-field numbersAndPunctuation` — give the field that `UIKeyboardType` (case name): the preview opens on the plane the type asks for, and under `-system` so does the real extension (for the types iOS reserves for its own pads / keyboard — see the architecture note — `-system` shows what the user gets instead)
 - `-return search` — give the field that `UIReturnKeyType` (case name), to see the return key's glyph / label and tint for it (under `-system`, the system keyboard's too)
 - `-userdict "词<TAB>编码;词<TAB>编码"` — seed the user dictionary with these phrases (replacing the file) and switch it on, so a known phrase can be typed in the preview (`-type`) or on the real extension without going through the list
+- `-lookup 着` — open 编码反查 (over the guide, not the preview) with the word already looked up
 - `-system` — use the SYSTEM keyboard instead of the inline preview: with the extension enabled, that is the real 键道 extension in its real hosting context
 
 With `SIMCTL_CHILD_JD_QA_READY=<path>` set for `simctl launch`, the preview creates that file once it has applied these args, so a screenshot loop can wait for it rather than for a fixed delay (`scripts/screenshots.sh` does).
