@@ -8,6 +8,20 @@ export interface Candidate {
   readonly hint: string | null;
 }
 
+/** One code a value is typed with — see {@link Engine.lookupCodes}. */
+export interface Code {
+  /** The keys: a-z, and `;` in the built-in symbol codes. */
+  readonly keys: string;
+  /**
+   * Where the value sits in the candidate list after typing exactly `keys`
+   * with nothing in flight — 0 is what space commits. It counts the engine's
+   * user phrases on the same code, which lead the built-in words.
+   */
+  readonly index: number;
+  /** The code comes from the engine's user dictionary, not the built-in tables. */
+  readonly user: boolean;
+}
+
 /**
  * The engine's state after an operation. See `core/include/jd.h` for the four
  * shapes it can encode (candidates / committed / committed-and-drilled-in /
@@ -257,6 +271,16 @@ export class Engine {
    * the anchor, so a candidate strip can prefetch freely.
    */
   readRange(start: number, count: number): Candidate[];
+
+  /**
+   * The codes `value` is typed with, from the built-in tables and this
+   * engine's user dictionary, in candidate order: shorter codes first, ties
+   * key by key (a-z, then `;`), a user phrase's code ahead of a built-in
+   * word's on the same keys. `value` is matched exactly; an unknown or empty
+   * one has no codes. A pure read: the composition and the anchor are
+   * untouched.
+   */
+  lookupCodes(value: string): Code[];
 
   /**
    * Release the engine's context (`jd_deinit`). Idempotent; poisons the engine

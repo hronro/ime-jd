@@ -55,6 +55,7 @@ const REQUIRED_EXPORTS = [
   "jd_state_ptr",
   "jd_scratch_ptr",
   "jd_read_range",
+  "jd_lookup_codes",
   "jd_abi_layout",
   "jd_user_dict_blob_bound",
   "jd_user_dict_build",
@@ -73,6 +74,8 @@ const ABI_USER_DICT_MAX_ENTRIES = 6;
 const ABI_USER_DICT_VALUE_MAX = 7;
 const ABI_SIZEOF_USER_DICT_INFO = 8;
 const ABI_SIZEOF_USER_DICT_NOTE = 9;
+const ABI_SIZEOF_CODE = 10;
+const ABI_CODE_CAP = 11;
 
 // wasm32 layout of `jd_state`: two 4-byte pointers, a byte, 3 bytes of
 // padding, then two u32s. Checked against jd_abi_layout at instantiation.
@@ -87,6 +90,17 @@ const ANCHOR_INDEX_OFF = 16;
 const OPTION_SIZE = 12;
 const OPTION_HINT_OFF = 4;
 const HINT_CAP = 8;
+
+// `jd_code`: the inline NUL-padded keys, then two u32s — the same 16 bytes
+// on every target.
+const CODE_SIZE = 16;
+const CODE_CAP = 8;
+const CODE_INDEX_OFF = 8;
+const CODE_FLAGS_OFF = 12;
+/** `JD_CODE_USER`. */
+const CODE_USER = 1;
+/** Codes `lookupCodes` makes room for before asking again with the total. */
+const LOOKUP_CODES_FIRST_CAP = 16;
 
 // wasm32 layouts of the user-dictionary structs, also checked at
 // instantiation. `jd_user_dict_report` is eight u32s; `jd_user_dict_info` is
@@ -190,12 +204,17 @@ function readCString(buffer, ptr) {
   return decoder.decode(bytes.subarray(ptr, end));
 }
 
+/** Reads `cap` inline, NUL-padded bytes at `ptr` as a string. */
+function readInline(buffer, ptr, cap) {
+  const bytes = new Uint8Array(buffer, ptr, cap);
+  let end = 0;
+  while (end < cap && bytes[end] !== 0) end++;
+  return decoder.decode(bytes.subarray(0, end));
+}
+
 /** Reads the inline, NUL-padded hint at `ptr`; `null` when empty. */
 function readHint(buffer, ptr) {
-  const bytes = new Uint8Array(buffer, ptr, HINT_CAP);
-  let end = 0;
-  while (end < HINT_CAP && bytes[end] !== 0) end++;
-  return end === 0 ? null : decoder.decode(bytes.subarray(0, end));
+  return readInline(buffer, ptr, HINT_CAP) || null;
 }
 
 
@@ -290,6 +309,8 @@ export class JdModule {
     expect(ABI_SIZEOF_USER_DICT_REPORT, REPORT_SIZE, "sizeof(jd_user_dict_report)");
     expect(ABI_SIZEOF_USER_DICT_INFO, INFO_SIZE, "sizeof(jd_user_dict_info)");
     expect(ABI_SIZEOF_USER_DICT_NOTE, NOTE_SIZE, "sizeof(jd_user_dict_note)");
+    expect(ABI_SIZEOF_CODE, CODE_SIZE, "sizeof(jd_code)");
+    expect(ABI_CODE_CAP, CODE_CAP, "JD_CODE_CAP");
 
     const limits = {
       maxEntries: exports.jd_abi_layout(ABI_USER_DICT_MAX_ENTRIES),
@@ -680,6 +701,57 @@ export class Engine {
     }
 
     return out;
+  }
+
+  /**
+   * The codes `value` is typed with, from the built-in tables and this
+   * engine's user dictionary, in candidate order: shorter codes first, ties
+   * key by key (a-z, then `;`), a user phrase's code ahead of a built-in
+   * word's on the same keys. `index` is where the value sits in the
+   * candidate list after typing exactly `keys` — 0 is what space commits.
+   * `value` is matched exactly; an unknown or empty one has no codes.
+   *
+   * A pure read: the composition and the anchor are untouched.
+   *
+   * @param {string} value
+   * @returns {{keys: string, index: number, user: boolean}[]}
+   */
+  lookupCodes(value) {
+    const ctx = this.#live();
+    const bytes = encoder.encode(String(value));
+    if (bytes.length === 0) return [];
+    // One jd_alloc block (16-aligned): the value, then 4-aligned room for the
+    // codes. Too small a guess is answered with the total, so ask once more.
+    const valueSize = (bytes.length + 3) & ~3;
+    let cap = LOOKUP_CODES_FIRST_CAP;
+    for (;;) {
+      const size = valueSize + cap * CODE_SIZE;
+      const ptr = this.#exports.jd_alloc(size);
+      if (ptr === 0) throw new Error(`jd_alloc(${size}) failed (out of linear memory)`);
+      try {
+        new Uint8Array(this.#exports.memory.buffer, ptr, bytes.length).set(bytes);
+        const outPtr = ptr + valueSize;
+        const n = this.#exports.jd_lookup_codes(ctx, ptr, bytes.length, outPtr, cap);
+        if (n > cap) {
+          cap = n;
+          continue;
+        }
+        const buffer = this.#exports.memory.buffer;
+        const view = new DataView(buffer);
+        const out = [];
+        for (let i = 0; i < n; i++) {
+          const base = outPtr + i * CODE_SIZE;
+          out.push({
+            keys: readInline(buffer, base, CODE_CAP),
+            index: view.getUint32(base + CODE_INDEX_OFF, true),
+            user: (view.getUint32(base + CODE_FLAGS_OFF, true) & CODE_USER) !== 0,
+          });
+        }
+        return out;
+      } finally {
+        this.#exports.jd_free(ptr, size);
+      }
+    }
   }
 
   /**

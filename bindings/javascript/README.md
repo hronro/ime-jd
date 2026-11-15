@@ -53,6 +53,17 @@ try {
 
 Committing a candidate the user clicked needs no engine call — insert `c.value` and then `engine.reset()`. For an append-only candidate strip, keep your own array and read `[loaded, loaded + PAGE)` as it scrolls.
 
+## Reverse lookup
+
+`lookupCodes` goes the other way — the codes a value is typed with, from the built-in tables and the engine's user dictionary, and where the value sits on each:
+
+```js
+engine.lookupCodes("着");
+// [{ keys: "o", index: 1, user: false }, { keys: "fe", index: 0, user: false }, …]
+```
+
+`index` is the value's position in the candidate list after typing exactly `keys` — 0 is what space commits — and `user` marks a code from the user dictionary. Codes come in candidate order: shorter first, ties key by key, a user phrase's code ahead of a built-in word's on the same keys. It is a pure read, so it can run mid-composition.
+
 ## User dictionary
 
 Phrases of the user's own are compiled into a `UserDict` once and merged into every candidate list, user phrases first on a code they share with a built-in word:
@@ -112,4 +123,4 @@ npm test              # pretest builds core to wasm, then `node --test`
 npm run typecheck     # tsc validates index.d.ts against the test (dev dep)
 ```
 
-`node --test` runs the plain-JS tests directly. They link the real dictionary and cover the FFI smoke contract, result ownership (retention across later calls), chunked reads larger than the scratch buffer, window clipping, the anchor's independence from reads, punctuation, context independence, the dispose lifecycle, and the user dictionary (merge order, user-only codes, build errors, cached-blob round trips, the dictionary-outlives-engines rule). Set `JD_WASM` to a prebuilt module to skip the zig build.
+`node --test` runs the plain-JS tests directly. They link the real dictionary and cover the FFI smoke contract, result ownership (retention across later calls), chunked reads larger than the scratch buffer, window clipping, the anchor's independence from reads, punctuation, context independence, the dispose lifecycle, reverse lookup (order, indices, results past the first buffer, user phrases), and the user dictionary (merge order, user-only codes, build errors, cached-blob round trips, the dictionary-outlives-engines rule). Set `JD_WASM` to a prebuilt module to skip the zig build.

@@ -460,3 +460,82 @@ test("Symbol.dispose releases a dictionary (works with `using`)", () => {
   dict[Symbol.dispose]();
   assert.equal(dict.disposed, true);
 });
+
+test("lookupCodes lists every code of a value, shortest first, with its index", () => {
+  const e = mod.createEngine();
+  try {
+    assert.deepEqual(e.lookupCodes("的"), [
+      { keys: "d", index: 0, user: false },
+      { keys: "deuiua", index: 0, user: false },
+      { keys: "dkuiua", index: 0, user: false },
+    ]);
+    // 着 has the most codes in the tables, and each types 着 back at its index.
+    const codes = e.lookupCodes("着");
+    assert.equal(codes.length, 11);
+    assert.deepEqual(codes[0], { keys: "o", index: 1, user: false });
+    for (const { keys, index } of codes) {
+      e.reset();
+      pressKeys(e, keys);
+      assert.equal(e.readRange(index, 1)[0].value, "着", keys);
+    }
+    assert.deepEqual(e.lookupCodes("不在词库里的词"), []);
+    assert.deepEqual(e.lookupCodes(""), []);
+  } finally {
+    e.dispose();
+  }
+});
+
+test("lookupCodes leaves the composition alone", () => {
+  const e = mod.createEngine();
+  try {
+    const before = e.pressKey(byte("b"));
+    e.lookupCodes("的");
+    assert.deepEqual(e.snapshot(), before);
+    assert.equal(e.pressKey(byte(" ")).commit, "不");
+  } finally {
+    e.dispose();
+  }
+});
+
+test("lookupCodes merges the engine's user dictionary", () => {
+  const { dict } = mod.buildUserDict("的\tzzzzzz\n测试词\td\n");
+  try {
+    const e = mod.createEngine({ userDict: dict });
+    try {
+      assert.deepEqual(e.lookupCodes("的"), [
+        { keys: "d", index: 1, user: false }, // 测试词 leads `d` now
+        { keys: "deuiua", index: 0, user: false },
+        { keys: "dkuiua", index: 0, user: false },
+        { keys: "zzzzzz", index: 0, user: true },
+      ]);
+      assert.deepEqual(e.lookupCodes("测试词"), [{ keys: "d", index: 0, user: true }]);
+    } finally {
+      e.dispose();
+    }
+  } finally {
+    dict.dispose();
+  }
+});
+
+test("lookupCodes returns more codes than its first buffer holds", () => {
+  const keys = Array.from({ length: 20 }, (_, i) => `zq${String.fromCharCode(97 + i)}`);
+  const { dict } = mod.buildUserDict(keys.map((k) => `测试词\t${k}\n`).join(""));
+  try {
+    const e = mod.createEngine({ userDict: dict });
+    try {
+      const codes = e.lookupCodes("测试词");
+      assert.deepEqual(codes.map((c) => c.keys), keys);
+      assert.ok(codes.every((c) => c.user && c.index === 0));
+    } finally {
+      e.dispose();
+    }
+  } finally {
+    dict.dispose();
+  }
+});
+
+test("a disposed engine refuses lookupCodes", () => {
+  const e = mod.createEngine();
+  e.dispose();
+  assert.throws(() => e.lookupCodes("的"), /disposed/);
+});
