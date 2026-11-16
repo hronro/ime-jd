@@ -1,6 +1,6 @@
 # 键道输入法 for Linux
 
-键道 for the two input method frameworks Linux desktops use: a **Fcitx 5** addon and an **IBus** engine. Use the one for the framework you run — IBus is GNOME's default; Fcitx 5 is the usual choice on KDE and on window managers such as Sway, Hyprland and niri. Both are thin C++ frontends over one shared layer (`common/`) and `libjd`, linked statically. The framework draws the candidate window and the input method's menu, so 键道 looks like the rest of the desktop. How each switches between 中 and 英 follows its framework — see [中 and 英](#中-and-英). Besides the built-in dictionary it carries the user's own phrases, which a window of their own edits: `ime-jd-userdict`, in Vala over GTK 4 — see [User dictionary](#user-dictionary). Its packages come from 键道's own package repositories, and the AUR on Arch, so the package managers update them — see [Repositories](#repositories); installed from the generic tarball instead, it checks for new releases and installs them itself — see [Updates](#updates).
+键道 for the two input method frameworks Linux desktops use: a **Fcitx 5** addon and an **IBus** engine. Use the one for the framework you run — IBus is GNOME's default; Fcitx 5 is the usual choice on KDE and on window managers such as Sway, Hyprland and niri. Both are thin C++ frontends over one shared layer (`common/`) and `libjd`, linked statically. The framework draws the candidate window and the input method's menu, so 键道 looks like the rest of the desktop. How each switches between 中 and 英 follows its framework — see [中 and 英](#中-and-英). Besides the built-in dictionary it carries the user's own phrases, which a window of their own edits: `ime-jd-userdict`, in Vala over GTK 4 — see [User dictionary](#user-dictionary) — and which also looks up the codes that type a word — see [Code lookup](#code-lookup). Its packages come from 键道's own package repositories, and the AUR on Arch, so the package managers update them — see [Repositories](#repositories); installed from the generic tarball instead, it checks for new releases and installs them itself — see [Updates](#updates).
 
 ## Requirements
 
@@ -167,6 +167,16 @@ One window serves the session: starting the editor again brings it forward. `ime
 
 The editor is a package of its own. Where it is not installed, **用户自造词…** opens the file in the desktop's text editor instead, creating it with a one-line header if there is none.
 
+## Code lookup
+
+**编码反查…**, in the input method's menu just above **用户自造词…**, answers the reverse question: which codes type a word. It opens a small window, where the word can be typed with 键道 itself or pasted; **查询** (or Enter) answers over it, one code per line, shortest first. Where the word is not the first candidate on a code, the line says which candidate it is (`o（第 2 个候选）`); a code from the user dictionary is marked `自造词`. When nothing types the word, the answer says whether the user's phrases were searched too. Closing the answer leaves the word selected, so the next one replaces it. While a code is being typed in the field, Enter and Escape are the input method's, as everywhere: they put the letters in as they are or drop them, and look nothing up. The words are every client's (`windows/userdict/src/lookup/report.rs`, `bindings/swift/CodeLookupReport.swift`).
+
+The window is the editor's, `ime-jd-userdict --lookup`, as on Windows (`windows/userdict/src/lookup/`): the frontends have no window of their own to put it in, as the macOS IME does. The editor's process serves both windows, and starting either again brings it forward — on GNOME and KDE, which raise a window only for the application in front, it is flagged as ready instead. Each query reads what the engines type with: the built-in dictionary and, while **启用用户自造词** is on, the phrases file, read and built afresh, through `libjd`'s `jd_lookup_codes` — so the candidate numbers count the user's phrases that lead a code. A file that cannot be loaded at all is left out; the engines keep typing with the one they loaded last.
+
+The window needs the editor's package. Where it is not installed, **编码反查…** raises a desktop notification that says to install `ime-jd-userdict` — or, for the generic tarball, whose `install.sh` leaves the editor out without GTK 4, to install GTK 4 and run `install.sh` again.
+
+Fcitx 5 gives each window an input method of its own by default, and a new one starts with the keyboard layout: in the window, switch to 键道 as in any other (Ctrl+Space). On GNOME 42 the compositor sometimes takes text input away from the field a moment after the window first becomes active, so that what is typed goes in as it is; the field takes the focus again once the window has settled (300 ms), unless typing has begun.
+
 ## Updates
 
 The generic tarball updates itself, as the macOS and Windows clients do (`macos/JdIME/Update/`, `windows/src/update/`); distro packages do not, being their package managers' to update. It is the build option `update_check`, which `packaging/build.sh` turns on for the tarball alone. Its menus — Fcitx 5's tray menu, GNOME's input source menu — then have macOS's two items after the version:
@@ -188,7 +198,7 @@ One updater runs at a time. HTTPS is the system's libcurl, loaded when needed ra
 
 ## Tests
 
-`meson test` runs the shared layer's tests against the real engine, and the editor's for its parts that need no display: the file format, `settings.ini`, the **状态** column's words, and the store.
+`meson test` runs the shared layer's tests against the real engine, and the editor's for its parts that need no display: the file format, `settings.ini`, the **状态** column's words, the store, and 编码反查's answers, over the real engine too.
 
 `tests/e2e/run.sh` runs both frontends end to end: it starts fcitx5 and ibus-daemon, each in a D-Bus session of its own, and drives the installed frontend through the same D-Bus interfaces applications' input method modules use — keys in, committed text, preedit and candidates out. The editor's window needs a display, so of the editor it checks only that it starts. Where the update check is built, it runs the updater against a release feed it serves on the machine, with a notification service of its own and a stand-in for pkexec: what the updater records, what it says, and an install of a tarball it builds; the frontends' tests turn the automatic check off, so none asks GitHub. It needs 键道 and its editor installed to `/usr`, the frameworks, `dbus` and PyGObject (`python3-gi` and IBus's GObject introspection data), and libcurl for the updater, and it rewrites `~/.config` and `~/.cache`, so it is meant for a container:
 
@@ -219,7 +229,7 @@ Ubuntu 22.04 has no Zig package, so the archive is built outside. CI runs this o
 | `fcitx5/` | The Fcitx 5 addon and its config files. |
 | `ibus/` | The IBus engine, its process and its component file. |
 | `updater/` | The tarball's updater, `ime-jd-update`, and the libcurl it loads. |
-| `editor/` | The user-dictionary editor: the file, `settings.ini` and the store (`file.vala`, `ini.vala`, `store.vala`), the **状态** column's words (`problem.vala`), the table (`row.vala`, `window.vala`) and its prompts (`prompt.vala`); `jd.vapi` binds the part of `libjd` it calls. |
+| `editor/` | The user-dictionary editor: the file, `settings.ini` and the store (`file.vala`, `ini.vala`, `store.vala`), the **状态** column's words (`problem.vala`), the table (`row.vala`, `window.vala`) and its prompts (`prompt.vala`); and 编码反查, its answers (`lookup.vala`) and its window (`lookup_window.vala`); `jd.vapi` binds the part of `libjd` it calls. |
 | `tests/` | Tests for `common/`, run against the real engine, and for the editor's parts that need no display. |
 | `tests/e2e/` | Both frontends in real fcitx5 and ibus-daemon, and the updater against a feed of its own. |
 | `tests/repo/` | The package repositories served on the machine, the Worker in front of a stand-in for GitHub. |

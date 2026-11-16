@@ -345,6 +345,64 @@ void test_store_keeps_settings_it_cannot_read () {
     assert_true (FileUtils.test (dir.file ("settings.ini"), FileTest.IS_DIR));
 }
 
+// 编码反查's answers, over the real engine: the cases the other clients test
+// (windows/userdict/src/lookup/report.rs).
+
+string lookup_body (string query, string? phrases) {
+    return new CodeLookup.Report (query, CodeLookup.codes (query, phrases), phrases != null).body;
+}
+
+void test_lookup_lists_every_code () {
+    var report = new CodeLookup.Report ("着", CodeLookup.codes ("着", null), false);
+    assert_cmpstr (report.title, CompareOperator.EQ, "「着」的编码");
+    // A later candidate says which it is.
+    assert_cmpstr (report.body, CompareOperator.EQ,
+        "o（第 2 个候选）\nfe\nqe\nflo\nfzou\nqzou\nfeouia\nflouia\nfzouia\nqeouia\nqzouia");
+    // Where the word comes first, the code stands alone.
+    assert_cmpstr (lookup_body ("的", null), CompareOperator.EQ, "d\ndeuiua\ndkuiua");
+}
+
+void test_lookup_marks_user_phrases () {
+    string phrases = "的\tzzzzzz\n测试词\td\n";
+    // A user phrase leads its code, and counts toward the word's place.
+    assert_cmpstr (lookup_body ("的", phrases), CompareOperator.EQ,
+        "d（第 2 个候选）\ndeuiua\ndkuiua\nzzzzzz（自造词）");
+    assert_cmpstr (lookup_body ("测试词", phrases), CompareOperator.EQ, "d（自造词）");
+    // Phrases that do not build are left out, as the engines leave them.
+    assert_cmpint (CodeLookup.codes ("测试词", "测试词\td\n".concat (string.nfill (9 * 1024 * 1024, 'x'))).length,
+        CompareOperator.EQ, 0);
+}
+
+void test_lookup_says_where_it_looked () {
+    var enabled = new CodeLookup.Report ("不在词库里的词", {}, true);
+    assert_cmpstr (enabled.title, CompareOperator.EQ, "没有找到「不在词库里的词」");
+    assert_cmpstr (enabled.body, CompareOperator.EQ, "内置词库和用户自造词中都没有这个词。");
+    var disabled = new CodeLookup.Report ("词", {}, false);
+    assert_cmpstr (disabled.body, CompareOperator.EQ, "内置词库中没有这个词。用户自造词未启用，不在查询范围内。");
+    assert_cmpint (CodeLookup.codes ("不在词库里的词", null).length, CompareOperator.EQ, 0);
+    assert_cmpint (CodeLookup.codes ("", null).length, CompareOperator.EQ, 0);
+}
+
+void test_lookup_cuts_a_long_query_short () {
+    var builder = new StringBuilder ();
+    for (int i = 0; i < 30; i++) {
+        builder.append ("键");
+    }
+    string long_query = builder.str;
+    string twenty = long_query.substring (0, long_query.index_of_nth_char (20));
+    assert_cmpstr (new CodeLookup.Report (long_query, {}, false).title, CompareOperator.EQ,
+        "没有找到「%s…」".printf (twenty));
+    assert_cmpstr (new CodeLookup.Report (twenty, {}, false).title, CompareOperator.EQ,
+        "没有找到「%s」".printf (twenty));
+}
+
+void test_lookup_trims_only_spaces_tabs_and_line_breaks () {
+    assert_cmpstr (CodeLookup.query (" 键道\r\n"), CompareOperator.EQ, "键道");
+    assert_cmpstr (CodeLookup.query ("\t键 道\n"), CompareOperator.EQ, "键 道");
+    assert_cmpstr (CodeLookup.query ("键道　"), CompareOperator.EQ, "键道　");
+    assert_cmpstr (CodeLookup.query (" \n"), CompareOperator.EQ, "");
+}
+
 int main (string[] args) {
     Test.init (ref args);
     Test.add_func ("/file/parse", test_parse);
@@ -363,5 +421,10 @@ int main (string[] args) {
     Test.add_func ("/store/reports-a-file-over-the-cap", test_store_reports_a_file_over_the_cap);
     Test.add_func ("/store/switch", test_store_switch);
     Test.add_func ("/store/keeps-settings-it-cannot-read", test_store_keeps_settings_it_cannot_read);
+    Test.add_func ("/lookup/lists-every-code", test_lookup_lists_every_code);
+    Test.add_func ("/lookup/marks-user-phrases", test_lookup_marks_user_phrases);
+    Test.add_func ("/lookup/says-where-it-looked", test_lookup_says_where_it_looked);
+    Test.add_func ("/lookup/cuts-a-long-query-short", test_lookup_cuts_a_long_query_short);
+    Test.add_func ("/lookup/trims-only-spaces-tabs-and-line-breaks", test_lookup_trims_only_spaces_tabs_and_line_breaks);
     return Test.run ();
 }

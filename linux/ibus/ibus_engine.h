@@ -13,6 +13,8 @@
 
 #include <ibus.h>
 
+#include <string>
+
 namespace imejd {
 class UserDictStore;
 namespace update {
@@ -40,6 +42,10 @@ void imejd_ibus_engine_set_store(imejd::UserDictStore *store);
 /// The update check every engine's menu has, in the builds that have one;
 /// set, when it is, before the first engine is created.
 void imejd_ibus_engine_set_update(imejd::update::UpdateClient *update);
+
+/// How the engines raise a desktop notification: main.cpp's, set before the
+/// first engine is created.
+void imejd_ibus_engine_set_notify(void (*notify)(const std::string &title, const std::string &body));
 
 /// Brings the focused engine's menu up to date, after the files it shows
 /// changed.

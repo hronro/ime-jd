@@ -127,6 +127,7 @@ int main(int argc, char **argv) {
         g_unix_fd_add(store.watchFd(), G_IO_IN, onWatch, nullptr);
     }
     imejd_ibus_engine_set_store(&store);
+    imejd_ibus_engine_set_notify(notify);
     std::optional<imejd::update::UpdateClient> update;
     if (imejd::kUpdater) {
         update.emplace(store.directory(), imejd::kUpdater, imejd::kVersion, spawn);

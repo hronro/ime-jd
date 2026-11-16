@@ -185,8 +185,9 @@ candidate window and the input method's menu."
         recommends=
         description="键道用户自造词
 The window that edits 键道's user dictionary, the phrases the input method
-offers beside its own, for both its Fcitx 5 and its IBus frontend. The
-input method's menu opens it."
+offers beside its own, for both its Fcitx 5 and its IBus frontend, and the
+编码反查 window, which looks up the codes that type a word. The input
+method's menu opens them."
         ;;
     esac
     cat <<EOF

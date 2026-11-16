@@ -71,7 +71,9 @@ private:
 
     void scheduleReload();
     void reload();
-    void notify(const std::string &title, const std::string &body);
+    /// A desktop notification, through Fcitx 5's notifications addon, which
+    /// files it under `tip`: one that the user turns off stays off.
+    void notify(const std::string &title, const std::string &body, const std::string &tip = "imejd-user-dict");
 
     fcitx::Instance *instance_;
     UserDictStore store_;
@@ -84,6 +86,7 @@ private:
     FcitxMenuItem aboutItem_;
     FcitxMenuItem updateItem_;
     FcitxMenuItem autoCheckItem_;
+    FcitxMenuItem lookupItem_;
     FcitxMenuItem userDictItem_;
     FcitxMenuItem userDictEnabledItem_;
     FcitxMenuItem userDictStatusItem_;

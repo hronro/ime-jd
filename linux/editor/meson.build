@@ -8,7 +8,7 @@ endif
 
 if build_editor
   # The part with no GTK in it, which the tests build too.
-  editor_core = files('jd.vapi', 'file.vala', 'ini.vala', 'problem.vala', 'store.vala')
+  editor_core = files('jd.vapi', 'file.vala', 'ini.vala', 'lookup.vala', 'problem.vala', 'store.vala')
   editor_core_deps = [
     dependency('gio-2.0'),
     meson.get_compiler('vala').find_library('posix'),
@@ -22,6 +22,7 @@ if build_editor
     'prompt.vala',
     'row.vala',
     'window.vala',
+    'lookup_window.vala',
     'main.vala',
     dependencies: [gtk4, editor_core_deps],
     include_directories: core_include,

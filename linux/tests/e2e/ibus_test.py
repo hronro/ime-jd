@@ -310,6 +310,16 @@ def the_user_dictionary_is_read_live_and_switched_from_the_menu():
 
 
 @test
+def the_menu_has_the_code_lookup_before_the_user_dictionary():
+    c = Context()
+    check_eq(c.properties.get('imejd-lookup', {}).get('label'), '编码反查…', 'the code lookup item')
+    check(c.properties['imejd-lookup']['sensitive'], 'the code lookup item can be chosen')
+    keys = list(c.properties)
+    check_eq(keys.index('imejd-user-dict') - keys.index('imejd-lookup'), 1,
+             f'the code lookup item, just before 用户自造词…: {keys}')
+
+
+@test
 def the_tarballs_menu_shows_the_update_check():
     c = Context()
     if 'imejd-update' not in c.properties:

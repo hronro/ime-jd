@@ -111,7 +111,7 @@ Windows 版目前没有安装程序，下载的压缩包需要手动解压，再
 
 也可以不添加软件源，从 Releases 页面下载软件包安装。文件名为 `jd-ime-{版本号}-linux-{架构}-{框架}.{扩展名}`，`{框架}` 为 `fcitx5`、`ibus`，或编辑窗口的 `userdict`，大多数电脑的 `{架构}` 选 `x86_64`：Debian / Ubuntu 下载 `.deb`，Fedora / openSUSE 下载 `.rpm`，Arch Linux 下载 `.pkg.tar.zst`；Alpine Linux 的是 `jd-ime-{版本号}-alpine-{架构}-{框架}.apk`。然后在下载目录中安装，例如 Debian / Ubuntu 上 `sudo apt install ./jd-ime-{版本号}-linux-{架构}-fcitx5.deb ./jd-ime-{版本号}-linux-{架构}-userdict.deb`；Fedora 用 `sudo dnf install`，openSUSE 用 `sudo zypper --no-gpg-checks install`，Arch Linux 用 `sudo pacman -U`，Alpine Linux 用 `sudo apk add --allow-untrusted`，后面跟对应的两个文件。这样装的不会随系统更新，有新版本时需要再下载安装。
 
-编辑窗口也可以不装，那样输入法菜单中的「用户自造词…」会用文本编辑器打开词库文件。
+编辑窗口也可以不装，那样输入法菜单中的「用户自造词…」会用文本编辑器打开词库文件，「编码反查…」则只会弹出通知，提示安装编辑窗口。
 
 装好后重启输入法框架（Fcitx 5：`fcitx5 -r`；IBus：`ibus restart`），或注销后重新登录，再添加「键道」：
 

@@ -168,6 +168,14 @@ FcitxEngine::FcitxEngine(fcitx::Instance *instance)
             autoCheckItem_.update(ic);
         };
     }
+    lookupItem_.text = [] { return std::string(kMenuLookup); };
+    lookupItem_.onActivate = [this](fcitx::InputContext *) {
+        if (hasEditor()) {
+            fcitx::startProcess({kEditor, kLookupArgument});
+        } else {
+            notify(kLookupUnavailableTitle, kLookupUnavailableDetail, "imejd-lookup");
+        }
+    };
     userDictItem_.text = [] { return std::string(kMenuUserDict); };
     userDictItem_.onActivate = [this](fcitx::InputContext *) {
         if (hasEditor()) {
@@ -191,6 +199,7 @@ FcitxEngine::FcitxEngine(fcitx::Instance *instance)
         ui.registerAction("imejd-update", &updateItem_);
         ui.registerAction("imejd-update-auto-check", &autoCheckItem_);
     }
+    ui.registerAction("imejd-lookup", &lookupItem_);
     ui.registerAction("imejd-user-dict", &userDictItem_);
     ui.registerAction("imejd-user-dict-enabled", &userDictEnabledItem_);
     ui.registerAction("imejd-user-dict-status", &userDictStatusItem_);
@@ -223,7 +232,7 @@ void FcitxEngine::activate(const fcitx::InputMethodEntry &, fcitx::InputContextE
         status.addAction(fcitx::StatusGroup::InputMethod, &autoCheckItem_);
         update_->checkIfDue();
     }
-    for (auto *item : {&userDictItem_, &userDictEnabledItem_, &userDictStatusItem_}) {
+    for (auto *item : {&lookupItem_, &userDictItem_, &userDictEnabledItem_, &userDictStatusItem_}) {
         status.addAction(fcitx::StatusGroup::InputMethod, item);
     }
 }
@@ -281,9 +290,9 @@ void FcitxEngine::reload() {
     }
 }
 
-void FcitxEngine::notify(const std::string &title, const std::string &body) {
+void FcitxEngine::notify(const std::string &title, const std::string &body, const std::string &tip) {
     if (auto *addon = notifications()) {
-        addon->call<fcitx::INotifications::showTip>("imejd-user-dict", "键道", "fcitx-ime-jd", title, body, -1);
+        addon->call<fcitx::INotifications::showTip>(tip, "键道", "fcitx-ime-jd", title, body, -1);
     }
 }
 

@@ -12,6 +12,7 @@ namespace {
 
 imejd::UserDictStore *g_store = nullptr;
 imejd::update::UpdateClient *g_update = nullptr;
+void (*g_notify)(const std::string &, const std::string &) = nullptr;
 /// The engine with the focus, whose menu the panel shows.
 IBusEngine *g_focused = nullptr;
 
@@ -46,12 +47,15 @@ void imejd_ibus_engine_set_store(imejd::UserDictStore *store) { g_store = store;
 
 void imejd_ibus_engine_set_update(imejd::update::UpdateClient *update) { g_update = update; }
 
+void imejd_ibus_engine_set_notify(void (*notify)(const std::string &, const std::string &)) { g_notify = notify; }
+
 namespace {
 
 using imejd::kInputModeProperty;
 constexpr const char *kAboutProperty = "imejd-about";
 constexpr const char *kUpdateProperty = "imejd-update";
 constexpr const char *kAutoCheckProperty = "imejd-update-auto-check";
+constexpr const char *kLookupProperty = "imejd-lookup";
 constexpr const char *kUserDictProperty = "imejd-user-dict";
 constexpr const char *kUserDictEnabledProperty = "imejd-user-dict-enabled";
 constexpr const char *kUserDictStatusProperty = "imejd-user-dict-status";
@@ -122,13 +126,13 @@ void openExternally(const char *uri) {
     }
 }
 
-/// Starts the editor; false when its package is not installed, or it would
-/// not start.
-bool startEditor() {
+/// Starts the editor, with `argument` when there is one; false when its
+/// package is not installed, or it would not start.
+bool startEditor(const char *argument = nullptr) {
     if (!g_file_test(imejd::kEditor, G_FILE_TEST_IS_EXECUTABLE)) {
         return false;
     }
-    gchar *argv[] = {const_cast<gchar *>(imejd::kEditor), nullptr};
+    gchar *argv[] = {const_cast<gchar *>(imejd::kEditor), const_cast<gchar *>(argument), nullptr};
     GError *error = nullptr;
     if (!g_spawn_async(nullptr, argv, nullptr, G_SPAWN_DEFAULT, nullptr, nullptr, nullptr, &error)) {
         g_warning("键道: cannot start %s: %s", imejd::kEditor, error->message);
@@ -185,6 +189,7 @@ void registerProperties(IBusEngine *engine) {
         ibus_prop_list_append(list, updateProperty());
         ibus_prop_list_append(list, autoCheckProperty());
     }
+    ibus_prop_list_append(list, property(kLookupProperty, PROP_TYPE_NORMAL, imejd::kMenuLookup));
     ibus_prop_list_append(list, property(kUserDictProperty, PROP_TYPE_NORMAL, imejd::kMenuUserDict));
     ibus_prop_list_append(list, userDictEnabledProperty());
     ibus_prop_list_append(list, userDictStatusProperty());
@@ -324,6 +329,10 @@ void propertyActivate(IBusEngine *engine, const gchar *name, guint propState) {
         toggleMode(engine);
     } else if (key == kAboutProperty) {
         openExternally(imejd::kReleasesPage);
+    } else if (key == kLookupProperty) {
+        if (!startEditor(imejd::kLookupArgument) && g_notify) {
+            g_notify(imejd::kLookupUnavailableTitle, imejd::kLookupUnavailableDetail);
+        }
     } else if (key == kUserDictProperty) {
         if (!startEditor() && g_store->ensureFile()) {
             gchar *uri = g_filename_to_uri(g_store->filePath().c_str(), nullptr, nullptr);

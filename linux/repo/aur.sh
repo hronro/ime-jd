@@ -54,7 +54,7 @@ _unpack() {
 package_ime-jd-fcitx5-bin() {
     pkgdesc='键道输入法 for Fcitx 5'
     depends=('fcitx5>=5.0.14')
-    optdepends=('ime-jd-userdict-bin: the window that edits the user dictionary')
+    optdepends=('ime-jd-userdict-bin: the user-dictionary editor and the 编码反查 window')
     provides=(ime-jd-fcitx5)
     conflicts=(ime-jd-fcitx5)
     _unpack fcitx5
@@ -63,14 +63,14 @@ package_ime-jd-fcitx5-bin() {
 package_ime-jd-ibus-bin() {
     pkgdesc='键道输入法 for IBus'
     depends=('ibus>=1.5.26' gcc-libs)
-    optdepends=('ime-jd-userdict-bin: the window that edits the user dictionary')
+    optdepends=('ime-jd-userdict-bin: the user-dictionary editor and the 编码反查 window')
     provides=(ime-jd-ibus)
     conflicts=(ime-jd-ibus)
     _unpack ibus
 }
 
 package_ime-jd-userdict-bin() {
-    pkgdesc="键道用户自造词, the window that edits 键道's user dictionary"
+    pkgdesc="键道用户自造词, the window that edits 键道's user dictionary, and 编码反查"
     depends=('gtk4>=4.6')
     provides=(ime-jd-userdict)
     conflicts=(ime-jd-userdict)
