@@ -2,15 +2,15 @@ Acquire-By-Hash: yes
 Architectures: amd64 arm64
 Codename: stable
 Components: main
-Date: Fri, 13 Nov 2026 04:07:17 +0000
+Date: Mon, 16 Nov 2026 10:42:12 +0000
 Description: 键道输入法 for Fcitx 5 and IBus
 Label: ime-jd
 Origin: ime-jd
 Suite: stable
 SHA256:
- a34d27b4e9e716cc5dd68952a52eff132ebe521a75f8dba1ef8714ce2e97268a             7677 main/binary-amd64/Packages
- 92e94dff855436486165c652afbd0a8ba13e6f36b78333037540c1ea8830f386             2346 main/binary-amd64/Packages.gz
- 6e05920359ef4328363c78f3934ccfd980d103325a1d0f3c510a3237f3bd8f69             2200 main/binary-amd64/Packages.xz
- faf01fa7130bde3249d382e5cff1474159f7daaabd12da4b155d441de9a126cb             7668 main/binary-arm64/Packages
- 7a535e7a78dca78e2e53834598aaa48759aec333d3de27a07e7f7efd859de4da             2352 main/binary-arm64/Packages.gz
- f783df9854963d7b172789b8d7736a0cc7d36d60f4fb9ee29d0a8d8f102aefbc             2200 main/binary-arm64/Packages.xz
+ 2b5ba6cfc59397190eec444159c711f99399859d0ab7ebe0b7270e1aa5a1ac07            10311 main/binary-amd64/Packages
+ e1275a8029fbae1b5d5c4c768fd994e0ba013ec2ce0a08b5fe0c4f43582316f8             2987 main/binary-amd64/Packages.gz
+ 77b21ab7b98ee398dadd447077aed9fc447218bd0823d7c1a7ad044cb370aa63             2748 main/binary-amd64/Packages.xz
+ 305d668156be2d8f4eb3ad17c2c00b32fb79765fc66dab9f8db2438715369cf1            10299 main/binary-arm64/Packages
+ fcb253994dd5c73c873ce982d45cdf79630ed9e30d6d6f727413d4bd5e57a8a4             2999 main/binary-arm64/Packages.gz
+ d9ff0ee8e6f951f5420af36ce62c1f1899c80b52355f1c5abda87f9a0cbe020c             2752 main/binary-arm64/Packages.xz
