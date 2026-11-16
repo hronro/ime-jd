@@ -203,6 +203,21 @@ FcitxEngine::FcitxEngine(fcitx::Instance *instance)
     ui.registerAction("imejd-user-dict", &userDictItem_);
     ui.registerAction("imejd-user-dict-enabled", &userDictEnabledItem_);
     ui.registerAction("imejd-user-dict-status", &userDictStatusItem_);
+    // Registered like the items, as Fcitx's tray menu shows only those.
+    for (size_t i = 0; i < separators_.size(); ++i) {
+        separators_[i].setSeparator(true);
+        ui.registerAction("imejd-separator-" + std::to_string(i + 1), &separators_[i]);
+    }
+
+    // macOS's groups: the version and the update check, the check's switch,
+    // 编码反查, and the user dictionary.
+    auto separator = separators_.begin();
+    menu_.push_back(&aboutItem_);
+    if (update_) {
+        menu_.insert(menu_.end(), {&updateItem_, &*separator++, &autoCheckItem_});
+    }
+    menu_.insert(menu_.end(), {&*separator++, &lookupItem_, &*separator++, &userDictItem_, &userDictEnabledItem_,
+                               &userDictStatusItem_});
 }
 
 FcitxEngine::~FcitxEngine() = default;
@@ -226,14 +241,11 @@ void FcitxEngine::activate(const fcitx::InputMethodEntry &, fcitx::InputContextE
     auto *ic = event.inputContext();
     ic->propertyFor(&factory_)->session.activate();
     auto &status = ic->statusArea();
-    status.addAction(fcitx::StatusGroup::InputMethod, &aboutItem_);
-    if (update_) {
-        status.addAction(fcitx::StatusGroup::InputMethod, &updateItem_);
-        status.addAction(fcitx::StatusGroup::InputMethod, &autoCheckItem_);
-        update_->checkIfDue();
-    }
-    for (auto *item : {&lookupItem_, &userDictItem_, &userDictEnabledItem_, &userDictStatusItem_}) {
+    for (auto *item : menu_) {
         status.addAction(fcitx::StatusGroup::InputMethod, item);
+    }
+    if (update_) {
+        update_->checkIfDue();
     }
 }
 

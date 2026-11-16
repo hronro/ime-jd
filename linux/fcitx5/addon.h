@@ -6,11 +6,13 @@
 
 // Before Fcitx's headers: 5.0.x's event.h uses uint64_t without including
 // it, which newer compilers no longer bring in on their own.
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <fcitx-utils/event.h>
 #include <fcitx/action.h>
@@ -90,6 +92,10 @@ private:
     FcitxMenuItem userDictItem_;
     FcitxMenuItem userDictEnabledItem_;
     FcitxMenuItem userDictStatusItem_;
+    /// Between the menu's groups; the tarball's update check has two.
+    std::array<FcitxMenuItem, 3> separators_;
+    /// The menu in order, its separators among the items.
+    std::vector<fcitx::Action *> menu_;
 };
 
 class FcitxEngineFactory final : public fcitx::AddonFactory {

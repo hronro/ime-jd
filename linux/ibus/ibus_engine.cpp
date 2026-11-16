@@ -177,19 +177,29 @@ IBusProperty *userDictStatusProperty() {
     return property(kUserDictStatusProperty, PROP_TYPE_NORMAL, g_store->statusText(), FALSE);
 }
 
-/// The menu, as macOS has it, after the 中/英 switch. The update items are the
-/// generic tarball's alone: distro packages are updated by their package
-/// managers.
+/// The menu, in macOS's groups, after the 中/英 switch: the version and the
+/// update check, the check's switch, 编码反查, and the user dictionary. The
+/// update items are the generic tarball's alone: distro packages are updated
+/// by their package managers.
 void registerProperties(IBusEngine *engine) {
     IBusPropList *list = ibus_prop_list_new();
+    int separators = 0;
+    auto separator = [&] {
+        const std::string key = "imejd-separator-" + std::to_string(++separators);
+        ibus_prop_list_append(list, property(key.c_str(), PROP_TYPE_SEPARATOR, ""));
+    };
     ibus_prop_list_append(list, modeProperty(state(engine)));
+    separator();
     ibus_prop_list_append(list, property(kAboutProperty, PROP_TYPE_NORMAL, std::string(imejd::kMenuAbout) +
                                                                                 imejd::kVersion));
     if (g_update) {
         ibus_prop_list_append(list, updateProperty());
+        separator();
         ibus_prop_list_append(list, autoCheckProperty());
     }
+    separator();
     ibus_prop_list_append(list, property(kLookupProperty, PROP_TYPE_NORMAL, imejd::kMenuLookup));
+    separator();
     ibus_prop_list_append(list, property(kUserDictProperty, PROP_TYPE_NORMAL, imejd::kMenuUserDict));
     ibus_prop_list_append(list, userDictEnabledProperty());
     ibus_prop_list_append(list, userDictStatusProperty());
