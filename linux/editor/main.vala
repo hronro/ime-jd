@@ -26,6 +26,13 @@ namespace ImeJd {
         .status-line { font-size: smaller; }
         editablelabel.keys { font-family: monospace; }
         .prompt-message { font-weight: bold; font-size: larger; }
+        /* A prompt's title bar is an empty box (prompt.vala), which themes
+           such as GTK's own Adwaita size as a header bar: a band above the
+           message. GtkMessageDialog shrinks its own the same way. */
+        window.prompt > .titlebar {
+            min-height: 0; padding: 0; border: none; box-shadow: none;
+            background: none;
+        }
         columnview > listview > row.drop-above { box-shadow: inset 0 2px @theme_selected_bg_color; }
         columnview > listview > row.drop-below { box-shadow: inset 0 -2px @theme_selected_bg_color; }
         /* The row's line says where a drop goes, not the cell's box. */
