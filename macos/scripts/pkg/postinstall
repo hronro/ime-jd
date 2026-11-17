@@ -1,25 +1,43 @@
 #!/bin/sh
-# Register the freshly-installed IME with Launch Services so Text Input Sources
-# can enumerate it.
+# Restart the input method after an install or an upgrade.
 #
-# NOTE: macOS only re-scans /Library/Input Methods/ at the start of a login
-# session, so the user must log out and back in before JD appears in the
-# input-source list. The installer's conclusion screen tells them to do this.
+# NOTE: macOS only scans /Library/Input Methods/ for new input methods at the
+# start of a login session, so after a FIRST install the user must log out and
+# back in before JD appears in the input-source list. The installer's
+# conclusion screen tells them to do this. An upgrade needs neither.
 
 set +e
 
-APP="/Library/Input Methods/JdIME.app"
-[ -d "$APP" ] || exit 0
+# Restart every user's imklaunchagent (launchd relaunches it on demand), and
+# only then the running JdIME. The agent that launched JdIME rebuilds the
+# input-source list a second or two after JdIME exits, and on an upgrade that
+# rebuild races the registration of the new bundle (Installer.app, Spotlight,
+# neagent). When the old agent loses, it leaves 键道 out of the list: the input
+# source is gone from the Input menu, and apps type nothing or raw letters
+# until the next login. A fresh agent never saw the old bundle and keeps 键道.
+# Seen on fresh macOS 12.6 and 26.4.1 installs, in-app and manual upgrades alike.
+#
+# Leave TextInputMenuAgent, TextInputSwitcher and cfprefsd alone: restarting
+# them during an install also emptied the Input menu.
+AGENTS=$(/usr/bin/pgrep -x imklaunchagent)
+if [ -n "$AGENTS" ]; then
+    for pid in $AGENTS; do
+        /bin/kill "$pid" 2>/dev/null
+    done
+    # JdIME must not exit while an old agent can still see it go.
+    i=0
+    while [ $i -lt 30 ]; do
+        alive=
+        for pid in $AGENTS; do
+            /bin/kill -0 "$pid" 2>/dev/null && alive=1
+        done
+        [ -z "$alive" ] && break
+        /bin/sleep 0.1
+        i=$((i + 1))
+    done
+fi
 
-# Re-index with Launch Services so it knows about the new bundle.
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister"
-[ -x "$LSREGISTER" ] && "$LSREGISTER" -f -R "$APP" 2>/dev/null || true
-
-# Kill any running JdIME so an upgrade's new binary is loaded on next use.
-# Leave the input-source agents and cfprefsd alone: after an in-place update
-# from Installer.app, a TextInputMenuAgent restarted here, while Installer was
-# re-registering the new bundle, left the Input menu empty until a reboot,
-# and killing cfprefsd as root kills every user's preferences agent.
-/usr/bin/killall JdIME 2>/dev/null || true
+# The next keystroke then loads the new binary.
+/usr/bin/killall JdIME 2>/dev/null
 
 exit 0

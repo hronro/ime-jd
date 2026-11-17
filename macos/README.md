@@ -40,7 +40,7 @@ On a **first-time install**, macOS only re-scans for new input methods at the st
 4. Press **+**, find **键道** under *Chinese, Simplified*, and add it
 5. Pick **键道** from the input-source menu (or use ⌃Space / ⌃⌥Space)
 
-**Upgrading** an already-installed version is just a double-click of the new `.pkg` — no log out/in needed. The installer overwrites the bundle in place and the postinstall restarts the running `JdIME` process, so the new build is live immediately and the existing input source keeps working. The IME also finds new releases by itself — see [Updates](#updates).
+**Upgrading** an already-installed version is just a double-click of the new `.pkg` — no log out/in needed. The installer replaces the bundle, and the postinstall restarts macOS's input-method launcher (`imklaunchagent`) and then the running `JdIME` process, so the new build is live immediately and the existing input source keeps working. That order matters: the launcher that started the old `JdIME` can drop 键道 from the input-source list when it sees it exit (see the script). The IME also finds new releases by itself — see [Updates](#updates).
 
 ## Updates
 
