@@ -34,7 +34,7 @@ Git	gkt
 GitHub	gktb
 Gitee	gkte
 Good	glld
-Google	gllgle
+Google	glle
 U盾	jdw
 U盘	jpfu
 USB	jsb
