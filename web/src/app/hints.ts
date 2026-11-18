@@ -1,9 +1,10 @@
-// 编码提示: after the user takes a candidate the long way — a later candidate,
-// or a longer code than the word needs — briefly show its best code. The best
-// code is libjd's first (`jd_lookup_codes` orders shortest first, ties key by
-// key, a user phrase's code ahead of a built-in word's).
+// 编码提示: after the user takes a candidate the long way, briefly show a
+// better code for it — fewer keys, or as many keys without picking a later
+// candidate (engine/hint.ts has the rule). The codes are libjd's
+// (`jd_lookup_codes`, the same call 编码反查 makes).
 
 import { createSignal } from "solid-js";
+import { betterCode } from "../engine/hint";
 import type { CandidateCommit } from "../engine/session";
 import { ime } from "../ime/controller";
 import { codeHints } from "../storage/settings";
@@ -23,11 +24,8 @@ function onCommit(commit: CandidateCommit): void {
   if (!codeHints()) return;
   const engine = ime.session?.engine;
   if (!engine) return;
-  const best = engine.lookupCodes(commit.value)[0];
+  const best = betterCode(commit, engine.lookupCodes(commit.value));
   if (!best) return;
-  const shorter = best.keys.length < commit.code.length;
-  const earlier = best.keys.length === commit.code.length && best.index < commit.index;
-  if (!shorter && !earlier) return;
   const where = best.index > 0 ? `（第 ${best.index + 1} 个候选）` : "";
   clearTimeout(timer);
   setHint({ value: commit.value, code: best.keys + where });

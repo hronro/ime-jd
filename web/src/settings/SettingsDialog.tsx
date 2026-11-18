@@ -74,7 +74,7 @@ export default function SettingsDialog(props: { open: boolean; onClose: () => vo
               <label class="set-title" for="code-hints">
                 编码提示
               </label>
-              <p class="set-note">用后面的候选或较长的编码上屏时，在下方提示这个词最短的编码。</p>
+              <p class="set-note">打出的词有更好的编码时——按键更少，或按键一样多但不用选重——在下方提示这个编码。</p>
             </div>
             <Switch id="code-hints" label="编码提示" checked={codeHints()} onChange={setCodeHints} />
           </div>
