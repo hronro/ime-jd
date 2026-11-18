@@ -1,0 +1,42 @@
+{
+  "name": "jd-web",
+  "private": true,
+  "version": "0.0.0",
+  "description": "键道 input method for the browser: an installable, offline web client on libjd's WebAssembly build.",
+  "type": "module",
+  "scripts": {
+    "wasm": "node ../bindings/javascript/scripts/build-wasm.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
+    "test": "vitest run",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/lint": "^6.9.8",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "@lezer/highlight": "^1.2.5",
+    "@solidjs/web": "^2.0.0",
+    "jd": "file:../bindings/javascript",
+    "solid-js": "^2.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@solidjs/vite-plugin": "^3.0.1",
+    "@types/node": "^24.13.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vite-plugin-pwa": "^2.0.0",
+    "vitest": "^5.1.1",
+    "workbox-window": "^7.4.1"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "GPL-3.0-or-later"
+}

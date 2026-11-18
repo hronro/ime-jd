@@ -1,0 +1,289 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 600px at 85% -10%, var(--paper-grain), transparent 70%),
+    radial-gradient(900px 500px at -10% 110%, var(--paper-grain), transparent 70%),
+    var(--paper);
+  overflow-wrap: break-word;
+  -webkit-tap-highlight-color: transparent;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+  margin: 0;
+}
+
+p,
+li {
+  text-wrap: pretty;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--seal);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--seal-soft);
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---- Buttons ---------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45em;
+  min-block-size: var(--target);
+  min-inline-size: var(--target);
+  padding: 0 0.95em;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    transform 0.1s var(--ease-out);
+  user-select: none;
+
+  &:hover {
+    border-color: var(--ink-3);
+  }
+  &:active {
+    transform: scale(0.97);
+  }
+  &[aria-disabled="true"],
+  &:disabled {
+    opacity: 0.45;
+    cursor: default;
+    transform: none;
+  }
+  & svg {
+    flex: none;
+    width: 1.15em;
+    height: 1.15em;
+  }
+}
+
+.btn-primary {
+  border-color: transparent;
+  background: var(--seal);
+  color: var(--on-seal);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.18) inset, 0 6px 16px -8px var(--seal);
+
+  &:hover {
+    border-color: transparent;
+    background: var(--seal-strong);
+  }
+}
+
+.btn-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-2);
+
+  &:hover {
+    border-color: transparent;
+    background: var(--seal-softer);
+    color: var(--ink);
+  }
+}
+
+.btn-danger {
+  color: var(--bad);
+}
+
+.icon-btn {
+  padding: 0;
+  inline-size: var(--target);
+}
+
+kbd,
+.kbd {
+  font-family: var(--font-ui);
+  font-size: 0.78em;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  opacity: 0.72;
+}
+
+@media (hover: none) {
+  .hover-only {
+    display: none !important;
+  }
+}
+
+/* ---- Segmented control (a radio group) -------------------------------- */
+
+.segmented {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--sunken);
+}
+
+.segment {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-block-size: var(--target);
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+
+  & input {
+    position: absolute;
+    opacity: 0;
+    inset: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+  &:has(input:checked) {
+    background: var(--raised);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+    font-weight: 600;
+  }
+  &:has(input:focus-visible) {
+    outline: 2px solid var(--seal);
+  }
+}
+
+/* ---- Inputs ----------------------------------------------------------- */
+
+.field {
+  min-block-size: var(--target);
+  padding: 0 0.8em;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: var(--sheet);
+  font-size: 16px;
+
+  &:focus {
+    outline: 2px solid var(--seal-soft);
+    border-color: var(--seal);
+  }
+  &::placeholder {
+    color: var(--ink-3);
+  }
+}
+
+/* ---- Top-layer surfaces: dialogs and popovers ------------------------- */
+
+dialog {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: var(--shadow-float);
+  opacity: 0;
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: 0.22s;
+  transition-timing-function: var(--ease-out);
+  transition-behavior: allow-discrete;
+
+  @media (prefers-reduced-motion: no-preference) {
+    transform: translateY(12px) scale(0.98);
+  }
+
+  &::backdrop {
+    background-color: rgb(30 15 8 / 0);
+    backdrop-filter: blur(0);
+    transition-property: background-color, backdrop-filter, display, overlay;
+    transition-duration: 0.22s;
+    transition-timing-function: var(--ease-out);
+    transition-behavior: allow-discrete;
+  }
+}
+
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog[open] {
+  opacity: 1;
+
+  @starting-style {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    transform: none;
+
+    @starting-style {
+      transform: translateY(12px) scale(0.98);
+    }
+  }
+
+  &::backdrop {
+    overflow: hidden;
+    overscroll-behavior: contain;
+    background-color: light-dark(rgb(40 20 10 / 0.28), rgb(0 0 0 / 0.55));
+    backdrop-filter: blur(3px);
+
+    @starting-style {
+      background-color: rgb(30 15 8 / 0);
+      backdrop-filter: blur(0);
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  dialog,
+  dialog::backdrop {
+    transition-duration: 0.08s;
+  }
+}
+
+[popover] {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  overflow: visible;
+}

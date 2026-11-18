@@ -72,6 +72,59 @@ jobs:
         working-directory: bindings/javascript
         run: npm test
 
+  # Web client: type-check, unit tests (the real engine in Node), the
+  # production build, then the end-to-end suite on that build in Chromium,
+  # WebKit and Firefox, desktop and phone-sized. The wasm is zig-built here.
+  test-web:
+    name: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Install Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build libjd (wasm)
+        run: npm run wasm
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium webkit firefox
+
+      - name: End-to-end tests
+        run: npm run e2e
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-e2e-results
+          path: web/test-results
+          if-no-files-found: ignore
+
   # Rust: the shared bindings crate (FFI contract tests against the real
   # engine, dynamic-linkage dev path) and the CLI's renderer tests.
   test-rust:

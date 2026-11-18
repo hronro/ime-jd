@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-Hans" translate="no">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="google" content="notranslate" />
+    <script>
+      // Apply a pinned appearance before first paint (设置 › 外观).
+      try {
+        const scheme = localStorage.getItem("jd.theme");
+        if (scheme === "light" || scheme === "dark")
+          document.querySelector('meta[name="color-scheme"]').content = scheme;
+      } catch {}
+    </script>
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f7f0e5" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#15110f" />
+    <meta name="description" content="键道输入法网页版：无需安装，打开即可用键道打字，离线可用。" />
+    <title>键道输入法</title>
+    <link rel="icon" href="/icons/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

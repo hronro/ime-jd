@@ -8,6 +8,7 @@ Emits:
   jd-mono.svg            朱文 line cut — single-color frame ring + glyph
   .cache/jd-macos.svg    macOS app-icon wrapper (tile at 824/1024 + shadow)
   .cache/jd-ios.svg      iOS full-bleed square (no transparent corners)
+  .cache/jd-maskable.svg web app maskable icon (glyph inside the safe zone)
   ../../ios/App/Assets.xcassets/...            AppIcon Contents.json
   ../../android/app/src/main/res/...           adaptive icon XMLs
 """
@@ -93,6 +94,20 @@ cache.mkdir(exist_ok=True)
 
 # iOS: full-bleed square, no alpha anywhere (masking is the system's job).
 (cache / "jd-ios.svg").write_text(svg(tile(0)))
+
+# Web app "maskable" icon: full-bleed seal, and the small cut's glyph scaled
+# into the circular safe zone (radius 40%) — the frame would be clipped there.
+(cache / "jd-maskable.svg").write_text(svg(
+    f'''<defs>
+    <radialGradient id="seal" cx="0.34" cy="0.28" r="1.1">
+      <stop offset="0" stop-color="{RED_HI}"/>
+      <stop offset="1" stop-color="{RED_LO}"/>
+    </radialGradient>
+  </defs>
+  <rect width="160" height="160" fill="url(#seal)"/>
+  <g transform="translate(80 80) scale(0.62) translate(-80 -80)">
+    <path d="{glyph_full}" fill="{PAPER}" stroke="{PAPER}" stroke-width="3.4" stroke-linejoin="round"/>
+  </g>'''))
 
 # ---- iOS asset catalog ----
 appiconset = root / "ios" / "App" / "Assets.xcassets" / "AppIcon.appiconset"

@@ -1,0 +1,122 @@
+.ud-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-block-size: 0;
+  gap: 6px;
+}
+
+.ud-cm {
+  flex: 1;
+  min-block-size: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+  background: var(--raised);
+
+  & .cm-editor {
+    block-size: 100%;
+    font-size: 15px;
+    color: var(--ink);
+  }
+  & .cm-editor.cm-focused {
+    outline: none;
+  }
+  & .cm-scroller {
+    font-family: var(--font-ui);
+    line-height: 1.7;
+  }
+  & .cm-content {
+    caret-color: var(--seal);
+  }
+  & .cm-cursor {
+    border-left-color: var(--seal);
+  }
+  & .cm-gutters {
+    border-inline-end: 1px solid var(--line);
+    background: var(--sunken);
+    color: var(--ink-3);
+  }
+  & .cm-activeLine {
+    background: var(--seal-softer);
+  }
+  & .cm-activeLineGutter {
+    background: var(--seal-soft);
+    color: var(--ink-2);
+  }
+  & .cm-selectionBackground,
+  &.cm-focused .cm-selectionBackground {
+    background: var(--seal-soft) !important;
+  }
+  /* TAB is the separator: draw it. Spaces stay quiet unless trailing. */
+  & .cm-highlightTab {
+    background-image: none;
+    position: relative;
+  }
+  & .cm-highlightTab::before {
+    content: "→";
+    position: absolute;
+    inset-inline-start: 2px;
+    color: var(--seal);
+    opacity: 0.45;
+    font-size: 0.85em;
+  }
+  & .cm-highlightSpace {
+    background-image: none;
+  }
+  & .cm-trailingSpace {
+    background-color: color-mix(in oklab, var(--bad) 18%, transparent);
+  }
+  & .cm-lintRange-error {
+    background-image: none;
+    text-decoration: underline wavy var(--bad) 1px;
+    text-underline-offset: 4px;
+  }
+  & .cm-lintRange-warning {
+    background-image: none;
+    text-decoration: underline wavy var(--warn) 1px;
+    text-underline-offset: 4px;
+  }
+  & .cm-lintRange-hint {
+    background-image: none;
+    text-decoration: line-through color-mix(in oklab, var(--ink-3) 60%, transparent);
+  }
+  & .cm-tooltip {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-s);
+    background: var(--raised);
+    color: var(--ink);
+    box-shadow: var(--shadow-float);
+  }
+  & .cm-diagnostic {
+    font-size: 13px;
+  }
+  & .cm-diagnostic-error {
+    border-left-color: var(--bad);
+  }
+  & .cm-diagnostic-warning {
+    border-left-color: var(--warn);
+  }
+  & .cm-diagnostic-hint {
+    border-left-color: var(--ink-3);
+  }
+  & .cm-panels {
+    background: var(--sunken);
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  & .cm-panels input,
+  & .cm-panels button {
+    font-size: 13px;
+  }
+}
+
+.ud-text-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}

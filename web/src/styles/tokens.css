@@ -1,0 +1,68 @@
+/* Seal and paper: the palette of the 键道 icon (assets/icon/compose.py) — a
+   cinnabar seal (#AE3522) pressed on cream paper (#F9F1E4) — with warm ink for
+   text. Every color is a light-dark() pair, so the <meta name="color-scheme">
+   override (设置 › 外观) and the system preference both just work. */
+
+:root {
+  color-scheme: light dark;
+
+  &:has(> head > meta[name="color-scheme"][content="dark"]) {
+    color-scheme: dark;
+  }
+  &:has(> head > meta[name="color-scheme"][content="light"]) {
+    color-scheme: light;
+  }
+
+  /* Surfaces */
+  --paper: light-dark(#f7f0e5, #15110f);
+  --paper-grain: light-dark(rgb(174 53 34 / 0.035), rgb(224 100 76 / 0.04));
+  --sheet: light-dark(#fffdf8, #1e1916);
+  --raised: light-dark(#ffffff, #282220);
+  --sunken: light-dark(#f1e9dc, #120e0c);
+  --line: light-dark(#e6dccd, #3a312b);
+  --line-strong: light-dark(#d5c7b3, #4d423a);
+
+  /* Ink */
+  --ink: light-dark(#2b2420, #f1e8dc);
+  --ink-2: light-dark(#6a5f56, #bdb1a4);
+  --ink-3: light-dark(#998d82, #86796d);
+  --on-seal: #fff8ef;
+
+  /* Seal */
+  --seal: light-dark(#ae3522, #e0654d);
+  --seal-strong: light-dark(#9c2c1c, #ec7b63);
+  --seal-soft: light-dark(rgb(174 53 34 / 0.09), rgb(224 101 77 / 0.16));
+  --seal-softer: light-dark(rgb(174 53 34 / 0.05), rgb(224 101 77 / 0.09));
+
+  /* Verdicts — the same three every client uses for a phrase row */
+  --bad: light-dark(#c42b1c, #ff8a7a);
+  --warn: light-dark(#9d5d00, #f2b25c);
+  --ok: light-dark(#2f7a4b, #7fcf9a);
+
+  /* Type */
+  --font-ui: system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "Noto Sans SC", sans-serif;
+  --font-kai: "Kaiti SC", "STKaiti", "KaiTi", "Kaiti", "AR PL UKai CN", "LXGW WenKai", serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --text-size: 20px;
+
+  /* Shape and depth */
+  --radius-s: 8px;
+  --radius-m: 12px;
+  --radius-l: 20px;
+  --shadow-sheet: 0 1px 2px light-dark(rgb(60 30 10 / 0.05), rgb(0 0 0 / 0.4)),
+    0 18px 50px -24px light-dark(rgb(90 40 15 / 0.22), rgb(0 0 0 / 0.65));
+  --shadow-float: 0 1px 1px light-dark(rgb(60 30 10 / 0.06), rgb(0 0 0 / 0.5)),
+    0 10px 30px -8px light-dark(rgb(90 40 15 / 0.28), rgb(0 0 0 / 0.7));
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
+
+  /* Touch targets (WCAG 2.5.8 / 2.5.5) */
+  --target: 32px;
+  @media (pointer: coarse) {
+    --target: 44px;
+  }
+}

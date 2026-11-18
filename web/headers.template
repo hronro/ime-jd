@@ -1,0 +1,22 @@
+# Cloudflare static-asset response headers (written to dist/_headers by the
+# build, which fills in the hash of index.html's inline theme script).
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' %INLINE_SCRIPTS%; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+
+# Hashed build output never changes under its name.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Everything that names the current version must be revalidated.
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/sw.js
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache

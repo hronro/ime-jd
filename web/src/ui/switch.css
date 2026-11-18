@@ -1,0 +1,31 @@
+.switch {
+  appearance: none;
+  position: relative;
+  flex: none;
+  inline-size: 44px;
+  block-size: 26px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--line-strong);
+  cursor: pointer;
+  transition: background-color 0.2s;
+
+  &::after {
+    content: "";
+    position: absolute;
+    inset-block-start: 3px;
+    inset-inline-start: 3px;
+    inline-size: 20px;
+    block-size: 20px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+    transition: translate 0.25s var(--ease-spring);
+  }
+  &:checked {
+    background: var(--seal);
+  }
+  &:checked::after {
+    translate: 18px 0;
+  }
+}

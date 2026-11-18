@@ -137,4 +137,15 @@ render jd.svg       256 "$CACHE/win-256.png"
     "$CACHE/win-16.png" "$CACHE/win-24.png" "$CACHE/win-32.png" \
     "$CACHE/win-48.png" "$CACHE/win-256.png"
 
+# ---- 9. Web client (web/public/icons): manifest "any" + "maskable", the
+# apple-touch icon (iOS applies its own mask, so full-bleed), the favicon
+WEB="$ROOT/web/public/icons"
+mkdir -p "$WEB"
+render jd.svg                   192 "$WEB/icon-192.png"
+render jd.svg                   512 "$WEB/icon-512.png"
+render "$CACHE/jd-maskable.svg" 512 "$WEB/maskable-512.png"
+render "$CACHE/jd-ios.svg"      180 "$WEB/apple-touch-icon.png"
+cp jd.svg "$WEB/jd.svg"
+cp jd-small.svg "$WEB/favicon.svg"
+
 echo "done."
