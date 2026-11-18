@@ -5,31 +5,31 @@ Acquire-By-Hash: yes
 Architectures: amd64 arm64
 Codename: stable
 Components: main
-Date: Mon, 16 Nov 2026 10:42:12 +0000
+Date: Wed, 18 Nov 2026 23:20:31 +0000
 Description: 键道输入法 for Fcitx 5 and IBus
 Label: ime-jd
 Origin: ime-jd
 Suite: stable
 SHA256:
- 2b5ba6cfc59397190eec444159c711f99399859d0ab7ebe0b7270e1aa5a1ac07            10311 main/binary-amd64/Packages
- e1275a8029fbae1b5d5c4c768fd994e0ba013ec2ce0a08b5fe0c4f43582316f8             2987 main/binary-amd64/Packages.gz
- 77b21ab7b98ee398dadd447077aed9fc447218bd0823d7c1a7ad044cb370aa63             2748 main/binary-amd64/Packages.xz
- 305d668156be2d8f4eb3ad17c2c00b32fb79765fc66dab9f8db2438715369cf1            10299 main/binary-arm64/Packages
- fcb253994dd5c73c873ce982d45cdf79630ed9e30d6d6f727413d4bd5e57a8a4             2999 main/binary-arm64/Packages.gz
- d9ff0ee8e6f951f5420af36ce62c1f1899c80b52355f1c5abda87f9a0cbe020c             2752 main/binary-arm64/Packages.xz
+ 4556cf6b479d218dc4775ec44ffe1e68d4a51d4455ba2d34377cb644c12daa21            12945 main/binary-amd64/Packages
+ 3aed99f6f663b11fb4c1a0d272a8f56c42466811fc38a40bf4adb147d583e2a9             3555 main/binary-amd64/Packages.gz
+ 9462083bf6acf20ee09c2546a499e3c8bafba28733e35170319aceaa3ffd0304             3220 main/binary-amd64/Packages.xz
+ 774e160d4154be089942ff31600917709ebf35f9248a230462cc5b1a127e64d6            12930 main/binary-arm64/Packages
+ 34b30dd781a0d0160693d8bd6188332670f928c1a4bad86138b47c760f691368             3566 main/binary-arm64/Packages.gz
+ c2924273e8306bad438cad7ea044b419538c019012c5420a15c5ff146399e720             3228 main/binary-arm64/Packages.xz
 -----BEGIN PGP SIGNATURE-----
 
-iQIzBAEBCgAdFiEER6UCc2Q2vZxORGlJ/3PIU/TclBIFAmr63gQACgkQ/3PIU/Tc
-lBLAOQ/+OF6JFpzTJCXkA47+4/IEyoIEmd73+paTd4FuSK1cHrmk/F5IU9pMichz
-VoKDPuuuBJxvTSFPxxkxB7tCRAC5ENdubbPIj19J+0ni628KDVwjzmT63s7puPt2
-Xpu17E6sG1GLUXVgVL2yRANMHbOQCKOVu5HvAMvkHwClMAJn1FngvXgHfSVfhwvJ
-GVSYXtYLvzspQ4BM4zxSHjEDsVRCJiOvakLz6aG589iqguhY/6RaC4achCWdSLjm
-tLVL+vyeBLLed5d/IevOjXg/7G+kFjNfyUYeU1sBNla4rcq94TaiJpn91IX4BH4s
-+qyi/foQh/1J2EYC5TCT98wnxw4iRrz1FsGkDfDBEGyeopx2xLgUg6ytSWBAx3Cu
-doo7Ucl2Pcg/M616d9/zA1YaqZO2ho4a8gRPGwoqBgkKvpxa0p4xZkoYhQfJnQeC
-9hFLpxo04NoPG2CA85LT2zMtIIkTRhBv7r2Lf0fTTZ1tKLtnhzKzOVbFqs9nphqM
-d0Xg+H7UHl2SPb158ClLb057j2/XB8T2fFLUCx78vEfIMTKdEPpdxgfEOkMto+7m
-dvAxh6q12xXUJAOPK/C+J5QT0OZ/ylwFfubRsnMrNNZd+4qCJUtA94+b/YUpTwUl
-wQ6H2DeogbRTlsbfXN/ipDX3CO2Q3rlym5ZwcyHWZ1UHLVLh4ys=
-=0CG4
+iQIzBAEBCgAdFiEER6UCc2Q2vZxORGlJ/3PIU/TclBIFAmr+Mr8ACgkQ/3PIU/Tc
+lBJkjQ//VUiuK3894G1kzymp7ektmsVPEue32EdZ64mSFhM3t+oPG5wXmkDbg+Hq
+c2LkISpQG8sK3nwH3c4ddwvvEzNTat1Zd/6mIP/wD2nS1B8XGTyXlZRwip1nAhIy
+dU6wqN9ikpptgfDl8PzPO4O6TjqfpaCayq+qUXoMonrQKraygKC6v/yFMjKoPnxY
+/o6qRdiNWMF/QOxtuwbWPTiErJ+V2Abr8ETDAwxVBjGQgJc8onLdXYpJJZGvabtQ
+yvaFE+BMUZJoRbG/Kh/OQha+voaxINd5a8G13j33uDYvK0HdZV4uHdOYrWqB1GGF
+RUvmVk+scHpWs1z7Zo2CjMLI88wl1b4uf/PTSAbxs/iuNg7tQO1tZ2HmprOdRuV5
+a3oqn11ix4GkpbQoKSob7gOSUagstkT5B1bj98Y0+9cCzhF8IWRs7OYn7Jjhm8lf
+N+tlQbmhH49SsyolD1s00CWorEpFC8fgIa1l04XcPMzwGSRt+L9qkMjglV3mkAlx
+XjEwMKd0Wvv5zLkru/GO5NdJI6e6YfKl/yFAizr6pm1javOYwNNbE7Mk4IkM9Gbw
+AwC5DDc0QvGIwWtuNaVVCJTGAvrHea3hSifquNocAl6UFGjVux7AhtqSmko/GnN2
+saJ3Ux5v8HRluGDxTtwzff2WGte+2f/uWrVwcyDcKqJcTtsjoSs=
+=IA+7
 -----END PGP SIGNATURE-----
