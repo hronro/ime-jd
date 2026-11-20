@@ -1,82 +1,49 @@
 # Keyboard-switch height jitter
 
-## Symptom
+## Status
 
-When the 键道 keyboard appeared — most visibly when **switching from another keyboard** (e.g. the built-in English keyboard) — its height jittered: it showed at roughly the right height, grew ~45pt taller for ~100–200ms, then snapped back. Because the keyboard's height is what iOS reports to the host app as the keyboard frame, the jitter also shifted host layout (e.g. Safari's bottom address bar bounced). Gboard, by contrast, switches with no jitter (only a one-time hitch the very first time it's ever used).
+The keyboard asks for its own height (candidate bar + rows) through one `.defaultHigh` constraint on the input view, **one point less from `viewIsAppearing` to `viewDidAppear`** (`KeyboardViewController.applyHeight`). Restoring that point in `viewDidAppear` is what keeps iOS 18 from flashing the keyboard 45 pt taller on every switch. It replaced, in November 2026, a learned "presentation offset" (see History) that worked by the same restore but also landed the keyboard visibly short.
 
-Device used for investigation: **iPhone 16 Pro Max**, portrait, iOS in the Safari address bar / App Library search contexts.
+## What iOS 18 does on a switch
 
-## Root cause
+Measured in November 2026 on an iPhone 16 Pro Max running iOS 18.2, in our own text view and in Safari's address bar, by logging every layout pass of the extension's view and the keyboard frames the host app is told about, and by recording the phone's screen over USB at 60 fps and finding the panel's top edge in every frame:
 
-When a custom keyboard slides in, **iOS inflates the input view by a fixed offset above the height we request, then snaps it down to our requested height once presented.** That snap is the jitter. The offset is a **constant**, independent of the height we ask for (requesting 260 → overshoot 305; requesting 305 → overshoot 350 — always `requested + ~45` on this device); it **varies by device and orientation** and has **no public API**; and it is applied during the slide-in and removed after `viewDidAppear`.
+1. The input view first lays out at the full-screen transient (956 pt on that phone). It is never painted.
+2. Around `viewIsAppearing`, iOS lays it out **taller than requested**: 325 pt for a requested 280 pt on a switch to a running extension, 288 pt on the first switch after the extension process starts. The amount does not depend on what is requested in `viewIsAppearing`.
+3. Left alone, iOS brings it down to the requested height ~17 ms after `viewDidAppear`, after the tall layout has reached the screen: the whole panel shows ~45 pt taller, keys stretched, for one or two frames, then snaps back. Seen on every switch (4 of 4 in the recording).
+4. A change of the height constraint in `viewDidAppear` makes iOS apply the requested height at once, before that frame is drawn: no tall frame in 7 of 7 switches with the one-point restore (and 0 of 6 with the old learned offset). Holding the constraint a point short from `viewIsAppearing` is only there to make the restore a change. iOS sometimes lays the keyboard out at the short request for a frame or two; one point short cannot be seen.
 
-Earlier we mis-read the intermediate `305` as "the system default / outgoing keyboard height." It was not — it was always `requested + offset`. Proving that (by requesting 305 and seeing the overshoot move to 350) is what unlocked the correct fix.
+iOS 27 lays the view out at the requested height straight away; the restore changes nothing visible there.
 
-## How we diagnosed it
+### Not ours: the first switch in each app
 
-`NSLog` from a keyboard extension did **not** reliably reach Console.app, so we used an **on-screen overlay** inside the keyboard that logged, deduped by geometry across the whole appearance, with millisecond offsets: `vH` = `view.bounds.height` (actual rendered height); `win` = `view.window?.bounds.height`; `sys` = the system's own `UIView-Encapsulated-Layout-Height` constraint constant; `c` = our height constraint constant; `age` = process age (warm vs cold).
+The first time an app shows 键道 after it launched (and the first time after an install), iOS shows the keyboard panel at 243 pt — the host is told 318 pt including the globe/dictation strip — for 80–150 ms, then grows it to ours. It does so before the extension process has even started, so it is iOS's stand-in height for a keyboard that app has not shown yet. The App Store build with the old trick does the same.
 
-Decisive readings:
+## History
 
-| Requested `c` | Sequence of actual height (`win`/`sys`) |
-|---|---|
-| 260 | `956 → 305 → 260` |
-| 305 | `956 → 350 → 305` |
+### The learned presentation offset (June–November 2026)
 
-`c` stayed constant the whole time while only the **actual window height** bounced → iOS, not our layout math, drives the resize. The intermediate = **`c + ~45`** in both cases → a constant additive offset, not the system default. `956` is the brief full-screen transient while the view is attached, and is not painted. `age` grew across switches → the extension process is **warm/reused** (not cold-starting).
+An investigation in June 2026 (same phone, Safari's address bar, App Library search) read the switch as `956 → 305 → 260` when requesting 260 pt and `956 → 350 → 305` when requesting 305 pt, concluded that iOS adds a constant to whatever is requested, and built a trick on that model (Apple Developer Forums thread 799003 describes the general idea): request `target − offset` in `viewIsAppearing` so the inflation would land on `target`, restore `target` in `viewDidAppear`, and learn `offset` from `bounds.height − constraint` during the slide-in, stored in the extension's standard `UserDefaults` per device model, iOS major version and orientation. It was first calibrate-once and later sampled on every slide-in (`4c451c4`).
 
-## What we tried — and the result (all verified on device)
+The November measurements showed why it went wrong:
+
+- **iOS ignored the request.** In 24 of 24 switches in our text view and 13 of 13 in Safari, the extension's view came out at 325 pt (or 288 pt) whatever had been requested (272, 227, 182, 174, 166, 158 pt). What prevented the tall frame was the restore in `viewDidAppear` alone.
+- **When iOS did honour it, the keyboard landed short.** On the first switch after a process start (Safari: 288 → 174 → 280 pt) and now and then during fast switching (325 → 182 → 280 pt, the host told 257 pt), a visibly shorter keyboard showed for a few frames and the host's layout jumped.
+- **The sampler fed on its own output.** With the request ignored, each sample read `325 − (280 − cached)`, i.e. the cached offset plus 45 pt, so the stored offset ratcheted 8 → 53 → 98 → 106 → 114 → 122 pt on the phone (45 → 90 → 135 pt on the simulator), making the short landings shorter. Samples were only dropped at half the target height, so the value never healed.
+
+Removing the trick outright brought back the tall frame on every switch, which is how the restore was found to be the part that mattered. Old builds leave `presentationOffset.<model>.ios<major>.<orientation>` keys in the extension's standard `UserDefaults`; nothing reads them any more.
+
+### Other things tried in June 2026
 
 | Attempt | Result |
 |---|---|
-| Idempotent `updateHeight`; stop re-stamping height in `traitCollectionDidChange` | ❌ No effect |
-| Bottom-pin content at a fixed height so keys don't stretch | ⚠️ Keys stopped ballooning, but a keyboard-background band still grew; doesn't fix the host. Reverted |
-| Transparent input-view background (mask the band) | ❌ Rejected: hides our band but the **reported** height still bounces, so the host (Safari) still jitters |
-| Height constraint `.required` instead of `.defaultHigh` | ❌ No effect — system overrides regardless; only relocates the slack (grew at bottom) |
-| `UIInputView.allowsSelfSizing` + content-driven height | ❌ No effect (confirmed `siz=1`, still `956 → 305 → 260`) |
-| Match the system default height (make ours ~305) | ❌ No effect — overshoot just moved to 350. **This proved the offset is `requested + const`, not the default** |
-| Full Access (`RequestsOpenAccess`) | ❌ Ruled out — Gboard reproduces the no-jitter behavior **without** Full Access |
-| Memory / cold-start eviction reloading the dictionary | ❌ Ruled out — process is warm (`age` grows) |
-| iOS height cache being wiped by dev reinstalls | ❌ Ruled out — jittered on **every** warm switch, not just the first |
-| Pixel-match each key's size/position (Gboard-style) | 🚫 Not pursued — no API for system key metrics; needs per-device × orientation × iOS-version tables with perpetual maintenance; **unnecessary** for the jitter (only the height matters) |
+| Idempotent height updates; stop re-stamping height in `traitCollectionDidChange` | No effect |
+| Bottom-pin content at a fixed height so keys don't stretch | Keys stopped stretching, but the panel's background still grew; reverted |
+| Transparent input-view background | Hides our band, but the panel still moved |
+| Height constraint `.required` instead of `.defaultHigh` | No effect: the system overrides it |
+| `UIInputView.allowsSelfSizing` + content-driven height | No effect |
+| Full Access | Ruled out: Gboard behaves the same without it |
 
-## What we shipped — the fix
+## Measuring it
 
-The **"offset trick"** (see Apple Developer Forums thread 799003 for the general idea): request `target − offset` during the slide-in so iOS's inflation lands exactly on `target`, then restore `target` once presented. Made robust with **continuous auto-calibration**.
-
-1. **Measure on every slide-in** — during the presenting window (`viewIsAppearing` → `viewDidAppear`), each layout pass yields `measured = view.bounds.height − heightConstraint.constant`, which equals the raw inflation whether or not the trick is applied (untricked bounds settle at `target + offset`; tricked at `(target − cached) + offset`). Samples outside `(0, target × 0.5)` are discarded: the full-screen attach transient measures ≈ screen height, and passes where the system height isn't applied yet measure 0. The largest surviving sample is committed to `UserDefaults` at `viewDidAppear` (when it differs from the cache by > 0.5pt) — unless the offset key changed mid-slide-in (rotation during the ~300ms presentation), which would store one orientation's measurement under the other's key.
-2. **Pre-cancel** — request `target − offset` during the slide-in, restore `target` at `viewDidAppear`. A cached offset that looks implausibly large (≥ half the target) is ignored for that appearance — it then behaves like an uncalibrated one, and the sample it takes overwrites the bad cache.
-
-This reproduces Gboard's behavior — **one calibration jitter the first time each key is seen, seamless forever after** (persisted across launches) — with **no hardcoded per-device tables**, so it adapts to any iPhone/iPad and iOS version. Because measurement never stops, a **stale offset self-heals**: a bad first measurement or an iOS point release shifting the value produces one jitter, and that appearance's sample replaces the cache.
-
-A hardcoded **seed** (~45pt) to remove even the first-use jitter was considered and rejected: in a context where the inflation mechanism is absent, a seeded offset would make the keyboard land short and snap *up* on every appearance, and a zero offset can never be learned — a 0 measurement is indistinguishable from a not-yet-inflated layout pass, so the sampler must discard it.
-
-### Offset key
-
-The offset is persisted per `presentationOffset.{model}.ios{major}.{portrait|landscape}` (e.g. `presentationOffset.iPhone17,2.ios19.portrait`):
-
-- **Device model** (`utsname.machine`): `UserDefaults` survives restoring a backup onto a different device, where the old offset may not apply — a new model recalibrates instead of inheriting it.
-- **iOS major version**: an OS update may change the offset — or remove the inflation mechanism entirely, in which case the fresh key never observes a positive sample, never calibrates, and the trick gracefully never engages.
-- **Orientation** comes from `view.window?.windowScene?.interfaceOrientation` *only*; when the scene isn't available the key is nil and that pass neither applies nor records an offset, rather than guessing. Two heuristic fallbacks were tried and were both wrong: `verticalSizeClass == .compact → landscape` is iPhone-only (on iPad the vertical size class is `.regular` in *both* orientations, collapsing iPad landscape into the portrait key), and the view's own bounds aspect is useless because a keyboard is wider than tall in *every* orientation.
-
-### Critical timing detail
-
-The offset **must be applied in `viewIsAppearing(_:)`** (and restored in `viewDidAppear`). Applying it earlier — in `viewDidLoad` or `viewWillAppear` — **reintroduces the jitter**. This was confirmed empirically on device; the precise reason iOS treats the earlier timing differently is not fully understood. `viewIsAppearing(_:)` is back-deployed to iOS 13, so it is safe at the project's iOS 15 deployment target.
-
-Implementation: `ios/Keyboard/KeyboardViewController.swift` — `viewIsAppearing` / `viewDidAppear` / `viewDidLayoutSubviews` / `viewWillDisappear`, the `applyHeight()` / `samplePresentationOffset()` helpers, and the `presentationOffset` (UserDefaults) property. The height constraint stays `.defaultHigh`; `KeyboardView` is pinned to all four edges of the input view and its rows lay out proportionally, so it fills whatever height is applied.
-
-### Self-healing: sample during the presenting window, never after
-
-An earlier revision tried to validate the cache on the first `viewDidLayoutSubviews` *after* `viewDidAppear`: if `view.bounds.height` wasn't within 2pt of `target`, the cached offset was cleared. **This reintroduced jitter during fast keyboard switching.** The reason: iOS removes its presentation inflation *after* `viewDidAppear` (not at it), so the first layout pass after `viewDidAppear` can still observe inflated bounds (`target + offset`). The validator read that as a stale cache and wiped a perfectly correct offset — and fast switching made that racy layout pass more likely to hit, so the cache was repeatedly nuked and every switch became an uncalibrated one. At that instant there is no signal distinguishing "inflation not yet removed" from "offset genuinely stale."
-
-The current continuous sampler heals without that ambiguity by only ever measuring **while presenting**, where inflated bounds are the *expected* state — a sample is a direct read of the true offset, never a misread of not-yet-removed inflation. The trade-off is that sampling is opportunistic: if a fast switch completes without a settled inflated layout pass landing inside the presenting window, nothing is recorded that time and the cache is left alone. (That the settled inflated pass normally does land in-window is proven by the original calibrate-once implementation, which only committed samples taken in that same window and calibrated reliably on device.)
-
-## Caveats
-
-The fix relies on **undocumented** iOS behavior (the presentation inflation); a future iOS could change it. Continuous sampling adapts to a different offset *value* (one jitter, then healed), and the iOS-major key means an OS update recalibrates from scratch — including gracefully never engaging if the update removes the mechanism entirely. The residual gap: if the mechanism disappears *within* an iOS major (or differs by context, e.g. iPad floating/split keyboards) while a calibrated key exists, the keyboard lands short and snaps **up** on those presentations, and a zero offset cannot be learned (a 0 measurement is ambiguous with a not-yet-inflated pass) — re-verify on device across iOS updates and iPad keyboard modes.
-
-A **one-time calibration jitter** on first use per key is expected (matches the system keyboards' first-launch behavior).
-
-During development, reinstalling the extension wipes the persisted offset, so the first switch after each install calibrates again. This is a dev-only artifact, not a shipping issue.
-
-Only the **height** is matched, not key geometry; the keyboard intentionally keeps its own compact layout.
+Logs of the input view's layout passes are not enough: the extension's view read 325 pt in the tall frame whether or not it reached the screen. Record the phone's screen (QuickTime-style capture of the USB-attached device, 60 fps) and find the keyboard panel's top edge in each frame; a tall frame stands out as a single frame 45 pt (135 px at 3×) above the others.

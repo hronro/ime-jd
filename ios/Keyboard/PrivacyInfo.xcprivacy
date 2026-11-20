@@ -10,9 +10,9 @@
     <key>NSPrivacyCollectedDataTypes</key>
     <array/>
     <!-- Required-reason APIs, declared per bundle (App Store Connect rejects
-         uploads that leave them out): UserDefaults.standard holds the
-         height-jitter calibration (KeyboardViewController), read and written
-         by this extension only — CA92.1. The container app uses none. -->
+         uploads that leave them out): the keyboard reads the user
+         dictionary's on/off switch from the App Group's shared UserDefaults
+         (UserDictContainer), which only the container app writes — 1C8F.1. -->
     <key>NSPrivacyAccessedAPITypes</key>
     <array>
         <dict>
@@ -20,7 +20,7 @@
             <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
             <key>NSPrivacyAccessedAPITypeReasons</key>
             <array>
-                <string>CA92.1</string>
+                <string>1C8F.1</string>
             </array>
         </dict>
     </array>

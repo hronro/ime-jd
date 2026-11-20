@@ -15,16 +15,9 @@ final class KeyboardViewController: UIInputViewController {
     private var keyboard: KeyboardView!
     private var heightConstraint: NSLayoutConstraint!
 
-    /// True between `viewIsAppearing` and `viewDidAppear` — the keyboard's slide-in, the
-    /// window during which iOS inflates the input view (see the presentation-offset note).
+    /// Between `viewIsAppearing` and `viewDidAppear`: the slide-in, during
+    /// which the height constraint is held a point short (see `applyHeight`).
     private var isPresenting = false
-    /// Largest plausible offset sampled from this presentation's layout passes; committed
-    /// to `presentationOffset` at `viewDidAppear`. Reset at each `viewIsAppearing`.
-    private var pendingOffset: CGFloat = 0
-    /// The offset key captured at `viewIsAppearing`. Samples are committed only if the key
-    /// is unchanged at `viewDidAppear`, so a rotation mid-slide-in can't store a value
-    /// measured in one orientation under the other orientation's key.
-    private var presentingKey: String?
 
     /// When we last edited the host ourselves (commit / literal / delete).
     /// `textDidChange` uses it to tell our own edits' echoes apart from
@@ -57,9 +50,6 @@ final class KeyboardViewController: UIInputViewController {
             kb.topAnchor.constraint(equalTo: view.topAnchor),
             kb.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
-        // NB: do NOT apply the presentation offset here. Applying it this early (or in
-        // viewWillAppear) reintroduces the switch jitter; it must be applied in
-        // viewIsAppearing. The constraint stays at `target` until then.
     }
 
     /// Adopt an edited user dictionary. A context's dictionary is fixed for
@@ -79,45 +69,25 @@ final class KeyboardViewController: UIInputViewController {
         // Every presentation opens on the plane the field asks for (a numeric
         // field on 123, anything else on letters), whatever plane was showing
         // when the keyboard went away — the system keyboards reset the same way.
-        // Plane changes never touch the height, so this is safe before
-        // viewIsAppearing's offset trick.
         openFieldPlane(force: true)
     }
 
     override func viewIsAppearing(_ animated: Bool) {
         super.viewIsAppearing(animated)
-        // Apply the offset trick at this (and only this) point in the slide-in: request
-        // `target - offset` so iOS's inflation lands on `target`.
         isPresenting = true
-        // Start this presentation's measurement from scratch (also discards anything a
-        // pre-`viewIsAppearing` layout pass may have sampled) and pin the key it's for.
-        pendingOffset = 0
-        presentingKey = offsetKey
         applyHeight()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        // Commit this slide-in's measurement — first calibration and self-healing of a
-        // stale value alike — unless the key changed mid-slide-in (rotation). The 0.5pt
-        // tolerance avoids rewriting the store over sub-pixel layout noise.
-        if pendingOffset > 0, offsetKey == presentingKey,
-           abs(pendingOffset - (presentationOffset ?? 0)) > 0.5 {
-            presentationOffset = pendingOffset
-        }
         isPresenting = false
         applyHeight()
     }
 
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        samplePresentationOffset()
-    }
-
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        // A cancelled appearance (no viewDidAppear) must not leave the trick armed for
-        // applyHeight calls that arrive while off-screen.
+        // A cancelled appearance (no viewDidAppear) must not leave the
+        // height a point short.
         isPresenting = false
         session.cancelAndReset()
     }
@@ -162,91 +132,31 @@ final class KeyboardViewController: UIInputViewController {
         applyHeight()
     }
 
-    // MARK: - Height & the keyboard-switch resize fix
-    //
-    // When a custom keyboard slides in, iOS inflates the input view by a fixed number of
-    // points above the height we request, then snaps it down to our height once presented.
-    // That snap is a visible resize "jitter" on every keyboard switch (and it shifts the
-    // host app's layout — e.g. Safari's bottom address bar). There is no API for that
-    // offset and it varies by device and orientation, so we:
-    //   1. measure it on every slide-in — while presenting, `bounds.height - constraint`
-    //      reads the raw inflation whether or not the trick is applied — and persist the
-    //      result, keyed by device model + iOS major + orientation;
-    //   2. request `target - offset` during the slide-in, so iOS's inflation lands
-    //      exactly on `target`, then restore `target` once presented.
-    // Net effect: one calibration jitter the first time a key is seen (matching the system
-    // keyboards' first-launch behaviour), seamless after — and a bad or outdated offset
-    // heals after a single jitter instead of persisting until reinstall.
+    // MARK: - Height
 
-    private static let offsetStore = UserDefaults.standard
+    /// How far short of its height the keyboard asks to be while it slides
+    /// in. Any change will do (see `applyHeight`); one point because iOS
+    /// sometimes lays the keyboard out at exactly what was asked for, and a
+    /// frame one point short cannot be seen.
+    private static let slideInShortfall: CGFloat = 1
 
-    /// Model identifier (e.g. "iPhone17,2"). Part of the offset key: `UserDefaults`
-    /// survives restoring a backup onto a different device, where the calibrated offset
-    /// may not apply — a new model recalibrates instead of inheriting it.
-    private static let deviceModel: String = {
-        var sys = utsname()
-        uname(&sys)
-        return withUnsafeBytes(of: sys.machine) { buf in
-            String(decoding: buf.prefix(while: { $0 != 0 }), as: UTF8.self)
-        }
-    }()
-
-    /// Nil when the window scene isn't available to report the orientation — then we
-    /// neither apply nor record an offset, rather than guess a bucket. (The size classes
-    /// can't stand in for orientation — `.regular` in both iPad orientations — and neither
-    /// can the view's own aspect: a keyboard is wider than tall in *every* orientation.)
-    /// iOS major is part of the key so an OS update recalibrates; if an update removes the
-    /// inflation mechanism entirely, the fresh key never sees a positive sample, never
-    /// calibrates, and the trick gracefully never engages.
-    private var offsetKey: String? {
-        guard let o = view.window?.windowScene?.interfaceOrientation else { return nil }
-        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-        let orientation = o.isLandscape ? "landscape" : "portrait"
-        return "presentationOffset.\(Self.deviceModel).ios\(major).\(orientation)"
-    }
-
-    private var presentationOffset: CGFloat? {
-        get {
-            guard let key = offsetKey else { return nil }
-            return (Self.offsetStore.object(forKey: key) as? Double).map { CGFloat($0) }
-        }
-        set {
-            guard let key = offsetKey else { return }
-            Self.offsetStore.set(newValue.map { Double($0) }, forKey: key)
-        }
-    }
-
-    /// Sets the height constraint: `target - offset` while presenting (so iOS's inflation
-    /// lands on `target`), otherwise the true `target`. Falls back to `target` when no
-    /// offset is calibrated for this key yet, or when the cached one looks implausibly
-    /// large (≥ half the target) — that appearance then jitters like an uncalibrated one,
-    /// and the sample it takes overwrites the bad cache for next time.
+    /// Pins the input view to the keyboard's own height: the candidate bar
+    /// plus the rows, a point less while it slides in. The constraint stays
+    /// below required (see viewDidLoad), so the system's sizing wins where
+    /// it insists.
+    ///
+    /// The point is for iOS 18, which lays a keyboard that is switching in
+    /// out 45 pt taller than asked and only brings it down ~17 ms after
+    /// `viewDidAppear`, by which time the tall frame has been shown: the
+    /// whole panel flashes taller on every switch. A change of this
+    /// constraint in `viewDidAppear` makes iOS apply the asked-for height
+    /// at once, before that frame is drawn; holding it a point short from
+    /// `viewIsAppearing` is what makes restoring it there a change. See
+    /// ios/docs/keyboard-switch-height-jitter.md.
     private func applyHeight() {
-        guard let keyboard else { return }
-        let target = keyboard.preferredHeight
-        let wanted: CGFloat
-        if isPresenting, let offset = presentationOffset, offset < target * 0.5 {
-            wanted = target - offset
-        } else {
-            wanted = target
-        }
+        guard let keyboard, let heightConstraint else { return }
+        let wanted = keyboard.preferredHeight - (isPresenting ? Self.slideInShortfall : 0)
         if heightConstraint.constant != wanted { heightConstraint.constant = wanted }
-    }
-
-    /// Measure iOS's presentation inflation from this slide-in's layout passes:
-    /// `bounds.height - constraint.constant` equals the raw offset whether or not the
-    /// trick is applied (untricked bounds settle at `target + offset`; tricked at
-    /// `(target - cached) + offset`). Sampling only while presenting is what makes this
-    /// safe to persist — inflated bounds are the *expected* state here, unlike after
-    /// `viewDidAppear`, where "inflation not yet removed" is indistinguishable from
-    /// "cache stale" (see the jitter doc on the removed validation pass). The bounds
-    /// check discards the full-screen attach transient (measures ≈ screen height) and
-    /// passes where the system height isn't applied yet (measure 0).
-    private func samplePresentationOffset() {
-        guard isPresenting, let keyboard, offsetKey == presentingKey else { return }
-        let measured = view.bounds.height - heightConstraint.constant
-        guard measured > 0, measured < keyboard.preferredHeight * 0.5 else { return }
-        pendingOffset = max(pendingOffset, measured)
     }
 
     /// Show the plane the current field's keyboard type asks for. `force`
