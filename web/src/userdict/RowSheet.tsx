@@ -21,7 +21,6 @@ export function RowSheet(props: { state: SheetState | null; model: Model; onClos
       value.value = state.mode === "edit" ? state.row.value : "";
       keys.value = state.mode === "edit" ? state.row.keys : "";
       setEmpty(value.value.trim() === "" && keys.value.trim() === "");
-      requestAnimationFrame(() => value?.focus());
     },
   );
 
@@ -60,7 +59,13 @@ export function RowSheet(props: { state: SheetState | null; model: Model; onClos
   const onInput = () => setEmpty((value?.value.trim() ?? "") === "" && (keys?.value.trim() ?? "") === "");
 
   return (
-    <Dialog open={props.state !== null} title={props.state?.mode === "edit" ? "编辑词条" : "添加词条"} size="s" onClose={props.onClose}>
+    <Dialog
+      open={props.state !== null}
+      title={props.state?.mode === "edit" ? "编辑词条" : "添加词条"}
+      size="s"
+      onClose={props.onClose}
+      onOpen={() => value?.focus()}
+    >
       <form
         class="ud-sheet"
         onSubmit={(e) => {
@@ -68,7 +73,7 @@ export function RowSheet(props: { state: SheetState | null; model: Model; onClos
           save();
         }}
       >
-        <input ref={(el) => (value = el)} autofocus class="field" placeholder="词" aria-label="词" {...IME_FIELD_ATTRS} {...({ enterkeyhint: "next" } as Record<string, string>)} onInput={onInput} />
+        <input ref={(el) => (value = el)} class="field" placeholder="词" aria-label="词" {...IME_FIELD_ATTRS} {...({ enterkeyhint: "next" } as Record<string, string>)} onInput={onInput} />
         <input
           ref={(el) => (keys = el)}
           class="field ud-sheet-keys"

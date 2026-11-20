@@ -66,12 +66,25 @@ test("the text view edits the same file, with libjd's notes as lint marks", asyn
   await expect(page.locator(".ud-verdict").nth(1)).toHaveText("缺少制表符（无编码），不生效");
 });
 
-test("import appends a file's rows as they are; export writes the file", async ({ page }) => {
+test("import appends a file's rows as they are; export writes the file", async ({ page, browserName }) => {
   // The <input type=file> / download path that Firefox and Safari take.
   await page.addInitScript(() => {
     delete (window as Partial<Window>).showOpenFilePicker;
     delete (window as Partial<Window>).showSaveFilePicker;
   });
+  if (browserName === "firefox") {
+    // Playwright's Firefox stands in for the native picker by cancelling it
+    // as it opens: the input gets `cancel` (no files) at once, and `change`
+    // only when the test sets the files. A real pick fires no `cancel`, so
+    // keep the page from hearing this one.
+    await page.addInitScript(() => {
+      const add = HTMLInputElement.prototype.addEventListener;
+      HTMLInputElement.prototype.addEventListener = function (this: HTMLInputElement, ...args: Parameters<typeof add>) {
+        if (args[0] === "cancel" && this.type === "file") return;
+        add.apply(this, args);
+      };
+    });
+  }
   await ready(page);
   await openManager(page);
   const chooser = page.waitForEvent("filechooser");

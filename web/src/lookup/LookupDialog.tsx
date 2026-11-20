@@ -36,16 +36,17 @@ export default function LookupDialog(props: { open: boolean; onClose: () => void
         setEmpty(false);
         run();
       }
-      // After showModal() has run (it focuses the autofocus field itself).
-      requestAnimationFrame(() => {
-        input?.focus();
-        input?.select();
-      });
     },
   );
 
+  // The field, with whatever it holds selected, so typing replaces it.
+  const focusField = () => {
+    input?.focus();
+    input?.select();
+  };
+
   return (
-    <Dialog open={props.open} title="编码反查" size="s" onClose={props.onClose}>
+    <Dialog open={props.open} title="编码反查" size="s" onClose={props.onClose} onOpen={focusField}>
       <form
         class="lookup-form"
         onSubmit={(e) => {
@@ -60,7 +61,6 @@ export default function LookupDialog(props: { open: boolean; onClose: () => void
           <input
             ref={(el) => (input = el)}
             id="lookup-input"
-            autofocus
             class="field lookup-input"
             type="text"
             placeholder="例如：键道"

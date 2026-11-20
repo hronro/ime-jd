@@ -16,6 +16,12 @@ export interface DialogProps {
   size?: "s" | "m" | "l";
   /** Extra content beside the title. */
   headerExtra?: JSX.Element;
+  /**
+   * Runs right after showModal(): where to put focus. Used instead of the
+   * `autofocus` attribute, which WebKit also honors at the next rendering
+   * update — late enough to undo a selection made in the meantime.
+   */
+  onOpen?: () => void;
   children: JSX.Element;
 }
 
@@ -27,8 +33,10 @@ export function Dialog(props: DialogProps) {
     () => ({ dialog: el(), open: props.open }),
     ({ dialog, open }) => {
       if (!dialog) return;
-      if (open && !dialog.open) dialog.showModal();
-      else if (!open && dialog.open) dialog.close();
+      if (open && !dialog.open) {
+        dialog.showModal();
+        props.onOpen?.();
+      } else if (!open && dialog.open) dialog.close();
     },
   );
 
