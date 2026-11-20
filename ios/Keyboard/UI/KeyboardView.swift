@@ -13,7 +13,7 @@ final class KeyboardView: UIView {
     /// Called when the preferred height changes (rotation / idiom change).
     var onHeightChanged: (() -> Void)?
 
-    var showsNextKeyboardKey = true { didSet { if showsNextKeyboardKey != oldValue { rebuildKeys() } } }
+    var showsNextKeyboardKey = true { didSet { if showsNextKeyboardKey != oldValue { invalidateKeys() } } }
 
     /// Whether the bar, keys, and candidate grid keep clear of the horizontal
     /// safe-area insets (true: the notch in landscape) or span the full width.
@@ -35,16 +35,16 @@ final class KeyboardView: UIView {
     }
 
     private(set) var theme: KeyboardTheme
-    private var idiom: KeyboardIdiom = .phone { didSet { if idiom != oldValue { rebuildKeys() } } }
+    private var idiom: KeyboardIdiom = .phone { didSet { if idiom != oldValue { invalidateKeys() } } }
     /// iPhone landscape. The stock geometry proportions the rows per orientation.
     private var compactHeight = false {
-        didSet { if compactHeight != oldValue, keyGeometry != .classic { rebuildKeys() } }
+        didSet { if compactHeight != oldValue, keyGeometry != .classic { invalidateKeys() } }
     }
 
     /// A regular-width iPhone keyboard: the iPhone Duo's unfolded inner
     /// display (and only that — a large iPhone in landscape is compact height).
     private var regularWidth = false {
-        didSet { if regularWidth != oldValue, idiom == .phone { rebuildKeys() } }
+        didSet { if regularWidth != oldValue, idiom == .phone { invalidateKeys() } }
     }
 
     /// A Plus / Pro Max iPhone (414pt wide and up, the iPhone Duo's outer
@@ -55,7 +55,7 @@ final class KeyboardView: UIView {
         didSet {
             guard largePhone != oldValue else { return }
             keyGrid.largePhone = largePhone
-            rebuildKeys()   // the in-row globe's bottom row differs (see KeyLayout)
+            invalidateKeys()   // the in-row globe's bottom row differs (see KeyLayout)
             onHeightChanged?()
         }
     }
@@ -68,6 +68,16 @@ final class KeyboardView: UIView {
         if compactHeight { return .stockCompact }
         return regularWidth ? .wide : .stock
     }
+
+    /// The key buttons no longer match the plane, geometry, globe key or
+    /// style. They are rebuilt once, at the next layout pass with a real
+    /// width (see `layoutSubviews`), however many of those changed in
+    /// between: a presentation learns the globe flag, the traits and the
+    /// width one after another, and rebuilding on each made the same ~35
+    /// buttons three times every time the keyboard came up.
+    private var keysStale = true
+    /// Inside `layoutSubviews`, which builds stale keys at its end anyway.
+    private var isLayingOut = false
 
     private var layer_: KeyboardLayer = .letters
     private var shift: ShiftState = .off
@@ -143,8 +153,7 @@ final class KeyboardView: UIView {
             keyGrid.trailingAnchor.constraint(equalTo: contentGuide.trailingAnchor),
             keyGrid.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-
-        rebuildKeys()
+        // The keys are built at the first layout pass (see `keysStale`).
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -178,12 +187,17 @@ final class KeyboardView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        isLayingOut = true
+        defer { isLayingOut = false }
         if idiom == .phone, !compactHeight, bounds.width > 0 { largePhone = bounds.width >= 414 }
         // The system can host the keyboard narrower than the screen — 452pt
         // of the iPhone Duo's 466pt outer display — and that inset is part of
         // the stock side margin.
         let screenWidth = window?.windowScene?.screen.bounds.width ?? bounds.width
         keyGrid.systemSideInset = idiom == .phone ? max(0, (screenWidth - bounds.width) / 2) : 0
+        // Not before the width is known: it decides `largePhone`, and with
+        // it the bottom row.
+        if keysStale, bounds.width > 0 { buildKeys() }
     }
 
     /// Switch the visible plane: the owner opens each field on the plane its
@@ -234,7 +248,7 @@ final class KeyboardView: UIView {
         // Key faces and the plane's height follow the style (the QA
         // `-classic` switch; the OS never changes it under a running keyboard).
         if restyled {
-            rebuildKeys()
+            invalidateKeys()
             onHeightChanged?()
         }
     }
@@ -260,12 +274,20 @@ final class KeyboardView: UIView {
 
     // MARK: - Keys
 
-    private func rebuildKeys() {
+    /// Mark the keys for a rebuild at the next layout pass (see `keysStale`).
+    private func invalidateKeys() {
+        guard !keysStale else { return }
+        keysStale = true
+        if !isLayingOut { setNeedsLayout() }
+    }
+
+    private func buildKeys() {
         let geometry = keyGeometry
         keyGrid.setRows(KeyLayout.rows(layer: layer_, idiom: idiom, showGlobe: showsNextKeyboardKey,
                                        geometry: geometry, largePhone: largePhone, style: theme.style),
                         geometry: geometry)
         keyGrid.updateShift(shift)
+        keysStale = false
     }
 
     private func handle(_ cap: KeyCap) {
@@ -305,7 +327,7 @@ final class KeyboardView: UIView {
     private func setLayer(_ l: KeyboardLayer) {
         layer_ = l
         shift = .off
-        rebuildKeys()
+        invalidateKeys()
     }
 
     // MARK: - Candidates
