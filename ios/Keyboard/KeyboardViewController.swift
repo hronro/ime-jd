@@ -1,17 +1,41 @@
 import UIKit
 import Libjd
 
-/// The keyboard extension's principal class. Owns the engine session and hosts the
-/// reusable `KeyboardView`, forwarding committed text to the host via the text proxy
-/// and keeping appearance / return key / height in sync with the host field.
+/// The keyboard extension's principal class. Hosts the process's `KeyboardView` and
+/// engine session (see `Shared`), forwarding committed text to the host via the text
+/// proxy and keeping appearance / return key / height in sync with the host field.
 final class KeyboardViewController: UIInputViewController {
-    // 16 per fetch — iOS selects by tap, so pages aren't capped at 9 the way
-    // macOS's 1-9 digit labels cap them; bigger pages = fewer grid-fill round trips.
-    private let session = InputSession(userDict: UserDictContainer.shared.load()?.dict)
-    /// What the session's dictionary was loaded from, compared at every
-    /// presentation: an edit made in the container app in between is
-    /// adopted then, when nothing is composing (see syncUserDict).
-    private var userDictStamp = UserDictContainer.shared.stamp()
+    /// The keyboard view and its session, kept for the life of the process.
+    /// iOS creates a new controller for every presentation (each switch to
+    /// the keyboard, each time it comes back up) and keeps the extension
+    /// process running in between; building the view — ~35 keys with their
+    /// constraints and glyphs — was most of what a presentation cost us. So
+    /// the view is built once and each new controller adopts it.
+    private final class Shared {
+        let session: InputSession
+        let keyboard: KeyboardView
+        /// What the session's dictionary was loaded from, compared at every
+        /// presentation: an edit made in the container app in between is
+        /// adopted then, when nothing is composing (see syncUserDict).
+        var userDictStamp: UserDictContainer.Stamp
+
+        init(theme: KeyboardTheme) {
+            // The stamp first: a file that changes in between is then
+            // reloaded at the next presentation instead of missed.
+            userDictStamp = UserDictContainer.shared.stamp()
+            session = InputSession(userDict: UserDictContainer.shared.load()?.dict)
+            keyboard = KeyboardView(session: session, theme: theme)
+            keyboard.translatesAutoresizingMaskIntoConstraints = false
+        }
+    }
+    private static var shared: Shared?
+    /// The controller that adopted the shared view last. iOS keeps replaced
+    /// controllers alive for a while (up to four at once while switching
+    /// quickly); they must leave the view and the session alone.
+    private static weak var owner: KeyboardViewController?
+    private var isOwner: Bool { Self.owner === self }
+
+    private var session: InputSession!
     private var keyboard: KeyboardView!
     private var heightConstraint: NSLayoutConstraint!
 
@@ -29,22 +53,34 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        session.host = self
+        adoptKeyboard()
+        heightConstraint = view.heightAnchor.constraint(equalToConstant: keyboard.preferredHeight)
+        heightConstraint.priority = .defaultHigh   // don't fight the system's input-view sizing
+        heightConstraint.isActive = true
+    }
 
-        let kb = KeyboardView(session: session, theme: currentTheme())
-        kb.translatesAutoresizingMaskIntoConstraints = false
+    /// Take the shared keyboard view (building it the first time) into this
+    /// controller's view, and point its callbacks and the session's host
+    /// here. Whatever the previous owner left — a composition, an open
+    /// candidate grid — is dropped, as a fresh view would not have it.
+    private func adoptKeyboard() {
+        let shared = Self.shared ?? Shared(theme: currentTheme())
+        Self.shared = shared
+        Self.owner = self
+        session = shared.session
+        keyboard = shared.keyboard
+        session.host = self
+        session.cancelAndReset()
+
+        let kb = shared.keyboard
         kb.onReturn = { [weak self] in self?.onReturn() }
         kb.onNextKeyboard = { [weak self] in self?.advanceToNextInputMode() }
+        kb.onHeightChanged = { [weak self] in self?.applyHeight() }
         kb.showsNextKeyboardKey = needsInputModeSwitchKey
         kb.returnLabel = KeyboardTheme.returnLabel(textDocumentProxy.returnKeyType ?? .default)
-        kb.onHeightChanged = { [weak self] in self?.applyHeight() }
-        view.addSubview(kb)
-        keyboard = kb
-
-        heightConstraint = view.heightAnchor.constraint(equalToConstant: kb.preferredHeight)
-        heightConstraint.priority = .defaultHigh   // don't fight the system's input-view sizing
+        guard kb.superview !== view else { return }
+        view.addSubview(kb)   // out of the previous owner's view, if any
         NSLayoutConstraint.activate([
-            heightConstraint,
             kb.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             kb.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             kb.topAnchor.constraint(equalTo: view.topAnchor),
@@ -57,14 +93,18 @@ final class KeyboardViewController: UIInputViewController {
     /// swap happens between presentations, when nothing is composing. Two
     /// stats and a defaults read when nothing changed.
     private func syncUserDict() {
+        guard let shared = Self.shared else { return }
         let stamp = UserDictContainer.shared.stamp()
-        guard stamp != userDictStamp, !session.isComposing else { return }
-        userDictStamp = stamp
+        guard stamp != shared.userDictStamp, !session.isComposing else { return }
+        shared.userDictStamp = stamp
         session.replaceDictionary(UserDictContainer.shared.load()?.dict)
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // A controller iOS shows again after another one took the view over
+        // (the keyboard dismissed and brought back) takes it back.
+        if !isOwner { adoptKeyboard() }
         syncUserDict()
         // Every presentation opens on the plane the field asks for (a numeric
         // field on 123, anything else on letters), whatever plane was showing
@@ -89,11 +129,12 @@ final class KeyboardViewController: UIInputViewController {
         // A cancelled appearance (no viewDidAppear) must not leave the
         // height a point short.
         isPresenting = false
-        session.cancelAndReset()
+        if isOwner { session.cancelAndReset() }
     }
 
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
+        guard isOwner else { return }
         // Apple documents needsInputModeSwitchKey as only reliable from layout
         // time on; the viewDidLoad read can be wrong (and can change later,
         // e.g. when the keyboard list changes). The didSet no-ops unless the
@@ -107,6 +148,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
+        guard isOwner else { return }
         // The host's text or caret changed. If it wasn't us — the user tapped
         // another field, moved the caret, or the app edited the text — the
         // in-flight composition's context is gone: drop it (like the system
@@ -128,6 +170,7 @@ final class KeyboardViewController: UIInputViewController {
 
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
+        guard isOwner else { return }
         refreshAppearance()
         applyHeight()
     }

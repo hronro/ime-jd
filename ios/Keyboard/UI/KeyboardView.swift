@@ -162,6 +162,10 @@ final class KeyboardView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        // Out of a window the traits are unspecified; reading them would
+        // flip idiom / size classes and rebuild the keys for nothing while
+        // the extension moves this view from one controller to the next.
+        guard window != nil else { return }
         updateForTraits()
     }
 
