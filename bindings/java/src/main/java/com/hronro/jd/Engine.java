@@ -29,6 +29,10 @@ public final class Engine implements AutoCloseable {
     // dictionary's blob (jd_jni.c). 0 once closed.
     private long handle;
 
+    // The dictionary, kept reachable while the engine is: a blob in a direct
+    // buffer is read where it is, not copied, and must outlive the context.
+    private @Nullable UserDict userDict;
+
     /** An engine over the built-in dictionary alone. */
     public Engine() {
         this(null);
@@ -42,11 +46,14 @@ public final class Engine implements AutoCloseable {
      * @throws IllegalStateException if the native context cannot be created
      */
     public Engine(@Nullable UserDict userDict) {
-        long created = Jni.init(userDict == null ? null : userDict.blob);
+        long created = userDict != null && userDict.buffer != null
+                ? Jni.initDirect(userDict.buffer)
+                : Jni.init(userDict == null ? null : userDict.blob);
         if (created == 0) {
             throw new IllegalStateException("jd_init failed (allocation failure)");
         }
         handle = created;
+        this.userDict = userDict;
     }
 
     /** Feeds one keystroke, an ASCII byte, and returns the resulting state. */
@@ -138,6 +145,7 @@ public final class Engine implements AutoCloseable {
         if (handle != 0) {
             Jni.deinit(handle);
             handle = 0;
+            userDict = null;
         }
     }
 

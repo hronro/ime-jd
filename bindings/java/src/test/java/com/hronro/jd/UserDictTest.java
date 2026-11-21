@@ -9,9 +9,17 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class UserDictTest {
     private static void type(Engine e, String keys) {
@@ -157,7 +165,7 @@ class UserDictTest {
         assertEquals(UserDictException.Status.TOO_MANY_ENTRIES, error.getStatus());
         assertEquals(UserDict.MAX_ENTRIES + 1, error.getLine(), "the first excess phrase");
 
-        String tooLong = "#" + "x".repeat(8 * 1024 * 1024); // JD_USER_DICT_TEXT_MAX, plus the '#'
+        String tooLong = "#" + "x".repeat(UserDict.MAX_TEXT_BYTES); // the cap, plus the '#'
         UserDictException refused = assertThrows(UserDictException.class, () -> UserDict.build(tooLong));
         assertEquals(UserDictException.Status.TEXT_TOO_LONG, refused.getStatus());
         assertEquals(0, refused.getLine());
@@ -203,5 +211,58 @@ class UserDictTest {
         assertEquals(0, UserDict.build(longest + "\tzzzzzz\n").report().invalid());
         assertEquals(1, UserDict.build(longest + "字\tzzzzzz\n").report().invalid());
         assertEquals(1, UserDict.build("长\t" + "z".repeat(UserDict.MAX_KEY_LENGTH + 1) + "\n").report().invalid());
+    }
+
+    @Test
+    void hashIsLibjdsPinnedWyhash() {
+        // The values libjd pins in its own tests: a cache tagged by one release
+        // must read the same in the next.
+        assertEquals(0x0409_638E_E2BD_E459L, UserDict.hash(new byte[0]));
+        byte[] text = "键道\tjd\n".getBytes(StandardCharsets.UTF_8);
+        assertEquals(0xB5F6_C376_6F38_E694L, UserDict.hash(text));
+        ByteBuffer direct = ByteBuffer.allocateDirect(text.length + 2);
+        direct.put((byte) 'x').put(text).flip().position(1);
+        assertEquals(0xB5F6_C376_6F38_E694L, UserDict.hash(direct), "position to limit");
+        assertThrows(IllegalArgumentException.class, () -> UserDict.hash(ByteBuffer.wrap(text)));
+    }
+
+    @Test
+    void bytesBuildWhatTheirTextBuilds() throws UserDictException {
+        String text = "测试词\tb\n不\tb\n乙\tA\n";
+        UserDict.Built fromText = UserDict.build(text, 7);
+        UserDict.Built fromBytes = UserDict.build(text.getBytes(StandardCharsets.UTF_8), 7);
+        assertTrue(Arrays.equals(fromText.dict().getBlob(), fromBytes.dict().getBlob()));
+        assertEquals(fromText.report(), fromBytes.report());
+    }
+
+    @Test
+    void aBlobInADirectBufferIsReadWhereItIs(@TempDir Path dir) throws IOException, UserDictException {
+        UserDict built = UserDict.build("测试词\tb\n", 42).dict();
+        Path file = dir.resolve("dict.blob");
+        Files.write(file, built.getBlob());
+
+        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
+            UserDict mapped = UserDict.fromBuffer(channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size()));
+            assertEquals(42, mapped.getSourceTag());
+            assertEquals(1, mapped.getEntries());
+            assertTrue(Arrays.equals(built.getBlob(), mapped.getBlob()));
+            try (Engine e = new Engine(mapped)) {
+                type(e, "b");
+                assertEquals(List.of("测试词", "不"), values(e.readRange(0, 2)));
+            }
+        }
+
+        // Damaged, or not direct: refused.
+        ByteBuffer truncated = ByteBuffer.allocateDirect(built.getBlob().length - 1);
+        truncated.put(built.getBlob(), 0, truncated.capacity()).flip();
+        assertEquals(UserDictException.Status.CORRUPT,
+                assertThrows(UserDictException.class, () -> UserDict.fromBuffer(truncated)).getStatus());
+        assertThrows(IllegalArgumentException.class, () -> UserDict.fromBuffer(ByteBuffer.wrap(built.getBlob())));
+    }
+
+    @Test
+    void theTextCapMatchesTheLibrary() {
+        assertEquals(16 * 1024 * 1024, UserDict.MAX_TEXT_BYTES);
+        assertEquals(500_000, UserDict.MAX_ENTRIES);
     }
 }

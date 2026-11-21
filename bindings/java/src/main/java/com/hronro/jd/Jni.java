@@ -7,6 +7,7 @@
 // jd_jni.c follows.
 package com.hronro.jd;
 
+import java.nio.ByteBuffer;
 import java.util.List;
 import org.jspecify.annotations.Nullable;
 
@@ -31,6 +32,12 @@ final class Jni {
      * blob.
      */
     static native long init(byte @Nullable [] userDict);
+
+    /**
+     * {@link #init} over a blob in a direct buffer, read where it is and never
+     * copied: the caller keeps the buffer reachable until {@link #deinit}.
+     */
+    static native long initDirect(ByteBuffer userDict);
 
     /** Frees a context from {@link #init}, and its copy of the blob. */
     static native void deinit(long handle);
@@ -60,6 +67,15 @@ final class Jni {
 
     /** A cached blob, validated exactly as jd_init would: {status, entries, source tag}. */
     static native long[] userDictCheck(byte[] blob);
+
+    /** {@link #userDictCheck} over a direct buffer, in place. */
+    static native long[] userDictCheckDirect(ByteBuffer blob);
+
+    /** libjd's content hash, jd_user_dict_hash. */
+    static native long userDictHash(byte[] bytes);
+
+    /** {@link #userDictHash} over a direct buffer, in place. */
+    static native long userDictHashDirect(ByteBuffer bytes);
 
     /**
      * Builds a user dictionary from UTF-8 text: {blob, report}. The blob is a
