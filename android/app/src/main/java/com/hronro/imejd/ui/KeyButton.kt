@@ -48,11 +48,11 @@ class KeyButton(
     var onAlternatesCommit: ((KeyButton) -> String?)? = null
 
     var displayText: String = spec.cap.label
-        set(value) { field = value; invalidate() }
+        set(value) { if (value != field) { field = value; invalidate() } }
 
     /** When true (shift armed/locked), render the key in the "active" light style. */
     var isAccented: Boolean = false
-        set(value) { field = value; installBackground(); invalidate() }
+        set(value) { if (value != field) { field = value; installBackground(); invalidate() } }
 
     /** Special keys (shift/backspace/globe) render a vector icon instead of a glyph. */
     var icon: Drawable? = null
@@ -88,6 +88,8 @@ class KeyButton(
     /** When this key's current press began, in presses across all keys. */
     var pressOrder = 0
         private set
+    /** The background has shown a press since it was installed. */
+    private var rippled = false
 
     private companion object {
         var presses = 0
@@ -99,6 +101,7 @@ class KeyButton(
     }
 
     fun apply(theme: KeyboardTheme) {
+        if (theme == this.theme) return
         this.theme = theme
         installBackground()
         invalidate()
@@ -138,6 +141,7 @@ class KeyButton(
 
     // Rounded surface + a bounded Material ripple (clipped to the rounded mask).
     private fun installBackground() {
+        rippled = false
         val content = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = corner
@@ -185,6 +189,7 @@ class KeyButton(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 isTracking = true
+                rippled = true
                 pressOrder = ++presses
                 onPressBegan?.invoke(this)
                 KeyFeedback.play(this, spec.cap)
@@ -276,6 +281,25 @@ class KeyButton(
         fire()
     }
 
+    /**
+     * The plane this key is on is being hidden. A press still on it ends
+     * without typing (the rest of it is ignored). A press ripple is dropped
+     * with the background that drew it: a ripple only advances while its key
+     * is drawn, so one not finished — typically on the key that switched
+     * planes — would play out when the plane shows again.
+     */
+    fun leavePlane() {
+        if (isTracking) {
+            isTracking = false
+            stopAlternatesDelay()
+            showingAlternates = false
+            isPressed = false
+            stopRepeat()
+            preview(KeyPreviewEvent.CANCEL)
+        }
+        if (rippled) installBackground()
+    }
+
     private fun preview(event: KeyPreviewEvent) {
         if (hasPreview) onPreview?.invoke(this, event)
     }
@@ -320,7 +344,7 @@ class KeyButton(
         stopRepeat()
         stopAlternatesDelay()
         showingAlternates = false
-        // Layer switches rebuild the key plane mid-press; don't strand a balloon.
+        // The keyboard can go away mid-press; don't strand a balloon.
         preview(KeyPreviewEvent.CANCEL)
     }
 }

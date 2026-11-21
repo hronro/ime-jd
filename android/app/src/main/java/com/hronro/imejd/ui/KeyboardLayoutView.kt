@@ -36,7 +36,16 @@ class KeyboardLayoutView(
         }
 
     private class RowItem(val spec: KeySpec, val button: KeyButton?)
+    /** The plane on screen. */
     private var rows: List<List<RowItem>> = emptyList()
+    /**
+     * The planes built so far (letters, 123, #+=), kept so that switching back
+     * to one shows its buttons again instead of building ~35 new ones on every
+     * trip to 123 for a mark. A kept plane's buttons stay children, GONE while
+     * another plane shows. Everything else that shapes the keys (the idiom) is
+     * fixed for this view's life.
+     */
+    private val planes = HashMap<KeyboardLayer, List<List<RowItem>>>()
     private var shift: ShiftState = ShiftState.OFF
 
     private val density = context.resources.displayMetrics.density
@@ -51,9 +60,29 @@ class KeyboardLayoutView(
         for (row in rows) for (item in row) item.button?.let(body)
     }
 
-    fun setRows(specRows: List<List<KeySpec>>) {
-        removeAllViews()
-        rows = specRows.map { row ->
+    /** Show [layer]'s keys: its buttons as built earlier, else built now from
+     *  [specRows] and kept. Brings a kept plane up to date with the theme and
+     *  return label it missed while hidden; the owner re-asserts the shift. */
+    fun showPlane(layer: KeyboardLayer, specRows: () -> List<List<KeySpec>>) {
+        val kept = planes[layer]
+        if (kept != null && kept === rows) return
+        forEachButton { it.leavePlane(); it.visibility = GONE }
+        if (kept != null) {
+            rows = kept
+            forEachButton { b ->
+                b.apply(theme)
+                if (b.spec.cap is KeyCap.Return) b.displayText = returnLabel
+                b.visibility = VISIBLE
+            }
+        } else {
+            rows = build(specRows())
+            planes[layer] = rows
+        }
+        requestLayout()
+    }
+
+    private fun build(specRows: List<List<KeySpec>>): List<List<RowItem>> =
+        specRows.map { row ->
             row.map { spec ->
                 if (spec.cap is KeyCap.Spacer) {
                     RowItem(spec, null)
@@ -71,9 +100,6 @@ class KeyboardLayoutView(
                 }
             }
         }
-        updateShift(shift)
-        requestLayout()
-    }
 
     /** A key went down: type any other key still held (see
      *  [KeyButton.commitForRollover]), in the order they were pressed. */

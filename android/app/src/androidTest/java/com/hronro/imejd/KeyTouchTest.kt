@@ -1,6 +1,7 @@
 // Touches on the in-app preview keyboard — the same KeyboardView, key planes
 // and KeyButtons as the IME — injected the way fingers make them, for what
-// only real touch dispatch shows: which key types first when presses overlap.
+// only real touch dispatch shows: which key types first when presses overlap,
+// and what a held key does when the plane under it switches.
 package com.hronro.imejd
 
 import android.app.Activity
@@ -19,6 +20,7 @@ import com.hronro.imejd.engine.KeyAction
 import com.hronro.imejd.engine.KeyboardHost
 import com.hronro.imejd.ui.KeyButton
 import com.hronro.imejd.ui.KeyCap
+import com.hronro.imejd.ui.KeyboardLayer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -148,5 +150,27 @@ class KeyTouchTest {
         fingers.down(0, key { it == KeyCap.Space })
         fingers.up(0)
         assertEquals(inOrder, fieldText())
+    }
+
+    /**
+     * A plane switched away from mid-press takes the press with it: delete
+     * held down while the other thumb taps 123 stops deleting, rather than
+     * repeating on a key that is no longer on screen until the finger lifts.
+     */
+    @Test
+    fun heldDeleteStopsWhenThePlaneSwitches() {
+        launch(typed = "n ".repeat(12))
+        val start = fieldText().length
+        val fingers = Fingers()
+        fingers.down(0, key { it == KeyCap.Backspace })
+        SystemClock.sleep(500) // deletes once, then repeats every 100 ms from 350 ms
+        fingers.down(1, key { it == KeyCap.ToLayer(KeyboardLayer.NUMBERS) })
+        fingers.up(1)
+        val atSwitch = fieldText()
+        assertTrue("delete should have repeated before the switch", atSwitch.length in 1 until start - 1)
+        SystemClock.sleep(600)
+        assertEquals(atSwitch, fieldText())
+        fingers.up(0)
+        assertEquals(atSwitch, fieldText())
     }
 }

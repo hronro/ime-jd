@@ -109,7 +109,7 @@ class KeyboardView(
             insets
         }
 
-        rebuildKeys()
+        showKeys()
     }
 
     override fun onAttachedToWindow() {
@@ -138,8 +138,8 @@ class KeyboardView(
 
     // MARK: - Keys
 
-    private fun rebuildKeys() {
-        keyGrid.setRows(KeyLayout.rows(layer, idiom))
+    private fun showKeys() {
+        keyGrid.showPlane(layer) { KeyLayout.rows(layer, idiom) }
         keyGrid.updateShift(shift)
     }
 
@@ -184,7 +184,7 @@ class KeyboardView(
     private fun setLayer(l: KeyboardLayer) {
         layer = l
         shift = ShiftState.OFF
-        rebuildKeys()
+        showKeys()
     }
 
     /**
