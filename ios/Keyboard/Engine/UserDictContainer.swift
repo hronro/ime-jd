@@ -11,9 +11,17 @@
 // denied). So the keyboard never writes — and a cache it cannot refresh is
 // why the text travels with the blob: after an App Store update the blob is
 // stale (built against another libjd), and the keyboard rebuilds from the
-// text in memory, a few milliseconds, until the app next runs and rewrites
-// the blob. Older iOS versions are unverified: an unreadable container means
-// "no user dictionary", never an error.
+// text in memory until the app next runs and rewrites the blob. Older iOS
+// versions are unverified: an unreadable container means "no user
+// dictionary", never an error.
+//
+// Memory is what bounds a keyboard extension, so the keyboard maps both
+// files rather than reading them (`MappedFile`): the blob is used where it
+// lies, the text is hashed — and, when the blob will not do, built from —
+// where it lies, and file-backed pages count against no limit. A load from
+// the blob allocates nothing in proportion to the dictionary; a rebuild
+// holds the build's buffer for a moment and keeps the blob. The app replaces
+// both files atomically, which is what makes mapping them safe.
 
 import Foundation
 import os
@@ -101,23 +109,27 @@ struct UserDictContainer {
     /// the app rewrites it.
     func load() -> Loaded? {
         guard isEnabled, let textURL else { return nil }
-        guard let text = (try? UserDictFile.read(at: textURL)) ?? nil else {
+        guard let file = (try? MappedFile.open(textURL)) ?? nil else {
             Self.log.notice("user dict: no readable phrases file; running without")
             return nil
         }
-        let tag = UserDictFile.hash(text)
-        if let blobURL,
-           let data = try? Data(contentsOf: blobURL),
-           let dict = try? UserDict(blob: data),
-           dict.sourceTag == tag {
-            Self.log.notice("user dict: \(dict.entries, privacy: .public) phrases from the blob")
-            return Loaded(dict: dict, source: .blob)
+        // The text's bytes are the mapping's: keep it until the last use.
+        return withExtendedLifetime(file) {
+            let text = UserDictFile.withoutBOM(file.bytes)
+            let tag = UserDict.hash(text)
+            if let blobURL,
+               let blob = (try? MappedFile.open(blobURL)) ?? nil,
+               let dict = try? UserDict(mapping: blob),
+               dict.sourceTag == tag {
+                Self.log.notice("user dict: \(dict.entries, privacy: .public) phrases from the blob")
+                return Loaded(dict: dict, source: .blob)
+            }
+            guard let built = try? UserDict.build(utf8: text, sourceTag: tag) else {
+                Self.log.notice("user dict: the phrases file cannot be built; running without")
+                return nil
+            }
+            Self.log.notice("user dict: \(built.dict.entries, privacy: .public) phrases rebuilt from the text (blob missing, stale or mismatched)")
+            return Loaded(dict: built.dict, source: .rebuilt)
         }
-        guard let built = try? UserDict.build(text, sourceTag: tag) else {
-            Self.log.notice("user dict: the phrases file cannot be built; running without")
-            return nil
-        }
-        Self.log.notice("user dict: \(built.dict.entries, privacy: .public) phrases rebuilt from the text (blob missing, stale or mismatched)")
-        return Loaded(dict: built.dict, source: .rebuilt)
     }
 }

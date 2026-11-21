@@ -30,6 +30,9 @@ final class UserDictListViewController: UITableViewController, UISearchResultsUp
     /// or the search hits.
     private var shown: [Int] = []
     private var filter = ""
+    /// The rows as one searchable text, built at the first query after the
+    /// rows change.
+    private var search: UserDictSearch?
     private var storeObserver: NSObjectProtocol?
     private let enableSwitch = UISwitch()
 
@@ -82,19 +85,18 @@ final class UserDictListViewController: UITableViewController, UISearchResultsUp
 
     private func refresh() {
         enableSwitch.isOn = store.isEnabled
+        search = nil
         refreshShown()
         tableView.reloadData()
     }
 
     private func refreshShown() {
-        let rows = store.rows
         if filter.isEmpty {
-            shown = Array(rows.indices)
+            shown = Array(store.rows.indices)
         } else {
-            shown = rows.indices.filter {
-                rows[$0].entry.value.localizedCaseInsensitiveContains(filter)
-                    || rows[$0].entry.keys.localizedCaseInsensitiveContains(filter)
-            }
+            let search = self.search ?? UserDictSearch(store.rows.lazy.map(\.entry))
+            self.search = search
+            shown = search.matches(filter)
         }
     }
 

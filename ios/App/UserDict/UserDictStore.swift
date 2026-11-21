@@ -43,7 +43,7 @@ final class UserDictStore {
                 case .tooManyEntries:
                     return "第 \(error.line) 行起超过 \(UserDict.maxEntries) 条上限"
                 case .textTooLong:
-                    return "文件超过 8 MB 上限"
+                    return "文件超过 \(UserDict.maxTextBytes / (1024 * 1024)) MB 上限"
                 default:
                     return "无法编译词库（\(error)）"
                 }
@@ -218,10 +218,8 @@ final class UserDictStore {
     /// built-in word — by the notes of the last build, the only judge of
     /// that; empty while the file could not be built, since the engine has
     /// no notes then. The list shows them grey; nothing removes them but
-    /// the user.
-    var duplicateRows: [Int] {
-        problems.indices.filter { problems[$0]?.isDuplicate == true }
-    }
+    /// the user. Worked out once per build: the list asks at every redraw.
+    private(set) var duplicateRows: [Int] = []
 
     /// Delete `duplicateRows`, keeping the first of each. Returns how many
     /// went.
@@ -234,6 +232,7 @@ final class UserDictStore {
     }
 
     private func adopt(_ text: String?) {
+        defer { duplicateRows = problems.indices.filter { problems[$0]?.isDuplicate == true } }
         guard let text else {
             rows = []
             problems = []
@@ -244,7 +243,7 @@ final class UserDictStore {
         }
         rows = UserDictFile.parse(text)
         do {
-            let built = try UserDict.build(text, sourceTag: UserDictFile.hash(text))
+            let built = try UserDict.build(text, sourceTag: UserDict.hash(text))
             dictionary = built.dict
             report = built.report
             lastError = nil
@@ -263,6 +262,7 @@ final class UserDictStore {
     private func fail(_ error: LoadError) {
         rows = []
         problems = []
+        duplicateRows = []
         dictionary = nil
         report = nil
         lastError = error
