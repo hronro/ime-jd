@@ -58,6 +58,7 @@ import com.hronro.imejd.R
 import com.hronro.imejd.userdict.UserDictEntry
 import com.hronro.imejd.userdict.UserDictFile
 import com.hronro.imejd.userdict.UserDictProblem
+import com.hronro.imejd.userdict.UserDictSearch
 import com.hronro.imejd.userdict.UserDictStore
 import java.io.IOException
 
@@ -119,6 +120,9 @@ class UserDictActivity : AppCompatActivity() {
     /** While the search field is open the list is the phrases alone, and they cannot be dragged. */
     private var searching = false
     private var filter = ""
+    /** The rows as one searchable text, and the store generation it was built at. */
+    private var search: UserDictSearch? = null
+    private var searchGeneration = -1
 
     private val importDocument = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) importFrom(uri)
@@ -244,10 +248,11 @@ class UserDictActivity : AppCompatActivity() {
         val shown = if (filter.isEmpty()) {
             rows.indices.toList()
         } else {
-            rows.indices.filter {
-                rows[it].entry.value.contains(filter, ignoreCase = true) ||
-                    rows[it].entry.keys.contains(filter, ignoreCase = true)
+            if (search == null || searchGeneration != store.generation) {
+                search = UserDictSearch(store.entries)
+                searchGeneration = store.generation
             }
+            search!!.matches(filter)
         }
         items = ArrayList<Item>(shown.size + 9).apply {
             if (!searching) {

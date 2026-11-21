@@ -6,13 +6,16 @@
 //
 // The phrases file in the app's private files is the single source of truth.
 // Beside it, in no-backup files, the store caches the blob it compiled from
-// that text, tagged with the text's hash: building is slow on low-end phones,
-// and the keyboard must not pay for it at every start. A load reads the
-// file's bytes, hashes them and takes the cached blob when it is that text's
-// and this libjd's — no decoding, no parsing, no build; a missing, corrupt,
-// stale (an app update) or mismatched blob is rebuilt and rewritten. What only
-// the list needs — the text, its rows and the engine's verdict on each, which
-// come from a build's notes — is worked out the first time the list asks.
+// that text, tagged with libjd's hash of its bytes: building is slow on
+// low-end phones, and the keyboard must not pay for it at every start. A load
+// maps both files — nothing read into the heap — hashes the text where it
+// lies and takes the cached blob, where it lies too, when it is that text's
+// and this libjd's: no decoding, no parsing, no build, and no copy for any
+// engine. A missing, corrupt, stale (an app update) or mismatched blob is
+// rebuilt and rewritten. What only the list needs — the text, its rows and
+// the engine's verdict on each, which come from a build's notes — is worked
+// out the first time the list asks. Both files are only ever replaced
+// atomically, which is what makes mapping them safe.
 //
 // A context's dictionary is fixed for its lifetime, so the store never touches
 // an engine: it bumps `generation` and tells its listeners, and each session
@@ -56,7 +59,7 @@ class UserDictStore(
             when (error.status) {
                 UserDictException.Status.TOO_MANY_ENTRIES ->
                     "第 ${error.line} 行起超过 ${UserDict.MAX_ENTRIES} 条上限"
-                UserDictException.Status.TEXT_TOO_LONG -> "文件超过 8 MB 上限"
+                UserDictException.Status.TEXT_TOO_LONG -> "文件超过 ${UserDict.MAX_TEXT_BYTES / (1024 * 1024)} MB 上限"
                 else -> "无法编译词库（${error.message}）"
             },
         )
@@ -81,6 +84,7 @@ class UserDictStore(
         val rows: List<UserDictRow> by lazy { UserDictFile.parse(this.text) }
         val report: UserDictReport? by lazy { notes(this.text) }
         val problems: List<UserDictProblem?> by lazy { UserDictProblem.forRows(rows.map { it.line }, report) }
+        val duplicateRows: List<Int> by lazy { problems.indices.filter { problems[it]?.isDuplicate == true } }
     }
 
     /** The dictionary compiled from the file; null when there is no file or it could not be built. */
@@ -162,7 +166,7 @@ class UserDictStore(
     fun reload() {
         val started = System.nanoTime()
         try {
-            load(UserDictFile.readBytes(file))
+            load()
         } catch (e: IOException) {
             fail(LoadError.Unreadable(e.message))
         }
@@ -185,8 +189,9 @@ class UserDictStore(
     @Throws(IOException::class)
     fun save(entries: List<UserDictEntry>) {
         val text = UserDictFile.serialize(entries)
-        UserDictFile.write(text, file)
-        adopt(text, UserDictFile.hash(text), built = null)
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        UserDictFile.write(bytes, file)
+        adopt(text, bytes, UserDict.hash(bytes), built = null)
         changed()
     }
 
@@ -201,14 +206,15 @@ class UserDictStore(
     @Throws(IOException::class)
     fun saveIfBuildable(entries: List<UserDictEntry>) {
         val text = UserDictFile.serialize(entries)
-        val tag = UserDictFile.hash(text)
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        val tag = UserDict.hash(bytes)
         val built = try {
-            UserDict.build(text, tag)
+            UserDict.build(bytes, tag)
         } catch (e: UserDictException) {
             throw LoadError.Build(e)
         }
-        UserDictFile.write(text, file)
-        adopt(text, tag, built)
+        UserDictFile.write(bytes, file)
+        adopt(text, bytes, tag, built)
         changed()
     }
 
@@ -227,8 +233,9 @@ class UserDictStore(
      * built-in word — by the notes of a build of the file, the only judge of
      * that; empty while the file could not be built, since the engine has no
      * notes then. The list shows them grey; nothing removes them but the user.
+     * Worked out once per version of the file: the list asks at every redraw.
      */
-    val duplicateRows: List<Int> get() = problems.indices.filter { problems[it]?.isDuplicate == true }
+    val duplicateRows: List<Int> get() = contents?.duplicateRows.orEmpty()
 
     /** Delete [duplicateRows], keeping the first of each. Returns how many went. */
     @Throws(IOException::class)
@@ -240,12 +247,14 @@ class UserDictStore(
     }
 
     /**
-     * The file as read: its dictionary from the cache when the cached blob
-     * is these bytes', with nothing decoded until the list asks; else the
-     * text, decoded and built.
+     * The file: its dictionary from the cache when the cached blob is its
+     * bytes', both files mapped and nothing decoded until the list asks;
+     * else the text, read, decoded and built.
      */
-    private fun load(bytes: ByteArray?) {
-        if (bytes == null) {
+    @Throws(IOException::class)
+    private fun load() {
+        val mapped = UserDictFile.map(file)
+        if (mapped == null) {
             lastError = null
             contents = null
             dictionary = null
@@ -253,29 +262,35 @@ class UserDictStore(
             blobFile.delete()
             return
         }
-        val tag = UserDictFile.hash(bytes)
+        val tag = UserDict.hash(mapped)
         val cached = cachedBlob(tag)
         if (cached != null) {
             lastError = null
             dictionary = cached
             source = Source.BLOB
-            // The blob was built from this very text, so it decodes.
-            contents = Contents({ UserDictFile.decode(bytes) }) { notesOf(it) }
+            // The blob was built from this very text, so it decodes; it is
+            // read again only if the list asks.
+            contents = Contents({ UserDictFile.decode(UserDictFile.readBytes(file) ?: ByteArray(0)) }) { notesOf(it) }
             return
         }
+        val bytes = UserDictFile.readBytes(file) ?: ByteArray(0)
         val text = try {
             UserDictFile.decode(bytes)
         } catch (_: CharacterCodingException) {
             return fail(LoadError.NotUtf8())
         }
-        adopt(text, tag, built = null)
+        adopt(text, null, tag, built = null)
     }
 
-    /** Take [text], tagged [tag], as the file's: its dictionary from [built] or a build, which is then cached. */
-    private fun adopt(text: String, tag: Long, built: UserDict.Built?) {
+    /**
+     * Take [text], tagged [tag], as the file's: its dictionary from [built] or
+     * a build — of [bytes], the text's UTF-8, when the caller has them — which
+     * is then cached.
+     */
+    private fun adopt(text: String, bytes: ByteArray?, tag: Long, built: UserDict.Built?) {
         lastError = null
         try {
-            val fresh = built ?: UserDict.build(text, tag)
+            val fresh = built ?: if (bytes != null) UserDict.build(bytes, tag) else UserDict.build(text, tag)
             dictionary = fresh.dict
             source = Source.BUILT
             contents = Contents({ text }) { fresh.report }
@@ -289,15 +304,18 @@ class UserDictStore(
         }
     }
 
-    /** The cached blob, when this libjd built it from the text tagged [tag]; null means build. */
+    /**
+     * The cached blob, when this libjd built it from the text tagged [tag];
+     * null means build. Mapped, and read where it lies by every engine.
+     */
     private fun cachedBlob(tag: Long): UserDict? {
-        val bytes = try {
-            AtomicFile(blobFile).readFully()
+        val mapped = try {
+            UserDictFile.map(blobFile) ?: return null
         } catch (_: IOException) {
             return null
         }
         val dict = try {
-            UserDict.fromBlob(bytes)
+            UserDict.fromBuffer(mapped)
         } catch (_: UserDictException) {
             return null
         }

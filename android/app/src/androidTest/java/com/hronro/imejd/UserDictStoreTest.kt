@@ -108,7 +108,7 @@ class UserDictStoreTest {
         val again = newStore()
         assertEquals(UserDictStore.Source.BLOB, again.source)
         assertEquals(1, again.dictionary?.entries)
-        assertEquals(UserDictFile.hash(UserDictFile.serialize(entries)), again.dictionary?.sourceTag)
+        assertEquals(UserDict.hash(UserDictFile.serialize(entries).toByteArray(Charsets.UTF_8)), again.dictionary?.sourceTag)
         assertEquals("the list still gets its verdicts", store.problems, again.problems)
         assertEquals(listOf(1), again.duplicateRows)
     }
@@ -124,7 +124,7 @@ class UserDictStoreTest {
 
         // Another text's — the file replaced behind the cache's back, as a
         // restore from a backup might: rebuilt from the text, never the blob.
-        UserDictFile.write(UserDictFile.serialize(listOf(UserDictEntry("键道输入法", "zzzzzz"))), file)
+        UserDictFile.write(UserDictFile.serialize(listOf(UserDictEntry("键道输入法", "zzzzzz"))).toByteArray(Charsets.UTF_8), file)
         val replaced = newStore()
         assertEquals(UserDictStore.Source.BUILT, replaced.source)
         assertEquals("键道输入法", replaced.rows.single().entry.value)
@@ -246,10 +246,10 @@ class UserDictStoreTest {
         assertArrayEquals(before, file.readBytes())
 
         // Too much text is libjd's to refuse too, as on every client.
-        val huge = listOf(UserDictEntry("词".repeat(3_000_000), "zzzzzz")) // 9 MB of UTF-8
+        val huge = listOf(UserDictEntry("词".repeat(UserDict.MAX_TEXT_BYTES / 3), "zzzzzz")) // 3 bytes each, plus the rest
         val tooLong = assertThrows(UserDictStore.LoadError.Build::class.java) { store.saveIfBuildable(huge) }
         assertEquals(UserDictException.Status.TEXT_TOO_LONG, tooLong.error.status)
-        assertEquals("文件超过 8 MB 上限", tooLong.message)
+        assertEquals("文件超过 16 MB 上限", tooLong.message)
         assertArrayEquals(before, file.readBytes())
 
         // Within the caps: written like any save, and cached.
