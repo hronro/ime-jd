@@ -70,11 +70,11 @@ An `Engine` holds native memory until it is closed: use try-with-resources, or `
 
 ### User dictionary
 
-The user's own phrases are compiled once into a blob that every engine created with it merges into its candidate lists — same ordering as the built-in words, with a user phrase first on a code it shares with one. The text stays the source of truth; a rebuild takes a few milliseconds for thousands of phrases.
+The user's own phrases are compiled once into a blob that every engine created with it merges into its candidate lists — same ordering as the built-in words, with a user phrase first on a code it shares with one. The text stays the source of truth; a rebuild takes about 6 ms per 100 000 phrases on a desktop core, up to the 500 000 cap.
 
 ```java
 String text = "键道\tzzzzzz\n不\tb\n";       // value<TAB>keys, the table files' line format
-UserDict.Built built = UserDict.build(text, contentHash);
+UserDict.Built built = UserDict.build(text, UserDict.hash(text.getBytes(StandardCharsets.UTF_8)));
 UserDictReport report = built.report();
 // entries 1, dropped 1, shared 0, invalid 0: 不/b repeats a built-in word, so it is dropped
 for (UserDictNote note : report.notes()) {
@@ -88,7 +88,7 @@ try (Engine engine = new Engine(built.dict())) {   // null (or new Engine()) = t
 
 A line that does not parse never fails the build: the engine skips it, counts it in `invalid` and notes it (`MALFORMED`, `BAD_KEYS`, `BAD_VALUE`). The notes also say which lines were dropped as duplicates and what they repeat (`REPEATS_LINE`, `REPEATS_BUILT_IN`, the line in `other`), and which kept phrases sit on a code a built-in word or another phrase already uses (`CODE_IN_BUILT_IN`, `CODE_IN_LINE`, with the counts in `builtIn` and `peers`): the phrase works, listed first, but the code is shared (重码). `UserDictException`, a checked exception, is for the call as a whole: too many phrases (`getLine()` names the first one past the cap) or too much text. An engine's dictionary is fixed for its lifetime; to adopt an edited one, create a new `Engine`.
 
-`getBlob()` gives the bytes to cache, and `UserDict.fromBlob` takes them back, validated as `jd_init` would. A blob from another build of libjd throws `STALE`, which just means "build it again":
+`getBlob()` gives the bytes to cache, and `UserDict.fromBlob` takes them back, validated as `jd_init` would. `UserDict.hash` is libjd's content hash, for the tag that says which text a cache was built from. A blob from another build of libjd throws `STALE`, which just means "build it again":
 
 ```java
 UserDict dict;
@@ -99,6 +99,8 @@ try {
     dict = UserDict.build(text, contentHash).dict(); // no cache, STALE after a library update, or CORRUPT
 }
 ```
+
+A large dictionary is better mapped than read: `UserDict.fromBuffer` takes a direct `ByteBuffer` — a `MappedByteBuffer` of the cache file — and every engine reads it where it is, so the blob never enters the heap and no engine copies it. `UserDict.hash(ByteBuffer)` hashes a mapped text file the same way, and `UserDict.build(byte[], long)` builds from the file's bytes without decoding them. A mapped file must be replaced atomically, never rewritten in place.
 
 ### Reverse lookup
 
@@ -124,7 +126,7 @@ The shim links the *dynamic* libjd: the static archive uses local-exec TLS reloc
 ## Design
 
 - **The native methods are all in one class.** `Jni` declares every one of them, package-private, and `javac -h` writes their C declarations into `build/generated/jni/`. Both native builds compile the shim against them with `-Werror=missing-prototypes`, so a C function whose name or types no longer match fails the build instead of the first call. At load time, `JNI_OnLoad` checks libjd's struct layout and limits against `jd.h` and finds the two classes it builds; anything amiss fails the load with an `UnsatisfiedLinkError` that says why.
-- **JNI has to copy, so it copies only what is asked for.** The Rust and Swift bindings hand out pointers into libjd's dictionary; JNI has to build JVM objects. `readRange` builds Strings for exactly the window requested, in chunks of 64 per native call, so a strip that has fetched 900 candidates but shows 9 pays for 9. A user dictionary crosses as plain arrays (the blob a `byte[]`, the report an `int[]`), and so do `lookupCodes`' results (the keys a `String[]`, each code's index and flags an `int[]`), which the Java side turns into `Code` records, and each `Engine` copies the blob into native memory of its own, because `jd_init` reads it in place for the context's whole lifetime and a JVM array can move. `UserDict` keeps its bytes to itself: `fromBlob` copies the array it is given and `getBlob` hands out a copy.
+- **JNI has to copy, so it copies only what is asked for.** The Rust and Swift bindings hand out pointers into libjd's dictionary; JNI has to build JVM objects. `readRange` builds Strings for exactly the window requested, in chunks of 64 per native call, so a strip that has fetched 900 candidates but shows 9 pays for 9. A user dictionary crosses as plain arrays (the blob a `byte[]`, the report an `int[]`), and so do `lookupCodes`' results (the keys a `String[]`, each code's index and flags an `int[]`), which the Java side turns into `Code` records, and each `Engine` copies the blob into native memory of its own, because `jd_init` reads it in place for the context's whole lifetime and a JVM array can move — unless the blob is in a direct buffer, which does not move: then the engine reads it in place and holds the `UserDict`, and so the buffer, until closed. `UserDict` keeps its bytes to itself: `fromBlob` copies the array it is given and `getBlob` hands out a copy.
 - **Shrinking needs no rules from the app.** `EngineState` and `Candidate` are constructed from C, a reference R8 cannot see. `META-INF/proguard/jd.pro` in the jar keeps their names and constructors, and the names of `Jni`'s natives, and R8 reads it from the dependency on its own. It must stay in step with the `FindClass` calls in `jd_jni.c`.
 - **Java 17's language, Android 7's library.** Records compile down to Android's minimum (D8 desugars them), but the JDK *classes* the binding calls must exist on API 24: no `List.of` (API 30), no `java.lang.ref.Cleaner` (API 33). That is also why an `Engine` is closed explicitly rather than cleaned up behind your back.
 - **Errors are values or one checked exception.** What the build says about individual lines comes back in the report; `UserDictException` is only for a call that failed as a whole.

@@ -1,8 +1,10 @@
 package com.hronro.jd;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A user dictionary: the user's own phrases, compiled into the blob that every
@@ -10,21 +12,26 @@ import java.util.List;
  *
  * <p>Build one from text with {@link #build}, and keep the text as the source
  * of truth. {@link #getBlob} gives the bytes to cache, so a slow device builds
- * once rather than at every start, and {@link #fromBlob} takes them back. A
+ * once rather than at every start, and {@link #fromBlob} takes them back — or
+ * {@link #fromBuffer}, for a cache file mapped into memory, which no engine
+ * then copies. {@link #hash} tags a build with the text it came from. A
  * blob is tied to the build of libjd that made it, by its format and by the
  * built-in dictionary it was deduplicated against: after a library update,
  * {@code fromBlob} throws {@link UserDictException.Status#STALE}, and the
  * phrases are simply built again.
  */
 public final class UserDict {
-    // Mirrors of jd.h's limits. JNI_OnLoad refuses a library whose own entry
-    // and value caps differ from the header's.
+    // Mirrors of jd.h's limits. JNI_OnLoad refuses a library whose own entry,
+    // value and text caps differ from the header's.
 
     /** The most phrases one dictionary may hold ({@code JD_USER_DICT_MAX_ENTRIES}). */
-    public static final int MAX_ENTRIES = 10_000;
+    public static final int MAX_ENTRIES = 500_000;
 
     /** The longest value, in UTF-8 bytes ({@code JD_USER_DICT_VALUE_MAX}). */
     public static final int MAX_VALUE_BYTES = 255;
+
+    /** The most text one build reads, in UTF-8 bytes ({@code JD_USER_DICT_TEXT_MAX}). */
+    public static final int MAX_TEXT_BYTES = 16 * 1024 * 1024;
 
     /** The longest code. jd.h states it in prose: keys are 1 to 6 letters. */
     public static final int MAX_KEY_LENGTH = 6;
@@ -38,18 +45,52 @@ public final class UserDict {
      */
     public record Built(UserDict dict, UserDictReport report) {}
 
-    // The blob as libjd wrote it, and this object's alone: getBlob hands out a
-    // copy, and every Engine copies it once more, into native memory, because
-    // jd_init reads a blob in place for the context's whole lifetime and a JVM
-    // array can move.
-    final byte[] blob;
+    // The blob, in exactly one of two places. As libjd wrote it, in an array
+    // this object's alone: getBlob hands out a copy, and every Engine copies
+    // it once more, into native memory, because jd_init reads a blob in place
+    // for the context's whole lifetime and a JVM array can move. Or in a
+    // direct buffer — a mapped file — which does not move: every Engine reads
+    // it where it is, and holds this object, and so the buffer, until closed.
+    final byte @Nullable [] blob;
+    final @Nullable ByteBuffer buffer;
     private final int entries;
     private final long sourceTag;
 
-    private UserDict(byte[] blob, int entries, long sourceTag) {
+    private UserDict(byte @Nullable [] blob, @Nullable ByteBuffer buffer, int entries, long sourceTag) {
         this.blob = blob;
+        this.buffer = buffer;
         this.entries = entries;
         this.sourceTag = sourceTag;
+    }
+
+    /**
+     * libjd's content hash ({@code jd_user_dict_hash}) of {@code bytes}, for a
+     * {@code sourceTag}: hash the text a dictionary is built from, hash it
+     * again before trusting a cached blob, and a blob whose tag differs was
+     * built from something else. Gigabytes a second, so a whole phrases file
+     * costs well under a millisecond. The same bytes hash the same on every
+     * platform and in every release.
+     */
+    public static long hash(byte[] bytes) {
+        return Jni.userDictHash(bytes);
+    }
+
+    /**
+     * {@link #hash(byte[])} of the bytes between a direct buffer's position and
+     * its limit — a mapped file, hashed without reading it into the heap.
+     *
+     * @throws IllegalArgumentException if the buffer is not direct
+     */
+    public static long hash(ByteBuffer bytes) {
+        return Jni.userDictHashDirect(direct(bytes));
+    }
+
+    /** The bytes from position to limit as a buffer of their own, which must be direct. */
+    private static ByteBuffer direct(ByteBuffer bytes) {
+        if (!bytes.isDirect()) {
+            throw new IllegalArgumentException("not a direct buffer");
+        }
+        return bytes.slice();
     }
 
     /** Builds from {@code text} with a source tag of 0; see {@link #build(String, long)}. */
@@ -74,7 +115,16 @@ public final class UserDict {
      *     too much text, or too many phrases
      */
     public static Built build(String text, long sourceTag) throws UserDictException {
-        Object[] result = Jni.userDictBuild(text.getBytes(StandardCharsets.UTF_8), sourceTag);
+        return build(text.getBytes(StandardCharsets.UTF_8), sourceTag);
+    }
+
+    /**
+     * {@link #build(String, long)} from UTF-8 bytes as they are — a file as
+     * read, say, so the text is never decoded or encoded. A byte-order mark is
+     * not skipped (libjd would take U+FEFF as part of line 1): drop one first.
+     */
+    public static Built build(byte[] utf8, long sourceTag) throws UserDictException {
+        Object[] result = Jni.userDictBuild(utf8, sourceTag);
         byte[] blob = (byte[]) result[0];
         int[] report = (int[]) result[1];
         if (blob == null) {
@@ -85,7 +135,7 @@ public final class UserDict {
             notes.add(new UserDictNote(report[i], report[i + 1], report[i + 2], report[i + 3], report[i + 4]));
         }
         UserDictReport summary = new UserDictReport(report[2], report[3], report[4], report[5], notes);
-        return new Built(new UserDict(blob, report[2], sourceTag), summary);
+        return new Built(new UserDict(blob, null, report[2], sourceTag), summary);
     }
 
     /**
@@ -105,12 +155,42 @@ public final class UserDict {
         if (status != 0) {
             throw new UserDictException(UserDictException.Status.of(status), 0);
         }
-        return new UserDict(own, (int) verdict[1], verdict[2]);
+        return new UserDict(own, null, (int) verdict[1], verdict[2]);
+    }
+
+    /**
+     * A cached blob in a direct buffer, between its position and its limit,
+     * used where it is: typically a {@link java.nio.MappedByteBuffer} of the
+     * cache file, which then never enters the heap and no engine copies.
+     * Validated exactly as jd_init would. The bytes must not change while the
+     * dictionary, or an engine created with it, is in use — replace a mapped
+     * file atomically, never rewrite it in place.
+     *
+     * @throws IllegalArgumentException if the buffer is not direct
+     * @throws UserDictException with {@link UserDictException.Status#STALE},
+     *     {@link UserDictException.Status#CORRUPT} or
+     *     {@link UserDictException.Status#MISALIGNED}, which mean "build it
+     *     again from the phrases"
+     */
+    public static UserDict fromBuffer(ByteBuffer blob) throws UserDictException {
+        ByteBuffer own = direct(blob);
+        long[] verdict = Jni.userDictCheckDirect(own);
+        int status = (int) verdict[0];
+        if (status != 0) {
+            throw new UserDictException(UserDictException.Status.of(status), 0);
+        }
+        return new UserDict(null, own, (int) verdict[1], verdict[2]);
     }
 
     /** The blob, to cache for {@link #fromBlob}: a copy, so changing it changes nothing here. */
     public byte[] getBlob() {
-        return blob.clone();
+        if (blob != null) {
+            return blob.clone();
+        }
+        ByteBuffer view = buffer.duplicate();
+        byte[] copy = new byte[view.remaining()];
+        view.get(copy);
+        return copy;
     }
 
     /** How many phrases the dictionary holds. */
