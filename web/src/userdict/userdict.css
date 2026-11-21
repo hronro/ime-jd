@@ -184,11 +184,24 @@
   overscroll-behavior: contain;
 }
 
+/* The virtual list (virtual.ts): a spacer as tall as every row, and the
+   rendered rows in one block moved to where the first of them belongs. */
+.ud-spacer {
+  position: relative;
+}
+
+.ud-window,
+.ud-card-list {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+}
+
 .ud-row {
-  min-block-size: 38px;
+  /* Every row exactly this tall: the window works out which rows are on
+     screen from the height alone. */
+  block-size: var(--ud-row);
   border-block-end: 1px solid color-mix(in oklab, var(--line) 60%, transparent);
-  content-visibility: auto;
-  contain-intrinsic-size: auto 38px;
   transition: background-color 0.12s;
 
   &:hover {
@@ -275,6 +288,10 @@
   padding: 0 10px;
   font-size: 12.5px;
   line-height: 1.35;
+  /* One line, to keep the row's height; the whole verdict is its title. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tone-bad {
@@ -329,28 +346,35 @@
 
 .ud-cards {
   flex: 1;
-  margin: 0;
-  padding: 0;
   overflow-y: auto;
-  list-style: none;
+  overscroll-behavior: contain;
   border-radius: var(--radius-m);
   background: var(--raised);
   border: 1px solid var(--line);
+}
 
+.ud-card-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  /* Every card exactly this tall, its border included (see .ud-row). */
   & > li {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 62px;
+    block-size: var(--ud-card);
+    border-block-end: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
   }
-  & > li + li {
-    border-block-start: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  & > li:last-child {
+    border-block-end-color: transparent;
   }
 }
 
 .ud-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
   gap: 2px;
   inline-size: 100%;
-  min-block-size: 60px;
+  block-size: 100%;
   padding: 10px 16px;
   border: 0;
   background: transparent;
@@ -359,6 +383,13 @@
   &:active {
     background: var(--seal-softer);
   }
+}
+
+.ud-card-value,
+.ud-card-meta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ud-card-value {

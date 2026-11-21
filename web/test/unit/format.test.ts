@@ -1,7 +1,7 @@
 // Mirrors macos/JdIMETests/UserDictFileTests.swift.
 import { describe, expect, test } from "vitest";
-import { fnv1a64, decodeText, NotUtf8Error } from "../../src/storage/userdict";
-import { HEADER, lineOfEntryAt, parse, serialize } from "../../src/userdict/format";
+import { decodeText, NotUtf8Error } from "../../src/storage/userdict";
+import { HEADER, lineOfEntryAt, parse, serialize, trimField } from "../../src/userdict/format";
 import { jd } from "./wasm";
 
 describe("phrases file", () => {
@@ -66,9 +66,17 @@ describe("phrases file", () => {
     expect(() => decodeText(new Uint8Array([0xc4, 0xe3, 0x09, 0x61]))).toThrow(NotUtf8Error);
   });
 
-  test("the hash matches the FNV-1a reference vectors", () => {
-    expect(fnv1a64("")).toBe(0xcbf29ce484222325n);
-    expect(fnv1a64("a")).toBe(0xaf63dc4c8601ec8cn);
-    expect(fnv1a64("好\thz\n")).not.toBe(fnv1a64("好\thz"));
+  test("a field loses its spaces at both ends, and only spaces", () => {
+    expect(trimField("  键 道  ")).toBe("键 道");
+    expect(trimField("键道")).toBe("键道");
+    expect(trimField("")).toBe("");
+    expect(trimField("   ")).toBe("");
+    expect(trimField("\u3000键\t")).toBe("\u3000键\t");
+  });
+
+  test("the cache's tag is libjd's pinned hash of the text", () => {
+    expect(jd.hashUserDictText("")).toBe(0x0409638ee2bde459n);
+    expect(jd.hashUserDictText("键道\tjd\n")).toBe(0xb5f6c3766f38e694n);
+    expect(jd.hashUserDictText("好\thz\n")).not.toBe(jd.hashUserDictText("好\thz"));
   });
 });

@@ -3,7 +3,7 @@
 // column (every client's rule: no client-side validation, no implicit clean-up).
 
 import { type Accessor, createEffect, createMemo, createSignal } from "solid-js";
-import { dict, MAX_ENTRIES } from "../dict/service";
+import { dict, userDictLimits } from "../dict/service";
 import { type Entry, parse, type ParsedRow, serialize, trimField } from "./format";
 import { type Problem, problemsForRows } from "./problem";
 
@@ -51,14 +51,43 @@ export function createModel() {
     ),
   );
 
+  /**
+   * The rows as one lowercased text — value, TAB, keys, newline each — so a
+   * query is one substring scan however many rows there are, not a
+   * lowercasing of every row per keystroke. Built at the first query after
+   * the rows change, not at every change: an edit with no search pays nothing.
+   */
+  let searched: { rows: readonly Row[]; text: string; starts: Int32Array } | null = null;
+  const haystack = (all: readonly Row[]) => {
+    if (searched?.rows === all) return searched;
+    const parts: string[] = [];
+    const starts = new Int32Array(all.length + 1);
+    let at = 0;
+    for (let i = 0; i < all.length; i++) {
+      const row = all[i]!;
+      // Lowercased a row at a time: lowercasing can change a string's
+      // length (İ becomes two code units), and the offsets must hold.
+      const part = `${row.value.toLowerCase()}\t${row.keys.toLowerCase()}\n`;
+      parts.push(part);
+      at += part.length;
+      starts[i + 1] = at;
+    }
+    searched = { rows: all, text: parts.join(""), starts };
+    return searched;
+  };
+
   /** Indices of the rows the search shows (all of them when empty). */
   const shown = createMemo(() => {
     const q = filter().trim().toLowerCase();
     const all = rows();
+    if (q === "") return Array.from(all.keys());
+    if (q.includes("\t") || q.includes("\n")) return [];
+    const { text, starts } = haystack(all);
     const out: number[] = [];
-    for (let i = 0; i < all.length; i++) {
-      const row = all[i]!;
-      if (q === "" || row.value.toLowerCase().includes(q) || row.keys.toLowerCase().includes(q)) out.push(i);
+    let row = 0;
+    for (let from = text.indexOf(q); from >= 0; from = text.indexOf(q, starts[row + 1])) {
+      while (starts[row + 1]! <= from) row++;
+      out.push(row);
     }
     return out;
   });
@@ -81,7 +110,14 @@ export function createModel() {
    */
   function commit(next: readonly Row[], options: { undoable?: boolean } = {}): void {
     const before = { text: written, rows: rows() };
-    const relined = next.map((row, i) => ({ ...row, value: trimField(row.value), keys: trimField(row.keys), line: i + 2 }));
+    // A row that comes out the same keeps its object: an edit to one row of
+    // 500 000 makes one new row, not 500 000.
+    const relined = next.map((row, i) => {
+      const value = trimField(row.value);
+      const keys = trimField(row.keys);
+      const line = i + 2;
+      return value === row.value && keys === row.keys && line === row.line ? row : { ...row, value, keys, line };
+    });
     const text = serialize(relined);
     if (options.undoable) setUndo(before);
     setRows(relined);
@@ -112,7 +148,7 @@ export function createModel() {
 
   /** A new empty row below `afterId` (or at the end); its id. Not written until edited. */
   function addRow(afterId: number | null): number | null {
-    if (rows().length >= MAX_ENTRIES) return null;
+    if (rows().length >= userDictLimits().maxEntries) return null;
     setFilter("");
     const all = [...rows()];
     const at = afterId === null ? all.length : all.findIndex((r) => r.id === afterId) + 1;
@@ -124,7 +160,7 @@ export function createModel() {
 
   /** Add a finished entry (the mobile sheet). */
   function appendEntry(entry: Entry, afterId: number | null = null): boolean {
-    if (rows().length >= MAX_ENTRIES) return false;
+    if (rows().length >= userDictLimits().maxEntries) return false;
     const all = [...rows()];
     const at = afterId === null ? all.length : all.findIndex((r) => r.id === afterId) + 1;
     all.splice(at, 0, { id: nextId++, ...entry, line: null });

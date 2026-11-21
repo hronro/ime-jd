@@ -56,7 +56,7 @@ It works the same as in every other client:
 - Every change is saved at once, and an import appends a file's rows exactly as they are.
 
 Storage:
-- **Browser (default):** the text lives in IndexedDB, together with the compiled blob, which is tagged with the text's FNV-1a hash as on iOS/Android. Boot loads the blob without rebuilding when the tag matches. The page asks for persistent storage once there are phrases.
+- **Browser (default):** the text lives in IndexedDB, together with the compiled blob, which is tagged with libjd's hash of the text (`jd_user_dict_hash`) as on iOS/Android. Boot loads the blob without rebuilding when the tag matches. The page asks for persistent storage once there are phrases.
 - **A file on disk (Chromium):** where the File System Access API exists, **关联磁盘文件…** links the dictionary to a file the user picks, new or existing. The file is then the source of truth and IndexedDB keeps only its handle and the blob cache.
   - The file is re-read when the page regains focus and its size or modification time has changed, as the Windows client does.
   - When the browser asks for permission again, the page types with the cached blob until the user grants access.
