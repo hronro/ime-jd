@@ -380,19 +380,40 @@ test("bad lines are skipped and noted, never fatal", () => {
   }
 
   // Only a problem with the call as a whole throws: too many phrases.
-  let text = "";
-  for (let i = 0; i <= 10000; i++) {
-    const code = [...String(i).padStart(5, "0")].map((d) => String.fromCharCode(97 + Number(d))).join("");
-    text += `w${i}\t${code}\n`;
+  const { maxEntries } = mod.userDictLimits;
+  assert.equal(maxEntries, 500000);
+  const lines = [];
+  for (let i = 0; i <= maxEntries; i++) {
+    const code = [...String(i).padStart(6, "0")].map((d) => String.fromCharCode(97 + Number(d))).join("");
+    lines.push(`w${i}\t${code}\n`);
   }
   assert.throws(
-    () => mod.buildUserDict(text),
+    () => mod.buildUserDict(lines.join("")),
     (err) =>
       err instanceof UserDictError &&
       err.status === "tooManyEntries" &&
-      err.line === 10001 &&
-      err.message === "line 10001: more than 10000 phrases",
+      err.line === maxEntries + 1 &&
+      err.message === `line ${maxEntries + 1}: more than ${maxEntries} phrases`,
   );
+});
+
+test("the library's hash, and building from bytes", () => {
+  // The values libjd pins in its own tests.
+  assert.equal(mod.hashUserDictText(""), 0x0409638ee2bde459n);
+  assert.equal(mod.hashUserDictText("键道\tjd\n"), 0xb5f6c3766f38e694n);
+  assert.equal(mod.hashUserDictText(new TextEncoder().encode("键道\tjd\n")), 0xb5f6c3766f38e694n);
+  assert.deepEqual(mod.userDictLimits, { maxEntries: 500000, valueMax: 255, textMax: 16 * 1024 * 1024 });
+
+  const text = "测试词\tb\n不\tb\n";
+  const fromText = mod.buildUserDict(text, { sourceTag: 3 });
+  const fromBytes = mod.buildUserDict(new TextEncoder().encode(text), { sourceTag: 3 });
+  try {
+    assert.deepEqual(fromBytes.dict.bytes(), fromText.dict.bytes());
+    assert.deepEqual(fromBytes.report, fromText.report);
+  } finally {
+    fromText.dict.dispose();
+    fromBytes.dict.dispose();
+  }
 });
 
 test("cached bytes round-trip, and stale or corrupt bytes are refused", () => {
