@@ -57,7 +57,7 @@ final class UserDictStore {
                 case .tooManyEntries:
                     return "第 \(error.line) 行起超过 \(UserDict.maxEntries) 条上限"
                 case .textTooLong:
-                    return "文件超过 8 MB 上限"
+                    return "文件超过 \(UserDict.maxTextBytes / (1024 * 1024)) MB 上限"
                 default:
                     return "无法编译词库（\(error)）"
                 }
@@ -84,7 +84,7 @@ final class UserDictStore {
     /// the file.
     private(set) var lastError: LoadError?
 
-    /// `UserDictFile.hash` of the text `dictionary` was built from; nil when
+    /// `UserDict.hash` of the text `dictionary` was built from; nil when
     /// there was no file. An unchanged file — or the store's own write —
     /// costs one hash and nothing more.
     private var builtHash: UInt64?
@@ -162,7 +162,7 @@ final class UserDictStore {
         }
 
         // nil: no file.
-        let hash = text.map(UserDictFile.hash)
+        let hash = text.map { UserDict.hash($0) }
         if hash == builtHash, lastError == nil {
             return false
         }

@@ -53,6 +53,9 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
     /// search hits.
     private var shown: [Int] = []
     private var filter = ""
+    /// The rows as one searchable text, built at the first query after the
+    /// rows change.
+    private var search: UserDictSearch?
     /// What the last save wrote (or the text last loaded), so a file change
     /// that reads back identical — our own write — does not reload the table.
     private var lastKnownText: String?
@@ -302,14 +305,17 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func refreshShown() {
+    /// Bring `shown` in line with `rows` and the filter. Every caller but
+    /// the search field's has just changed `rows`, so the search text is
+    /// rebuilt unless told otherwise.
+    private func refreshShown(rowsChanged: Bool = true) {
+        if rowsChanged { search = nil }
         if filter.isEmpty {
             shown = Array(rows.indices)
         } else {
-            shown = rows.indices.filter {
-                rows[$0].entry.value.localizedCaseInsensitiveContains(filter)
-                    || rows[$0].entry.keys.localizedCaseInsensitiveContains(filter)
-            }
+            let search = self.search ?? UserDictSearch(rows.lazy.map(\.entry))
+            self.search = search
+            shown = search.matches(filter)
         }
     }
 
@@ -381,7 +387,7 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
     @objc private func filterChanged(_ sender: NSSearchField) {
         window?.makeFirstResponder(sender)
         filter = sender.stringValue.trimmingCharacters(in: .whitespaces)
-        refreshShown()
+        refreshShown(rowsChanged: false)
         tableView.reloadData()
         updateRemoveButton()
     }
@@ -669,6 +675,7 @@ extension UserDictWindowController: NSTableViewDataSource, NSTableViewDelegate, 
         // nothing, so the engine's verdict on it shows.
         guard entry != rows[index].entry || rows[index].fileLine == nil else { return }
         rows[index].entry = entry
+        search = nil
         saveRows()
         reloadStatusColumn()
         updateStatus()
