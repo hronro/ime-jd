@@ -157,6 +157,16 @@ export interface CreateEngineOptions {
  * {@link Engine} contexts from it; the embedded trie and punctuation tables are
  * parsed once and shared read-only across every engine of this module.
  */
+/** The library's user-dictionary limits, as `jd_abi_layout` reports them. */
+export interface UserDictLimits {
+  /** Most phrases one dictionary holds (`JD_USER_DICT_MAX_ENTRIES`). */
+  readonly maxEntries: number;
+  /** Longest value in UTF-8 bytes (`JD_USER_DICT_VALUE_MAX`). */
+  readonly valueMax: number;
+  /** Most text one build reads, in UTF-8 bytes (`JD_USER_DICT_TEXT_MAX`). */
+  readonly textMax: number;
+}
+
 export class JdModule {
   private constructor();
 
@@ -189,9 +199,21 @@ export class JdModule {
    * much text, too many phrases.
    */
   buildUserDict(
-    text: string,
+    text: string | Uint8Array,
     options?: BuildUserDictOptions,
   ): { dict: UserDict; report: UserDictReport };
+
+  /**
+   * libjd's content hash (`jd_user_dict_hash`) of `text` — a string, hashed
+   * as UTF-8, or its bytes — for `sourceTag`: hash the text a dictionary is
+   * built from, hash it again before trusting a cached blob, and a blob
+   * whose tag differs was built from something else. The same bytes hash the
+   * same on every platform and in every release.
+   */
+  hashUserDictText(text: string | Uint8Array): bigint;
+
+  /** The library's user-dictionary limits (`JD_USER_DICT_*`). */
+  get userDictLimits(): UserDictLimits;
 
   /**
    * Wrap a blob cached from an earlier {@link UserDict.bytes}, validated

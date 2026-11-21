@@ -60,6 +60,7 @@ const REQUIRED_EXPORTS = [
   "jd_user_dict_blob_bound",
   "jd_user_dict_build",
   "jd_user_dict_check",
+  "jd_user_dict_hash",
   "jd_alloc",
   "jd_free",
 ];
@@ -76,6 +77,7 @@ const ABI_SIZEOF_USER_DICT_INFO = 8;
 const ABI_SIZEOF_USER_DICT_NOTE = 9;
 const ABI_SIZEOF_CODE = 10;
 const ABI_CODE_CAP = 11;
+const ABI_USER_DICT_TEXT_MAX = 12;
 
 // wasm32 layout of `jd_state`: two 4-byte pointers, a byte, 3 bytes of
 // padding, then two u32s. Checked against jd_abi_layout at instantiation.
@@ -165,7 +167,7 @@ export class UserDictError extends Error {
   /**
    * @param {number} code
    * @param {number} line
-   * @param {{maxEntries: number, valueMax: number}} limits
+   * @param {{maxEntries: number, valueMax: number, textMax: number}} limits
    */
   constructor(code, line, limits) {
     const status = USER_DICT_STATUS[code] ?? `unknown(${code})`;
@@ -312,10 +314,11 @@ export class JdModule {
     expect(ABI_SIZEOF_CODE, CODE_SIZE, "sizeof(jd_code)");
     expect(ABI_CODE_CAP, CODE_CAP, "JD_CODE_CAP");
 
-    const limits = {
+    const limits = Object.freeze({
       maxEntries: exports.jd_abi_layout(ABI_USER_DICT_MAX_ENTRIES),
       valueMax: exports.jd_abi_layout(ABI_USER_DICT_VALUE_MAX),
-    };
+      textMax: exports.jd_abi_layout(ABI_USER_DICT_TEXT_MAX),
+    });
     return new JdModule(exports, exports.jd_abi_layout(ABI_SCRATCH_OPTIONS), limits);
   }
 
@@ -365,13 +368,16 @@ export class JdModule {
    * interpreted — a modification time, a content hash, a revision — so a
    * cached blob can be told apart from the phrases it was built from.
    *
-   * @param {string} text
+   * The text may be given as its UTF-8 bytes — a file as read — so it is not
+   * encoded again. A byte-order mark is not skipped: drop one first.
+   *
+   * @param {string | Uint8Array} text
    * @param {{sourceTag?: number | bigint}} [options]
    * @returns {{dict: UserDict, report: import("./index.d.ts").UserDictReport}}
    */
   buildUserDict(text, options = {}) {
     const sourceTag = BigInt(options.sourceTag ?? 0);
-    const textBytes = encoder.encode(text);
+    const textBytes = typeof text === "string" ? encoder.encode(text) : text;
 
     // Everything the call reads or writes must sit inside linear memory. One
     // scratch block holds the report and the blob length; the text and the
@@ -423,16 +429,26 @@ export class JdModule {
         });
       }
 
+      // The bound leaves room for every line's note and the whole text,
+      // about twice the blob: keep a block the blob's size, and give the
+      // rest back to the module's allocator.
+      let ptr = blobPtr;
+      let allocSize = bound;
+      if (bound - blobLen > 64 * 1024) {
+        ptr = this.#alloc(Math.max(blobLen, 1));
+        allocSize = Math.max(blobLen, 1);
+        new Uint8Array(this.#memory()).copyWithin(ptr, blobPtr, blobPtr + blobLen);
+      }
       const dict = new UserDict(entries, sourceTag);
       dictInternals.set(dict, {
         module: this,
         exports: this.#exports,
-        ptr: blobPtr,
-        allocSize: bound,
+        ptr,
+        allocSize,
         len: blobLen,
         engines: 0,
       });
-      blobPtr = 0; // now owned by the dict
+      if (ptr === blobPtr) blobPtr = 0; // now owned by the dict
       return { dict, report: { entries, dropped, shared, invalid, notes } };
     } finally {
       if (blobPtr !== 0) this.#exports.jd_free(blobPtr, bound);
@@ -479,6 +495,33 @@ export class JdModule {
     } finally {
       if (ptr !== 0) this.#exports.jd_free(ptr, src.length);
       this.#exports.jd_free(infoPtr, INFO_SIZE);
+    }
+  }
+
+  /** The library's user-dictionary limits (`JD_USER_DICT_*`). */
+  get userDictLimits() {
+    return this.#limits;
+  }
+
+  /**
+   * libjd's content hash (`jd_user_dict_hash`) of `text` — a string, hashed
+   * as UTF-8, or its bytes — for `sourceTag`: hash the text a dictionary is
+   * built from, hash it again before trusting a cached blob, and a blob whose
+   * tag differs was built from something else. The same bytes hash the same
+   * on every platform and in every release.
+   *
+   * @param {string | Uint8Array} text
+   * @returns {bigint}
+   */
+  hashUserDictText(text) {
+    const bytes = typeof text === "string" ? encoder.encode(text) : text;
+    if (bytes.length === 0) return BigInt.asUintN(64, this.#exports.jd_user_dict_hash(0, 0));
+    const ptr = this.#alloc(bytes.length);
+    try {
+      new Uint8Array(this.#memory(), ptr, bytes.length).set(bytes);
+      return BigInt.asUintN(64, this.#exports.jd_user_dict_hash(ptr, bytes.length));
+    } finally {
+      this.#exports.jd_free(ptr, bytes.length);
     }
   }
 

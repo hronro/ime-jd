@@ -96,6 +96,8 @@ const engine = jd.createEngine({ userDict: dict });
 
 The blob is one block of the module's linear memory that the `UserDict` owns (`jd_alloc` / `jd_free` in the C ABI); a JS host cannot allocate inside linear memory itself, so the wrapper does it for you. `dispose()` refuses while an engine created with the dictionary is alive.
 
+For a tag that follows the text itself, `jd.hashUserDictText(text)` is libjd's content hash (`jd_user_dict_hash`), a `bigint` that is the same on every platform and in every release; `buildUserDict` and `hashUserDictText` take the text's UTF-8 bytes as well as a string. `jd.userDictLimits` has the library's caps (`maxEntries`, `valueMax`, `textMax`) for messages and checks of your own.
+
 ## Getting the `jd.wasm`
 
 The wrapper does not embed the module — you provide it, exactly like `bindings/rust` links a prebuilt-or-zig-built libjd. Build it with
