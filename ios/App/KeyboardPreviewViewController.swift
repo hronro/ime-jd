@@ -71,6 +71,16 @@ final class KeyboardPreviewViewController: UIViewController {
         // real hosting context (system backdrop, height dance, return label).
         if CommandLine.arguments.contains("-system") {
             textView.bottomAnchor.constraint(equalTo: g.bottomAnchor, constant: -12).isActive = true
+            // `-autocomplete 1.0` QA launch arg: complete inline, as fields
+            // that suggest do — that many seconds after the text changes, a
+            // selected suggestion after the caret (Safari's address bar
+            // reports a change about a second after each commit) — to check
+            // that the keyboard keeps what it is composing through it.
+            if let i = CommandLine.arguments.firstIndex(of: "-autocomplete") {
+                let delay = CommandLine.arguments.indices.contains(i + 1)
+                    ? Double(CommandLine.arguments[i + 1]) ?? 1 : 1
+                startAutocompleting(after: delay)
+            }
             return
         }
 
@@ -130,6 +140,31 @@ final class KeyboardPreviewViewController: UIViewController {
 
     private func applyBackdropWash() {
         previewBackdrop?.contentView.backgroundColor = currentTheme().materialWash
+    }
+
+    private var autocompleteObserver: NSObjectProtocol?
+    private var autocompleteWork: DispatchWorkItem?
+
+    private func startAutocompleting(after delay: TimeInterval) {
+        autocompleteObserver = NotificationCenter.default.addObserver(
+            forName: UITextView.textDidChangeNotification, object: textView, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.autocompleteWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.suggest() }
+            self.autocompleteWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+    }
+
+    /// A completion after the caret, selected; typing replaces it. Changed in code, so it posts no text-change notification
+    /// of its own, but the keyboard is told.
+    private func suggest() {
+        let caret = textView.selectedRange
+        guard caret.length == 0 else { return }
+        let suggestion = NSAttributedString(string: "※", attributes: [.font: textView.font as Any])
+        textView.textStorage.replaceCharacters(in: caret, with: suggestion)
+        textView.selectedRange = NSRange(location: caret.location, length: suggestion.length)
     }
 
     override func viewDidAppear(_ animated: Bool) {

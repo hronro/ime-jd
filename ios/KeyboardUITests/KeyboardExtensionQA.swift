@@ -257,6 +257,85 @@ final class KeyboardExtensionQA: XCTestCase {
         hold("exported")
     }
 
+    /// Inline completion (opt-in): a host that completes what was typed a
+    /// moment later, as Safari's address bar does — a selected suggestion
+    /// after the caret — must not cost the keyboard what it is composing.
+    /// 那 is committed and `n` composed before the preview's completion
+    /// (`-autocomplete`) arrives; `i` must then still make `ni`, offering 你们.
+    /// A caret the user moves still drops the composition: `n` composed, a
+    /// tap at the start of the text, and `i` offers no 你们.
+    ///
+    ///   TEST_RUNNER_JD_QA_AUTOCOMPLETE=1 xcodebuild test … -scheme JdKeyboardQA \
+    ///     -only-testing:JdKeyboardUITests/KeyboardExtensionQA/testCompositionSurvivesInlineCompletion
+    @MainActor
+    func testCompositionSurvivesInlineCompletion() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["JD_QA_AUTOCOMPLETE"] == "1")
+        enableInSettingsIfNeeded()
+        let app = XCUIApplication()
+        app.launchArguments = ["-preview", "-system", "-autocomplete", "3"]
+        app.launch()
+        let field = app.textViews.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        sleep(2)
+        switchToJdViaGlobe(app)
+        sleep(1)
+
+        tapKey(app, "a")
+        let na = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "那")).firstMatch
+        XCTAssertTrue(na.waitForExistence(timeout: 3), "no candidates for a")
+        na.tap()
+        tapKey(app, "n")
+        // The completion lands 3 s after 那 did, while n is composing.
+        let completed = NSPredicate(format: "value CONTAINS %@", "※")
+        expectation(for: completed, evaluatedWith: field)
+        waitForExpectations(timeout: 6)
+        tapKey(app, "i")
+        let nimen = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "你们")).firstMatch
+        XCTAssertTrue(nimen.waitForExistence(timeout: 3), "the composition was dropped: no ni candidates after the completion")
+        nimen.tap()
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(((field.value as? String) ?? "").hasPrefix("那你们"), "field: \(field.value ?? "")")
+
+        tapKey(app, "n")
+        field.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 6, dy: 14)).tap()
+        sleep(1)
+        tapKey(app, "i")
+        XCTAssertFalse(nimen.waitForExistence(timeout: 2), "the composition survived a caret the user moved")
+    }
+
+    /// A switch to another field drops what is composing — told by the
+    /// field's document identifier, since many fields (Contacts', Safari's
+    /// address bar) share no text around the caret — and the moment between
+    /// fields, when iOS reports no identifier at all, does not crash the
+    /// keyboard. Contacts' new-contact form: `n` in First name, then Last
+    /// name, where `i` must not make `ni`.
+    ///
+    ///   TEST_RUNNER_JD_QA_AUTOCOMPLETE=1 xcodebuild test … -scheme JdKeyboardQA \
+    ///     -only-testing:JdKeyboardUITests/KeyboardExtensionQA/testFieldSwitchDropsComposition
+    @MainActor
+    func testFieldSwitchDropsComposition() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["JD_QA_AUTOCOMPLETE"] == "1")
+        let contacts = XCUIApplication(bundleIdentifier: "com.apple.MobileAddressBook")
+        contacts.launch()
+        sleep(3)
+        for label in ["Continue", "Not Now", "OK"] where contacts.buttons[label].exists { contacts.buttons[label].tap(); sleep(1) }
+        let add = contacts.buttons["Add"]
+        XCTAssertTrue(add.waitForExistence(timeout: 8), "no Add button")
+        add.tap()
+        let first = contacts.textFields["First name"], last = contacts.textFields["Last name"]
+        XCTAssertTrue(first.waitForExistence(timeout: 8), "no First name field")
+        first.tap()
+        sleep(2)
+        tapKey(contacts, "n")
+        sleep(1)
+        last.tap()
+        sleep(2)
+        tapKey(contacts, "i")
+        let nimen = contacts.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "你们")).firstMatch
+        XCTAssertFalse(nimen.waitForExistence(timeout: 2), "the composition followed into another field")
+        contacts.terminate()
+    }
+
     /// With JD_QA_MARKER set, create `<marker>-<step>` and wait (up to a
     /// minute) for the host to remove it after its screenshot.
     private func hold(_ step: String) {

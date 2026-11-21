@@ -43,10 +43,10 @@ final class KeyboardViewController: UIInputViewController {
     /// which the height constraint is held a point short (see `applyHeight`).
     private var isPresenting = false
 
-    /// When we last edited the host ourselves (commit / literal / delete).
-    /// `textDidChange` uses it to tell our own edits' echoes apart from
-    /// external changes — see there.
-    private var lastOwnHostEdit: CFTimeInterval = 0
+    /// Our own edits of the host's text (commit / literal / delete), so that
+    /// `textDidChange` can tell them, and the host's reactions to them, from
+    /// the user moving on — see there.
+    private var hostEdits = HostEditTracker()
 
     /// The keyboard type the visible plane was chosen for — see `openFieldPlane`.
     private var planeKeyboardType: UIKeyboardType?
@@ -71,6 +71,7 @@ final class KeyboardViewController: UIInputViewController {
         keyboard = shared.keyboard
         session.host = self
         session.cancelAndReset()
+        hostEdits.forget()
 
         let kb = shared.keyboard
         kb.onReturn = { [weak self] in self?.onReturn() }
@@ -149,16 +150,23 @@ final class KeyboardViewController: UIInputViewController {
 
     override func textDidChange(_ textInput: UITextInput?) {
         guard isOwner else { return }
-        // The host's text or caret changed. If it wasn't us — the user tapped
-        // another field, moved the caret, or the app edited the text — the
-        // in-flight composition's context is gone: drop it (like the system
-        // keyboards) instead of letting a later commit land stale text at the
-        // new cursor. Our own proxy edits echo here too, and one of them
-        // arrives while a composition is legitimately live (a drill-in
-        // commits text AND starts a fresh composition in the same keystroke),
-        // so edits inside the grace window are treated as our own echo.
-        if session.isComposing, CACurrentMediaTime() - lastOwnHostEdit > 0.15 {
-            session.cancelAndReset()
+        // The host's text or caret changed. If the caret left where we were
+        // typing — the user tapped another field or moved it — the in-flight
+        // composition's place is gone: drop it (like the system keyboards)
+        // instead of letting a later commit land at the new caret. Not for
+        // our own edits' echoes (one arrives while a composition is
+        // legitimately live: a drill-in commits text AND starts a fresh
+        // composition in the same keystroke), nor for the host reacting to
+        // them — a completion after the caret, or Safari's address bar
+        // reporting a change about a second after each commit, which lost
+        // what was being typed (see HostEditTracker).
+        let moved = hostEdits.caretMoved(contextBefore: textDocumentProxy.documentContextBeforeInput,
+                                         contextAfter: textDocumentProxy.documentContextAfterInput,
+                                         document: documentID,
+                                         at: CACurrentMediaTime())
+        if moved {
+            hostEdits.forget()
+            if session.isComposing { session.cancelAndReset() }
         }
         // A switch to another field lands here too, with the proxy already
         // reporting the new field's traits: re-pick the plane when the
@@ -226,6 +234,16 @@ final class KeyboardViewController: UIInputViewController {
         )
     }
 
+    /// The field being edited (`UITextDocumentProxy.documentIdentifier`).
+    /// Read through the Objective-C runtime: Swift declares it a non-optional
+    /// UUID, but iOS hands back nil at times (seen while switching between
+    /// fields in Contacts), and the bridge then traps.
+    private var documentID: UUID? {
+        let selector = NSSelectorFromString("documentIdentifier")
+        guard let proxy = textDocumentProxy as? NSObject, proxy.responds(to: selector) else { return nil }
+        return proxy.perform(selector)?.takeUnretainedValue() as? UUID
+    }
+
     private func onReturn() {
         if session.isComposing {
             session.handle(.commitRaw)
@@ -239,12 +257,12 @@ final class KeyboardViewController: UIInputViewController {
 
 extension KeyboardViewController: KeyboardHost {
     func insertText(_ text: String) {
-        lastOwnHostEdit = CACurrentMediaTime()
+        hostEdits.inserted(text, into: documentID, at: CACurrentMediaTime())
         textDocumentProxy.insertText(text)
     }
 
     func deleteBackward() {
-        lastOwnHostEdit = CACurrentMediaTime()
+        hostEdits.deletedBackward(in: documentID, at: CACurrentMediaTime())
         textDocumentProxy.deleteBackward()
     }
 }
