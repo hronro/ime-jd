@@ -162,9 +162,9 @@ void jd_deinit(jd_context *ctx);
  * ---------------------------------------------------------------------- */
 
 /** Hard limits. Also reported by jd_abi_layout so a binding can verify them. */
-#define JD_USER_DICT_MAX_ENTRIES 10000
+#define JD_USER_DICT_MAX_ENTRIES 500000
 #define JD_USER_DICT_VALUE_MAX 255
-#define JD_USER_DICT_TEXT_MAX (8u * 1024u * 1024u)
+#define JD_USER_DICT_TEXT_MAX (16u * 1024u * 1024u)
 
 /** Status codes returned by jd_user_dict_build and jd_user_dict_check. */
 #define JD_USER_DICT_OK 0
@@ -247,8 +247,9 @@ typedef struct {
 /**
  * An upper bound on what jd_user_dict_build writes into your buffer from
  * `phrases_len` bytes of text at `phrases`: the blob (one entry and one NUL
- * per line plus the text itself) and, past it, one jd_user_dict_note per
- * line. Pure arithmetic over a newline count. Allocate at least this much,
+ * per line that is not empty, up to JD_USER_DICT_MAX_ENTRIES, plus the
+ * text itself) and, past it, one jd_user_dict_note per line that is not
+ * empty. One pass over the text, no parsing. Allocate at least this much,
  * 4-byte aligned, for `buf`.
  */
 size_t jd_user_dict_blob_bound(const char *phrases, size_t phrases_len);
@@ -297,6 +298,17 @@ unsigned int jd_user_dict_build(const char *phrases, size_t phrases_len,
  */
 unsigned int jd_user_dict_check(const void *blob, size_t blob_len,
                                 jd_user_dict_info *info);
+
+/**
+ * A 64-bit hash of `len` bytes at `bytes` (NULL is fine with a length of
+ * 0), for the `source_tag` of a blob built from a text you keep: hash the
+ * text when you build, hash it again at launch, and a cached blob whose
+ * tag differs was built from something else. Fast enough to run over a
+ * whole phrases file at every launch — gigabytes a second. The same bytes
+ * hash the same on every platform and in every release of the library.
+ * Not a cryptographic hash.
+ */
+unsigned long long jd_user_dict_hash(const void *bytes, size_t len);
 
 /* ------------------------------------------------------------------------
  * Memory for hosts without an allocator of their own
@@ -472,6 +484,7 @@ unsigned int jd_lookup_codes(jd_context *ctx, const char *value,
 #define JD_ABI_SIZEOF_USER_DICT_NOTE 9
 #define JD_ABI_SIZEOF_CODE 10
 #define JD_ABI_CODE_CAP 11
+#define JD_ABI_USER_DICT_TEXT_MAX 12
 
 /**
  * Layout self-check. This header and the language bindings declare these

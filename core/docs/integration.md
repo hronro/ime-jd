@@ -112,6 +112,7 @@ unsigned int    jd_user_dict_build(const char *phrases, size_t phrases_len,
                                    jd_user_dict_report *report);
 unsigned int    jd_user_dict_check(const void *blob, size_t blob_len,
                                    jd_user_dict_info *info);
+unsigned long long jd_user_dict_hash(const void *bytes, size_t len);
 
 void           *jd_alloc(size_t size);
 void            jd_free(void *ptr, size_t size);
@@ -141,6 +142,7 @@ No function returns a struct by value, so there is no sret shim on any target.
 | `jd_user_dict_blob_bound(...)`| How big a buffer `jd_user_dict_build` needs for this text, notes included.   |
 | `jd_user_dict_build(...)`     | Compile `value<TAB>keys` text into a blob, in your buffer, stamped with your source tag. A line that does not parse is skipped, not fatal; the notes left past the blob say which, along with the dropped lines and the phrases on shared codes. |
 | `jd_user_dict_check(blob, len, info)` | Validate a cached blob the way `jd_init` would; say why it fails, or hand back its source tag and phrase count. |
+| `jd_user_dict_hash(bytes, len)` | A fast 64-bit hash of the text, for the source tag: the same on every platform and in every release. |
 | `jd_alloc(size)` / `jd_free(ptr, size)` | Memory from the library's allocator, for hosts that have none of their own. |
 
 ### Candidates are addressed by flat index
@@ -257,6 +259,7 @@ assert(jd_abi_layout(JD_ABI_HINT_CAP)                == JD_HINT_CAP);
 assert(jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_REPORT) == sizeof(jd_user_dict_report));
 assert(jd_abi_layout(JD_ABI_USER_DICT_MAX_ENTRIES)   == JD_USER_DICT_MAX_ENTRIES);
 assert(jd_abi_layout(JD_ABI_USER_DICT_VALUE_MAX)     == JD_USER_DICT_VALUE_MAX);
+assert(jd_abi_layout(JD_ABI_USER_DICT_TEXT_MAX)      == JD_USER_DICT_TEXT_MAX);
 assert(jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_INFO)   == sizeof(jd_user_dict_info));
 assert(jd_abi_layout(JD_ABI_SIZEOF_USER_DICT_NOTE)   == sizeof(jd_user_dict_note));
 assert(jd_abi_layout(JD_ABI_SIZEOF_CODE)             == sizeof(jd_code));
@@ -279,7 +282,7 @@ unsigned int n = jd_lookup_codes(ctx, "着", strlen("着"), codes, 16);
 - **Order.** Candidate order: shorter codes first, then key by key (a-z, then `;`), and a user phrase's code ahead of a built-in word's on the same keys. A value listed twice on one code is one code, at its first index.
 - **Sizing.** The return value is how many codes there are in all; only the first `out_cap` are written. Pass `NULL, 0` to count them, or size the buffer generously — no value in the built-in tables has more than a dozen codes.
 - **Matching.** `value` is compared byte for byte: not trimmed, not normalized, no prefix or partial match. An empty value, or one no dictionary holds, has no codes. Only dictionary codes are reported: a punctuation key (`,` for `，`) is not a code.
-- **Purity and cost.** The composition, the anchor and the state block are untouched, so a lookup can run mid-composition. It allocates nothing, and costs one binary search over the built-in tables plus a pass over the user dictionary's phrases — a microsecond or two.
+- **Purity and cost.** The composition, the anchor and the state block are untouched, so a lookup can run mid-composition. It allocates nothing, and costs one binary search over the built-in tables plus a pass over the user dictionary's phrases: a microsecond or two with a few thousand of them, about a millisecond at the 500 000 cap.
 
 ## User dictionary
 
@@ -296,7 +299,7 @@ Input is `value<TAB>keys` text, the line format of `core/tables/*.txt`. A host t
 - Keys are one to six letters `a`-`z`. `;` starts the built-in symbol codes and is not a user key. Values are one to `JD_USER_DICT_VALUE_MAX` (255) bytes of UTF-8 with no byte below 0x20 and no 0x7F.
 - A byte-order mark is not skipped: drop one when you decode a file, or U+FEFF becomes part of line 1.
 
-A dictionary holds at most `JD_USER_DICT_MAX_ENTRIES` (10 000) phrases. A line that breaks these rules is skipped and noted rather than failing the build, so one typo never costs the user the rest of the file; only a problem with the call as a whole — too much text, too many phrases, a buffer below the bound — fails. How the phrases are *stored* is the host's business — a text file the user edits, a table behind a GUI, a preferences store; the text is only the interchange format for this one call.
+A dictionary holds at most `JD_USER_DICT_MAX_ENTRIES` (500 000) phrases, built from at most `JD_USER_DICT_TEXT_MAX` (16 MiB) of text — room for over 30 bytes a line at the cap. The cap is the tightest host's: at 500 000 phrases a blob is about 12 MB and a build's buffer about 26 MB, which an iOS keyboard extension can still afford. A line that breaks these rules is skipped and noted rather than failing the build, so one typo never costs the user the rest of the file; only a problem with the call as a whole — too much text, too many phrases, a buffer below the bound — fails. How the phrases are *stored* is the host's business — a text file the user edits, a table behind a GUI, a preferences store; the text is only the interchange format for this one call.
 
 ```c
 size_t cap = jd_user_dict_blob_bound(text, text_len);
@@ -314,9 +317,9 @@ for (unsigned i = 0; i < report.notes; i++) {
 }
 ```
 
-`report.entries` is how many phrases went in; `report.dropped` how many were exact duplicates — of an earlier line with the same keys and value, or of a built-in word on the same code — and were left out so nothing is listed twice; `report.shared` how many kept phrases sit on a code that is already taken (重码); `report.invalid` how many lines were skipped because they do not parse. The details are the **notes**, written into your buffer past the blob (the bound already covers them, one per input line): one per skipped line, saying why (`JD_USER_DICT_LINE_MALFORMED`, `_BAD_KEYS` or `_BAD_VALUE`), one per dropped line, saying whether it repeats an earlier kept line (`other` names it) or a built-in word, and one per kept phrase on a shared code, saying how many built-in words (`builtin`) and how many other kept lines (`peers`, the first of them in `other`) share it. They come ascending by line, so a phrase manager flags its rows in one pass and a CLI prints them as they are. A phrase on a shared code works — it is listed ahead of the built-in word — the note only tells the user that the code is not theirs alone. The build is linear with a sort and happens entirely inside your buffer; `jd_init` reads only the blob prefix, so you can create a context from the buffer while you still read the notes.
+`report.entries` is how many phrases went in; `report.dropped` how many were exact duplicates — of an earlier line with the same keys and value, or of a built-in word on the same code — and were left out so nothing is listed twice; `report.shared` how many kept phrases sit on a code that is already taken (重码); `report.invalid` how many lines were skipped because they do not parse. The details are the **notes**, written into your buffer past the blob (the bound already covers them, one per line that is not empty): one per skipped line, saying why (`JD_USER_DICT_LINE_MALFORMED`, `_BAD_KEYS` or `_BAD_VALUE`), one per dropped line, saying whether it repeats an earlier kept line (`other` names it) or a built-in word, and one per kept phrase on a shared code, saying how many built-in words (`builtin`) and how many other kept lines (`peers`, the first of them in `other`) share it. They come ascending by line, so a phrase manager flags its rows in one pass and a CLI prints them as they are. A phrase on a shared code works — it is listed ahead of the built-in word — the note only tells the user that the code is not theirs alone. The build is linear with a sort and happens entirely inside your buffer; `jd_init` reads only the blob prefix, so you can create a context from the buffer while you still read the notes.
 
-`source_tag` is 64 bits of yours, stored in the blob and never interpreted: whatever identifies the phrases this blob was built from — a file's modification time, a hash of the text, a database revision. `jd_user_dict_check` hands it back, so deciding whether a cached blob is current needs no record beside the blob itself.
+`source_tag` is 64 bits of yours, stored in the blob and never interpreted: whatever identifies the phrases this blob was built from — a file's modification time, a hash of the text, a database revision. `jd_user_dict_check` hands it back, so deciding whether a cached blob is current needs no record beside the blob itself. For a hash, `jd_user_dict_hash` is there: gigabytes a second, so hashing a whole phrases file at every launch costs well under a millisecond, and the same bytes hash the same on every platform and in every release — every client can share one cache format.
 
 ### Caching and loading
 
@@ -336,7 +339,17 @@ if (jd_user_dict_check(blob, blob_len, &info) == JD_USER_DICT_OK
 
 `jd_init` validates the blob in one linear pass — every offset, the sort order, the key alphabet, UTF-8, and a fingerprint of the built-in dictionary it was deduplicated against — so a truncated cache or a blob from an older release is refused rather than trusted (it returns NULL; `jd_user_dict_check` says why). The phrases are the host's and a rebuild is cheap, so `STALE` and `CORRUPT` both just mean "build it again"; the distinction is for your logs. After a library update every cached blob is stale once.
 
-**Performance tip: memory-map the cache file.** A file mapping satisfies every rule below by construction — it is page-aligned, sits at a fixed address, and is read without copying — and its pages are shared with every other process that maps the same file, which matters where each host process loads the dictionary separately. Map it read-only, check it, and keep the mapping for as long as the context lives. Map the text file too when rebuilding: `jd_user_dict_build` only reads it. Load and build then cost exactly what the table above measures and nothing more.
+**Performance tip: memory-map the cache file.** A file mapping satisfies every rule below by construction — it is page-aligned, sits at a fixed address, and is read without copying — and its pages are shared with every other process that maps the same file, which matters where each host process loads the dictionary separately. Its pages are clean, too, so they count against no per-process memory limit — what an iOS keyboard extension needs. Map it read-only, check it, and keep the mapping for as long as the context lives; replace the file atomically (write a new one, rename it over), never rewrite it in place. Map the text file too, to hash it or to rebuild: `jd_user_dict_hash` and `jd_user_dict_build` only read it. Load and build then cost what the table below measures and nothing more.
+
+What the user dictionary costs at the cap, 500 000 phrases of 2–4 characters on 4–6 keys (7.6 MB of text), on an Apple M-series core (`bindings/rust/examples/user_dict_bench.rs`):
+
+| Step | Cost |
+|---|---|
+| `jd_user_dict_hash` over the text | 0.2 ms |
+| `jd_user_dict_build` (buffer ≈ 26 MB, blob 12.4 MB) | ≈ 30 ms |
+| `jd_user_dict_check`, or the validation in `jd_init` | ≈ 2 ms |
+| a key, or a page of candidates | ≈ 0.3 µs, as without a dictionary |
+| `jd_lookup_codes` of a word the phrases do not hold | ≈ 1 ms |
 
 ### Lifetime
 

@@ -62,7 +62,7 @@ Allocations are counted by `harness/allocc.c`, which interposes `malloc`, `callo
 
 ## Applying a user-dictionary edit
 
-Both engines read user phrases in the same `value<TAB>keys` line format, but apply an edit differently. The `userdict` step measures both at 1, 100, 1,000 and 10,000 phrases (libjd's limit), with random 2–4-character phrases on 键道-shaped codes (`userdict_inputs` in `run_all.py`):
+Both engines read user phrases in the same `value<TAB>keys` line format, but apply an edit differently. The `userdict` step measures both at 1, 100, 1,000 and 10,000 phrases (libjd's limit when these numbers were taken; it is now 500,000 — `bindings/rust/examples/user_dict_bench.rs` measures libjd alone up to it), with random 2–4-character phrases on 键道-shaped codes (`userdict_inputs` in `run_all.py`):
 
 - libjd (`eng_userdict` in `harness/bench_jd.c`): what a front end does when the user saves — read the file, `jd_user_dict_build` into a buffer, `jd_init` on the blob, release the old context. Afterwards it also times a later start with that blob cached: `jd_user_dict_check` plus `jd_init`.
 - Rime (`eng_userdict` in `harness/bench_rime.c`): the scheme's user dictionary is `keytao.user.dict.yaml`, compiled into its dictionaries, so an edit takes effect through 重新部署. The harness does what Squirrel's `deploy()` does — `finalize`, `initialize`, `start_maintenance` with a full check — waits for the deploy, and opens a new session. It runs with the three schemas the scheme enables by default, and again with the main schema alone.

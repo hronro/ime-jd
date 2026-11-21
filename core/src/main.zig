@@ -203,6 +203,12 @@ export fn jd_user_dict_check(blob: ?*const anyopaque, blob_len: usize, info: ?*U
     return @backingInt(UserDict.check(bytes[0..blob_len], tables.blob_fingerprint, info));
 }
 
+export fn jd_user_dict_hash(bytes: ?*const anyopaque, len: usize) u64 {
+    const ptr = bytes orelse return user_dict.hash("");
+    const slice: [*]const u8 = @ptrCast(ptr);
+    return user_dict.hash(slice[0..len]);
+}
+
 // =========================================================================
 // Memory for hosts without an allocator of their own — a WebAssembly host
 // cannot allocate inside linear memory, yet the user-dictionary calls take
@@ -312,6 +318,7 @@ const AbiQuery = enum(u32) {
     sizeof_user_dict_note = 9,
     sizeof_code = 10,
     code_cap = 11,
+    user_dict_text_max = 12,
 };
 
 export fn jd_abi_layout(what: u32) u32 {
@@ -329,6 +336,7 @@ export fn jd_abi_layout(what: u32) u32 {
         @backingInt(AbiQuery.sizeof_user_dict_note) => @sizeOf(UserDictNote),
         @backingInt(AbiQuery.sizeof_code) => @sizeOf(Code),
         @backingInt(AbiQuery.code_cap) => @intCast(lookup.CODE_CAP),
+        @backingInt(AbiQuery.user_dict_text_max) => @intCast(user_dict.TEXT_MAX),
         // Unknown queries are a benign 0 rather than a trap.
         else => 0,
     };
@@ -553,6 +561,7 @@ test "jd_abi_layout reports the real struct sizes" {
     );
     try std.testing.expectEqual(user_dict.MAX_ENTRIES, jd_abi_layout(@backingInt(AbiQuery.user_dict_max_entries)));
     try std.testing.expectEqual(user_dict.VALUE_MAX, jd_abi_layout(@backingInt(AbiQuery.user_dict_value_max)));
+    try std.testing.expectEqual(user_dict.TEXT_MAX, jd_abi_layout(@backingInt(AbiQuery.user_dict_text_max)));
     try std.testing.expectEqual(
         @as(u32, @sizeOf(UserDictInfo)),
         jd_abi_layout(@backingInt(AbiQuery.sizeof_user_dict_info)),
@@ -967,4 +976,11 @@ test "jd_lookup_codes merges the context's user dictionary" {
     try std.testing.expectEqual(@as(u32, 3), jd_lookup_codes(plain, "的".ptr, "的".len, &out, out.len));
     try std.testing.expectEqualStrings("d", codeKeys(&out[0]));
     try std.testing.expectEqual(@as(u32, 0), out[0].index);
+}
+
+test "jd_user_dict_hash: the library's hash, NULL taken for empty" {
+    const text = "键道\tjd\n";
+    try std.testing.expectEqual(user_dict.hash(text), jd_user_dict_hash(text.ptr, text.len));
+    try std.testing.expectEqual(user_dict.hash(""), jd_user_dict_hash(null, 0));
+    try std.testing.expectEqual(user_dict.hash(""), jd_user_dict_hash(text.ptr, 0));
 }
