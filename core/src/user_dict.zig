@@ -710,8 +710,16 @@ fn parseLine(raw: []const u8) ParseError!?Line {
     return .{ .value = value, .keys = keys };
 }
 
-const RADIX_BITS = 11;
+/// 9 bits, four passes over the 33-bit code: the counts take 2 KiB of the
+/// stack. A frame of over a page gets a stack probe on Windows, and zig's
+/// (`___chkstk_ms`) is a compiler-rt symbol that MSVC's linker, which links
+/// libjd into the Windows IME, does not have. 11 bits took three passes and
+/// 8 KiB, at the same speed.
+const RADIX_BITS = 9;
 const RADIX_PASSES = (CODE_BITS + RADIX_BITS - 1) / RADIX_BITS;
+comptime {
+    std.debug.assert(@sizeOf([1 << RADIX_BITS]u32) <= 2048);
+}
 
 /// Sort `entries` by `Entry.code`, stably — entries on one code keep the
 /// order they came in — with `scratch` (as long as `entries`) as the other
