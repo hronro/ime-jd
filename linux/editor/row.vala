@@ -5,11 +5,27 @@
 namespace ImeJd {
 
     public class Row : Object {
-        public string value { get; set; }
-        public string keys { get; set; }
+        public string value {
+            get { return _value; }
+            set { _value = value; folded_value = null; }
+        }
+        public string keys {
+            get { return _keys; }
+            set { _keys = value; folded_keys = null; }
+        }
+        private string _value;
+        private string _keys;
+        // Case-folded for the search, once per change rather than at every
+        // keystroke for every row.
+        private string? folded_value;
+        private string? folded_keys;
         /** The row's 1-based line in the file; 0 for a row added and not
          * yet written. */
-        public int line { get; set; }
+        public int line {
+            get { return _line; }
+            set { _line = value; }
+        }
+        private int _line;
         /** What the engine says about the row; null when nothing is wrong. */
         public Problem? problem { get; set; }
 
@@ -17,8 +33,25 @@ namespace ImeJd {
         public unowned TextCell? value_cell;
         public unowned TextCell? keys_cell;
 
+        /** The fields are set as such, not as construct properties: a file
+         * of hundreds of thousands of rows makes as many of these, and
+         * g_object_new's property path costs four times the object. */
         public Row (string value, string keys, int line) {
-            Object (value: value, keys: keys, line: line);
+            _value = value;
+            _keys = keys;
+            _line = line;
+        }
+
+        /** Whether the row's value or keys contain `query`, which is
+         * case-folded. */
+        public bool matches (string query) {
+            if (folded_value == null) {
+                folded_value = _value.casefold ();
+            }
+            if (folded_keys == null) {
+                folded_keys = _keys.casefold ();
+            }
+            return query in folded_value || query in folded_keys;
         }
 
         /** Whether either of the row's cells is being edited. */

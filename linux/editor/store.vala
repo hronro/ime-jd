@@ -71,7 +71,7 @@ namespace ImeJd {
                         return "第 %u 行起超过 %u 条上限".printf (line, Jd.USER_DICT_MAX_ENTRIES);
                     }
                     if (status == Jd.USER_DICT_TEXT_TOO_LONG) {
-                        return "文件超过 8 MB 上限";
+                        return "文件超过 %u MB 上限".printf (Jd.USER_DICT_TEXT_MAX / (1024 * 1024));
                     }
                     return "无法编译词库（状态 %u）".printf (status);
                 }

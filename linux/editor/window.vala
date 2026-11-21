@@ -355,7 +355,7 @@ namespace ImeJd {
         }
 
         private bool matches (Row row) {
-            return query == "" || query in row.value.casefold () || query in row.keys.casefold ();
+            return query == "" || row.matches (query);
         }
 
         private void refilter () {

@@ -231,9 +231,10 @@ TEST(theDefaultDirectoryFollowsXdgConfigHome) {
     CHECK_EQ(UserDictStore::defaultDirectory(), "/home/someone/.config/ime-jd");
 }
 
-TEST(hashIsFnv1a) {
-    CHECK_EQ(file::hash(""), 0xcbf29ce484222325ull);
-    CHECK_EQ(file::hash("a"), 0xaf63dc4c8601ec8cull);
+TEST(hashIsLibjds) {
+    // The values libjd pins in its own tests.
+    CHECK_EQ(file::hash(""), 0x0409638ee2bde459ull);
+    CHECK_EQ(file::hash("键道\tjd\n"), 0xb5f6c3766f38e694ull);
 }
 
 TEST(utf8Validation) {

@@ -159,9 +159,9 @@ void test_trim_and_hash () {
     assert_cmpstr (UserDictFile.trim ("  a b \r", " \r"), CompareOperator.EQ, "a b");
     assert_cmpstr (UserDictFile.trim ("\ta\t", " "), CompareOperator.EQ, "\ta\t");
     assert_cmpstr (UserDictFile.trim ("   ", " "), CompareOperator.EQ, "");
-    // FNV-1a's published values, as the engines compute it.
-    assert_true (UserDictFile.hash ("") == 0xcbf29ce484222325);
-    assert_true (UserDictFile.hash ("a") == 0xaf63dc4c8601ec8c);
+    // The values libjd pins in its own tests.
+    assert_true (UserDictFile.hash ("") == 0x0409638ee2bde459);
+    assert_true (UserDictFile.hash ("键道\tjd\n") == 0xb5f6c3766f38e694);
 }
 
 void test_ini_get () {
@@ -215,6 +215,16 @@ void test_problems_for_rows () {
     assert_cmpstr (problems[6].text, CompareOperator.EQ, "与第 6 条同码");
     // Not written yet: not in the text the notes are about.
     assert_null (problems[7]);
+
+    // Rows as read — ascending, none new — are walked with the notes rather
+    // than looked up, to the same verdicts.
+    var walked = Problem.for_rows ({ 1, 2, 3, 4, 5, 6, 7 }, report);
+    for (int i = 0; i < 7; i++) {
+        assert_true ((walked[i] == null) == (problems[i] == null));
+        if (walked[i] != null) {
+            assert_cmpstr (walked[i].text, CompareOperator.EQ, problems[i].text);
+        }
+    }
 
     // Rows moved since the build: notes follow lines, not positions.
     problems = Problem.for_rows ({ 0, 2, 1 }, report);
@@ -289,13 +299,14 @@ void test_store_reports_what_cannot_be_read () {
 void test_store_reports_a_file_over_the_cap () {
     var dir = new TempDir ();
     var text = new StringBuilder ();
-    for (int i = 0; i <= 10000; i++) {
-        text.append_printf ("词%d\tzzzzzz\n", i);
+    for (uint i = 0; i <= Jd.USER_DICT_MAX_ENTRIES; i++) {
+        text.append_printf ("词%u\tzzzzzz\n", i);
     }
     dir.write (UserDictFile.NAME, text.str);
     var store = open_store (dir);
     assert_true (store.error.kind == LoadError.Kind.BUILD);
-    assert_cmpstr (store.error.message, CompareOperator.EQ, "第 10001 行起超过 10000 条上限");
+    assert_cmpstr (store.error.message, CompareOperator.EQ,
+        "第 %u 行起超过 %u 条上限".printf (Jd.USER_DICT_MAX_ENTRIES + 1, Jd.USER_DICT_MAX_ENTRIES));
     // Shown, and editable: deleting rows is how it is fixed.
     assert_nonnull (store.text);
     assert_false (store.read_only);
@@ -369,7 +380,7 @@ void test_lookup_marks_user_phrases () {
         "d（第 2 个候选）\ndeuiua\ndkuiua\nzzzzzz（自造词）");
     assert_cmpstr (lookup_body ("测试词", phrases), CompareOperator.EQ, "d（自造词）");
     // Phrases that do not build are left out, as the engines leave them.
-    assert_cmpint (CodeLookup.codes ("测试词", "测试词\td\n".concat (string.nfill (9 * 1024 * 1024, 'x'))).length,
+    assert_cmpint (CodeLookup.codes ("测试词", "测试词\td\n".concat (string.nfill ((int) Jd.USER_DICT_TEXT_MAX, 'x'))).length,
         CompareOperator.EQ, 0);
 }
 
