@@ -61,6 +61,7 @@ class KeyboardLayoutView(
                     val b = KeyButton(context, spec, theme)
                     if (spec.cap is KeyCap.Return) b.displayText = returnLabel
                     b.onTap = { cap -> onKey?.invoke(cap) }
+                    b.onPressBegan = { pressed -> rollOver(pressed) }
                     b.onPreview = { key, event -> onKeyPreview?.invoke(key, event) }
                     b.onAlternatesExpand = { key -> onAlternatesExpand?.invoke(key) ?: false }
                     b.onAlternatesSlide = { key, x, y -> onAlternatesSlide?.invoke(key, x, y) }
@@ -72,6 +73,15 @@ class KeyboardLayoutView(
         }
         updateShift(shift)
         requestLayout()
+    }
+
+    /** A key went down: type any other key still held (see
+     *  [KeyButton.commitForRollover]), in the order they were pressed. */
+    private fun rollOver(pressed: KeyButton) {
+        val held = ArrayList<KeyButton>(2)
+        forEachButton { if (it !== pressed && it.isTracking) held.add(it) }
+        held.sortBy { it.pressOrder }
+        for (key in held) key.commitForRollover()
     }
 
     fun apply(theme: KeyboardTheme) {

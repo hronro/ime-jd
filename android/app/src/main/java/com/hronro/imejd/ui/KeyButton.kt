@@ -33,6 +33,10 @@ class KeyButton(
 
     var onTap: ((KeyCap) -> Unit)? = null
 
+    /** Called first thing when a press begins, so the grid can type any key
+     *  still held from before (see [commitForRollover]). */
+    var onPressBegan: ((KeyButton) -> Unit)? = null
+
     /** Preview-balloon lifecycle, emitted only for character keys (Char/InsertLiteral). */
     var onPreview: ((KeyButton, KeyPreviewEvent) -> Unit)? = null
 
@@ -75,6 +79,19 @@ class KeyButton(
      *  tracking then slides the selection instead of press-highlighting. */
     private var showingAlternates = false
     private val inkBounds = Rect()
+
+    /** A press of this key is in progress: from touch-down until the finger
+     *  lifts, the touch is cancelled, or the press was typed early (see
+     *  [commitForRollover]) — after which the rest of it is ignored. */
+    var isTracking = false
+        private set
+    /** When this key's current press began, in presses across all keys. */
+    var pressOrder = 0
+        private set
+
+    private companion object {
+        var presses = 0
+    }
 
     init {
         installBackground()
@@ -167,6 +184,9 @@ class KeyButton(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                isTracking = true
+                pressOrder = ++presses
+                onPressBegan?.invoke(this)
                 KeyFeedback.play(this, spec.cap)
                 isPressed = true
                 drawableHotspotChanged(event.x, event.y)
@@ -176,6 +196,7 @@ class KeyButton(
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if (!isTracking) return true
                 if (showingAlternates) {
                     onAlternatesSlide?.invoke(this, event.x, event.y)
                     return true
@@ -192,6 +213,8 @@ class KeyButton(
                 return true
             }
             MotionEvent.ACTION_UP -> {
+                if (!isTracking) return true
+                isTracking = false
                 stopAlternatesDelay()
                 if (showingAlternates) {
                     showingAlternates = false
@@ -213,6 +236,7 @@ class KeyButton(
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                isTracking = false
                 stopAlternatesDelay()
                 showingAlternates = false
                 isPressed = false
@@ -228,6 +252,29 @@ class KeyButton(
         x >= -expand && y >= -expand && x <= width + expand && y <= height + expand
 
     private fun fire() = onTap?.invoke(spec.cap)
+
+    /**
+     * Another key went down while this one is still held: type this one now.
+     * Keys type when released, and in fast two-thumb typing the next key often
+     * goes down before this one comes up — and can come up first, typing the
+     * two in the wrong order (n j typed as "jn", a different candidate). The
+     * system keyboards commit the held key at that moment too. Only keys that
+     * type text roll over, and only while the finger is still on them;
+     * modifiers, the repeating delete and an open press-and-hold row keep to
+     * their own release.
+     */
+    fun commitForRollover() {
+        if (!isTracking || !isPressed || showingAlternates) return
+        when (spec.cap) {
+            is KeyCap.Char, is KeyCap.InsertLiteral, KeyCap.Space, KeyCap.Return -> {}
+            else -> return
+        }
+        isTracking = false
+        stopAlternatesDelay()
+        isPressed = false
+        preview(KeyPreviewEvent.RELEASE)
+        fire()
+    }
 
     private fun preview(event: KeyPreviewEvent) {
         if (hasPreview) onPreview?.invoke(this, event)
@@ -269,6 +316,7 @@ class KeyButton(
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        isTracking = false
         stopRepeat()
         stopAlternatesDelay()
         showingAlternates = false

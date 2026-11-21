@@ -21,7 +21,7 @@ android/
         update/                 # release-feed model + daily check (UpdateChecker) + APK download/install (UpdateInstaller)
     src/autoUpdate/
       AndroidManifest.xml       # updater permissions + receiver, merged only with -PjdAutoUpdate=true
-    src/androidTest/            # session, store, layout and field-policy tests (instrumented; drive the real engine)
+    src/androidTest/            # session, store, layout, field-policy and key-touch tests (instrumented; drive the real engine)
     src/test/                   # JVM unit tests: the update feed model, the phrases file's format, 编码反查's wording
   scripts/build-libjd.sh        # zig core per-ABI + NDK-clang JNI shim (../bindings/java) → src/main/jniLibs/<abi>/
 ```
@@ -110,6 +110,7 @@ adb shell am start -n com.hronro.imejd/.app.MainActivity \
 - **Key previews.** Character keys pop a Gboard-style balloon (`KeyPreview.kt`): instant on press, 70ms linger on release (AOSP's timing), slide-off cancels, one balloon per finger. In dark themes the balloon gets a Material elevation tint so it stands out over the keys. Balloons are children of the keyboard view — top-row previews float over the candidate bar — so there are no popup windows. Phone-only: tablets don't pop previews, matching Gboard/AOSP.
 - **Key-press feedback.** Every key down plays the system keypress sound (`AudioManager.playSoundEffect` with the per-key standard/delete/return/spacebar effects) and the system-tuned `KEYBOARD_TAP` haptic — `KeyFeedback.kt`, the counterpart of iOS's `KeyClick.swift` (sound-only there: iOS gates haptics behind Full Access). Candidate taps and the grid chevron/close give feedback too, and backspace repeats it on every auto-repeat tick, matching iOS. Both channels have toggles in the container app (default on, like Gboard's vibration and the always-on iOS click), stored in `SharedPreferences` and re-read per press — app, preview, and IME share one process, so a flip applies on the next key. Sound is muted by the silent/vibrate ringer, like the built-in keyboards.
 - **Press-and-hold punctuation groups.** Holding a grouped key (`KeyLayout.alternates`, mirrors the iOS keyboard) expands its balloon into a row of visually similar variants — the finger slides the accent highlight, release commits, sliding well below the key deselects. The row extends toward the screen's center (display order reversed on the right half) so the primary starts above the finger, Gboard-style. Groups ride the engine-bypass path, so they carry marks the engine inventory has no key for; a grouped mark never also has a dedicated key (`KeyLayoutTest`), which freed slots for the ；·×÷※℃√→★♡© keys. QA: drive it with real touches — `adb shell input motionevent DOWN x y`, `MOVE`, `UP` (the pointer stays held between adb calls).
+- **Fast typing.** A key types on release — except that a key that types text (a letter, a mark, space or return) still held when the next key goes down types right then, as the system keyboards do, so overlapping thumbs type in the order they pressed rather than the order they lifted (`KeyTouchTest`).
 
 ## CI & releases
 
