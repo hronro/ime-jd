@@ -363,7 +363,14 @@ fn bad_lines_are_skipped_and_noted_never_fatal() {
     assert_eq!(err.status, UserDictStatus::TooManyEntries);
     assert!(err.status.is_line_error());
     assert_eq!(err.line, UserDict::MAX_ENTRIES + 1);
-    assert_eq!(err.to_string(), "line 10001: more than 10000 phrases");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "line {}: more than {} phrases",
+            UserDict::MAX_ENTRIES + 1,
+            UserDict::MAX_ENTRIES
+        )
+    );
 }
 
 #[test]
@@ -590,4 +597,16 @@ fn lookup_codes_merges_the_user_dictionary() {
     assert_eq!(keys(&mine), ["d"]);
     assert_eq!(mine[0].index(), 0);
     assert!(mine[0].is_user());
+}
+
+#[test]
+fn hash_is_libjds_pinned_wyhash() {
+    // The values libjd pins in its own tests: a cache tagged by one release
+    // must read the same in the next.
+    assert_eq!(UserDict::hash(b""), 0x0409_638E_E2BD_E459);
+    assert_eq!(
+        UserDict::hash("键道\tjd\n".as_bytes()),
+        0xB5F6_C376_6F38_E694
+    );
+    assert_ne!(UserDict::hash(b"a"), UserDict::hash(b"b"));
 }

@@ -562,7 +562,7 @@ fn check_in_place(bytes: &[u8]) -> Result<UserDictInfo, UserDictError> {
 
 impl UserDict {
     /// Most phrases one dictionary may hold (`JD_USER_DICT_MAX_ENTRIES`).
-    pub const MAX_ENTRIES: u32 = 10_000;
+    pub const MAX_ENTRIES: u32 = 500_000;
     /// Longest phrase value in bytes (`JD_USER_DICT_VALUE_MAX`).
     pub const VALUE_MAX: u32 = 255;
     /// Longest code. `jd.h` states it in prose — keys are 1 to 6 letters
@@ -641,7 +641,10 @@ impl UserDict {
                 })
                 .collect()
         };
+        // The bound leaves room for every line's note and the whole text,
+        // about twice the blob: keep only the blob.
         storage.truncate(len.div_ceil(4));
+        storage.shrink_to_fit();
         Ok((
             Self {
                 blob: Blob::Owned { storage, len },
@@ -707,6 +710,17 @@ impl UserDict {
             };
             check_in_place(blob.bytes())
         }
+    }
+
+    /// libjd's hash of `bytes` (`jd_user_dict_hash`), for the `source_tag`
+    /// of a dictionary built from a text you keep: hash the text when you
+    /// build and again at launch, and a cached blob whose tag differs was
+    /// built from something else. Gigabytes a second, so hashing a whole
+    /// phrases file at every launch is cheap. Stable across platforms and
+    /// releases; not cryptographic.
+    pub fn hash(bytes: &[u8]) -> u64 {
+        // SAFETY: the library reads exactly `len` bytes and keeps nothing.
+        unsafe { ffi::jd_user_dict_hash(bytes.as_ptr().cast(), bytes.len()) }
     }
 
     /// How many phrases the dictionary holds.
@@ -829,6 +843,7 @@ mod ffi {
             blob_len: usize,
             info: *mut JdUserDictInfo,
         ) -> u32;
+        pub fn jd_user_dict_hash(bytes: *const c_void, len: usize) -> u64;
     }
 }
 
