@@ -6,7 +6,7 @@
 // moves to a sheet, as on iOS.
 
 import { createEffect, createMemo, createSignal, lazy, Loading, Match, onSettled, Show, Switch as Branch } from "solid-js";
-import { buildErrorMessage, dict, MAX_ENTRIES } from "../dict/service";
+import { buildErrorMessage, dict, userDictLimits } from "../dict/service";
 import { IME_FIELD_ATTRS } from "../ime/target";
 import { unlinkFile, linkFile, writeBrowserText, readFileText, writeFileText } from "../storage/userdict";
 import { userDictEnabled } from "../storage/settings";
@@ -69,13 +69,13 @@ export default function UserDictDialog(props: { open: boolean; onClose: () => vo
   // MARK: - Actions
 
   const capReached = () =>
-    ask({ title: "词条数量已达上限", text: `用户自造词最多 ${MAX_ENTRIES} 条。`, buttons: [{ label: "好", value: "ok", tone: "primary" }] });
+    ask({ title: "词条数量已达上限", text: `用户自造词最多 ${userDictLimits().maxEntries} 条。`, buttons: [{ label: "好", value: "ok", tone: "primary" }] });
 
   const [editRequest, setEditRequest] = createSignal<number | null>(null);
 
   const add = () => {
     if (narrow()) {
-      if (model.rows().length >= MAX_ENTRIES) void capReached();
+      if (model.rows().length >= userDictLimits().maxEntries) void capReached();
       else setSheet({ mode: "add" });
       return;
     }

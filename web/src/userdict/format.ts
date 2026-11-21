@@ -30,9 +30,12 @@ export const FILE_NAME = "用户自造词.txt";
 export const HEADER = `# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，1 到 ${MAX_KEY_LENGTH} 个字符。`;
 
 /** libjd trims a line of spaces and CRs, and nothing else (not TAB, not U+3000). */
-const trimLine = (s: string) => s.replace(/^[ \r]+|[ \r]+$/g, "");
-/** …and each field of spaces only. */
-export const trimField = (s: string) => s.replace(/^ +| +$/g, "");
+const isLineTrim = (c: number) => c === 0x20 || c === 0x0d;
+const trimLine = (s: string) =>
+  isLineTrim(s.charCodeAt(0)) || isLineTrim(s.charCodeAt(s.length - 1)) ? s.replace(/^[ \r]+|[ \r]+$/g, "") : s;
+/** …and each field of spaces only — most have none, and keep their string. */
+export const trimField = (s: string) =>
+  s.charCodeAt(0) === 0x20 || s.charCodeAt(s.length - 1) === 0x20 ? s.replace(/^ +| +$/g, "") : s;
 
 export function parse(text: string): ParsedRow[] {
   const rows: ParsedRow[] = [];

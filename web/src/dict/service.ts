@@ -3,16 +3,22 @@
 // merges it in while 启用用户自造词 is on. Every client's rules apply:
 //  - libjd is the only judge of a line; nothing here validates;
 //  - a failed rebuild keeps the last good dictionary in use;
-//  - the blob cache is tagged with the text's FNV-1a hash.
+//  - the blob cache is tagged with libjd's hash of the text.
 
 import { type Accessor, createSignal, type Setter } from "solid-js";
-import { type Engine, type JdModule, type UserDict, UserDictError, type UserDictReport } from "jd";
+import {
+  type Engine,
+  type JdModule,
+  type UserDict,
+  UserDictError,
+  type UserDictLimits,
+  type UserDictReport,
+} from "jd";
 import { ime } from "../ime/controller";
 import { setUserDictEnabled, userDictEnabled } from "../storage/settings";
 import {
   cacheBlob,
   type DictSource,
-  fnv1a64,
   NotUtf8Error,
   persistStorage,
   readFileText,
@@ -22,18 +28,23 @@ import {
   writeFileText,
 } from "../storage/userdict";
 
-/** libjd's caps (core/include/jd.h), quoted in messages. */
-export const MAX_ENTRIES = 10000;
+/** libjd's caps (core/include/jd.h), as the loaded module reports them. */
+export function userDictLimits(): UserDictLimits {
+  return dict.jd.userDictLimits;
+}
 
 interface Live {
   readonly engine: Engine;
   readonly dict: UserDict | null;
 }
 
+const encoder = new TextEncoder();
+
 export function buildErrorMessage(error: unknown): string {
   if (error instanceof UserDictError) {
-    if (error.status === "tooManyEntries") return `第 ${error.line} 行起超过 ${MAX_ENTRIES} 条上限`;
-    if (error.status === "textTooLong") return "文件超过 8 MB 上限";
+    const limits = userDictLimits();
+    if (error.status === "tooManyEntries") return `第 ${error.line} 行起超过 ${limits.maxEntries} 条上限`;
+    if (error.status === "textTooLong") return `文件超过 ${limits.textMax / (1024 * 1024)} MB 上限`;
     return `无法编译词库（${error.status}）`;
   }
   if (error instanceof NotUtf8Error) return error.message;
@@ -117,7 +128,8 @@ class DictService {
         return null;
       }
     }
-    const tag = fnv1a64(text);
+    const bytes = encoder.encode(text);
+    const tag = jd.hashUserDictText(bytes);
     if (cached && cached.tag === tag.toString()) {
       try {
         return jd.loadUserDict(cached.bytes);
@@ -125,13 +137,18 @@ class DictService {
         // stale (another libjd) or corrupt: rebuild below
       }
     }
-    return this.#build(text, tag)?.dict ?? null;
+    return this.#build(text, { bytes, tag })?.dict ?? null;
   }
 
-  /** Build `text`; on success record the report and cache the blob. */
-  #build(text: string, tag = fnv1a64(text)): { dict: UserDict; report: UserDictReport } | null {
+  /**
+   * Build `text`; on success record the report and cache the blob. Encoded
+   * once, for both the hash and the build: 500 000 phrases are 8 MB of UTF-8.
+   */
+  #build(text: string, encoded?: { bytes: Uint8Array; tag: bigint }): { dict: UserDict; report: UserDictReport } | null {
     try {
-      const built = this.jd.buildUserDict(text, { sourceTag: tag });
+      const bytes = encoded?.bytes ?? encoder.encode(text);
+      const tag = encoded?.tag ?? this.jd.hashUserDictText(bytes);
+      const built = this.jd.buildUserDict(bytes, { sourceTag: tag });
       this.#setReport(built.report);
       this.#setError(null);
       void cacheBlob(tag, built.dict.bytes()).catch(() => {});

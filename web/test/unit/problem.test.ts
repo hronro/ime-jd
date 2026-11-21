@@ -53,4 +53,32 @@ describe("row verdicts", () => {
   test("no report flags nothing", () => {
     expect(problemsForRows([2, 3, null], null)).toEqual([null, null, null]);
   });
+
+  test("rows in line order, rows out of it and rows not yet written get the same verdicts", () => {
+    const text = serialize([
+      { value: "测试一", keys: "zzzzzz" },
+      { value: "缺编码", keys: "" },
+      { value: "测试一", keys: "zzzzzz" },
+      { value: "不", keys: "b" },
+      { value: "测试二", keys: "zzzzzz" },
+    ]);
+    const { dict, report } = jd.buildUserDict(text);
+    dict.dispose();
+    const lines = parse(text).map((r) => r.line);
+    const inOrder = problemsForRows(lines, report);
+    expect(inOrder.map((p) => p?.kind ?? null)).toEqual(["shared", "invalid", "duplicate", "duplicate", "shared"]);
+    expect(inOrder[2]).toEqual({ kind: "duplicate", ofRow: 0 });
+
+    // A new row in the middle (no line yet) shifts the rows a note names.
+    const withNew = problemsForRows([lines[0]!, null, ...lines.slice(1)], report);
+    expect(withNew[1]).toBeNull();
+    expect(withNew[3]).toEqual({ kind: "duplicate", ofRow: 0 });
+    expect(withNew[5]).toEqual({ ...inOrder[4], otherRow: 0 });
+
+    // Reordered rows (dragged, not yet rewritten): the slow way, same words.
+    const reversed = [...lines].reverse();
+    const fromReversed = problemsForRows(reversed, report);
+    expect(fromReversed[2]).toEqual({ kind: "duplicate", ofRow: 4 });
+    expect(fromReversed.map((p) => p?.kind ?? null)).toEqual(inOrder.map((p) => p?.kind ?? null).reverse());
+  });
 });

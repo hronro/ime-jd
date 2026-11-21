@@ -12,7 +12,7 @@ const BLOB = "userdict.blob";
 const FILE = "userdict.file";
 
 export interface CachedBlob {
-  /** FNV-1a 64 of the text the blob was built from, as a decimal string. */
+  /** libjd's hash of the text the blob was built from, as a decimal string. */
   readonly tag: string;
   readonly bytes: Uint8Array;
 }
@@ -48,20 +48,6 @@ export function decodeText(bytes: ArrayBuffer | Uint8Array): string {
   } catch {
     throw new NotUtf8Error();
   }
-}
-
-/**
- * FNV-1a, 64-bit, over the UTF-8 text — the dictionary's source tag, as in
- * bindings/swift/UserDictFile.swift `hash`. BigInt: a Number loses bits past 2^53.
- */
-export function fnv1a64(text: string): bigint {
-  const bytes = new TextEncoder().encode(text);
-  let hash = 0xcbf29ce484222325n;
-  for (const byte of bytes) {
-    hash ^= BigInt(byte);
-    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
-  }
-  return hash;
 }
 
 export async function readFileText(handle: FileSystemFileHandle): Promise<string> {

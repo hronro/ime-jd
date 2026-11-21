@@ -52,7 +52,44 @@ export function problemText(problem: Problem, unit: "条" | "行" = "条"): stri
  * at all — flags nothing.
  */
 export function problemsForRows(lines: readonly (number | null)[], report: UserDictReport | null): (Problem | null)[] {
-  if (!report) return lines.map(() => null);
+  const problems = new Array<Problem | null>(lines.length).fill(null);
+  if (!report || report.notes.length === 0) return problems;
+  // The notes come ascending by line, and so do the rows that have one (a
+  // table never reorders without rewriting the file): walk the two together,
+  // and find a note's other row by a binary search — no table over hundreds
+  // of thousands of rows. Rows out of line order take the slow way.
+  const rowAt = new Int32Array(lines.length);
+  const lineAt = new Int32Array(lines.length);
+  let n = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line === null) continue;
+    if (n > 0 && line <= lineAt[n - 1]!) return problemsForUnorderedRows(lines, report);
+    rowAt[n] = i;
+    lineAt[n] = line;
+    n++;
+  }
+  const rowOfLine = (line: number): number | null => {
+    let lo = 0;
+    let hi = n;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (lineAt[mid]! < line) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo < n && lineAt[lo] === line ? rowAt[lo]! : null;
+  };
+  let k = 0;
+  for (const note of report.notes) {
+    while (k < n && lineAt[k]! < note.line) k++;
+    if (k === n) break;
+    if (lineAt[k] !== note.line) continue;
+    problems[rowAt[k]!] = problemFor(note, note.other > 0 ? rowOfLine(note.other) : null);
+  }
+  return problems;
+}
+
+function problemsForUnorderedRows(lines: readonly (number | null)[], report: UserDictReport): (Problem | null)[] {
   const notes = new Map<number, UserDictNote>();
   for (const note of report.notes) notes.set(note.line, note);
   const rowByLine = new Map<number, number>();
@@ -62,21 +99,24 @@ export function problemsForRows(lines: readonly (number | null)[], report: UserD
   return lines.map((line) => {
     if (line === null) return null;
     const note = notes.get(line);
-    if (!note) return null;
-    const other = rowByLine.get(note.other) ?? null;
-    if (note.flags & INVALID) return { kind: "invalid", flags: note.flags };
-    if (note.flags & UserDictNoteFlags.REPEATS_LINE) return { kind: "duplicate", ofRow: other };
-    if (note.flags & UserDictNoteFlags.REPEATS_BUILTIN) return { kind: "duplicate", ofRow: null };
-    if (note.flags & SHARED) {
-      return {
-        kind: "shared",
-        builtIn: note.builtin,
-        otherRow: note.flags & UserDictNoteFlags.CODE_IN_LINE ? other : null,
-        peers: note.peers,
-      };
-    }
-    return null;
+    return note ? problemFor(note, rowByLine.get(note.other) ?? null) : null;
   });
+}
+
+/** The verdict a note gives its row; `other` is the row of the line it names, if that is a row. */
+function problemFor(note: UserDictNote, other: number | null): Problem | null {
+  if (note.flags & INVALID) return { kind: "invalid", flags: note.flags };
+  if (note.flags & UserDictNoteFlags.REPEATS_LINE) return { kind: "duplicate", ofRow: other };
+  if (note.flags & UserDictNoteFlags.REPEATS_BUILTIN) return { kind: "duplicate", ofRow: null };
+  if (note.flags & SHARED) {
+    return {
+      kind: "shared",
+      builtIn: note.builtin,
+      otherRow: note.flags & UserDictNoteFlags.CODE_IN_LINE ? other : null,
+      peers: note.peers,
+    };
+  }
+  return null;
 }
 
 /** One note as a problem whose numbers are line numbers (for the text view). */
