@@ -19,6 +19,8 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.nio.MappedByteBuffer
+import java.nio.channels.FileChannel
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 
@@ -44,6 +46,22 @@ object UserDictFile {
     }
 
     /**
+     * The file mapped read-only, or null when there is no file: its bytes
+     * without a read into the heap, paged in as they are touched. Safe for
+     * the files written here, which an [AtomicFile] replaces by renaming a
+     * new file over the old one — a mapping keeps the file it was made from.
+     */
+    @Throws(IOException::class)
+    fun map(file: File): MappedByteBuffer? {
+        val input = try {
+            AtomicFile(file).openRead()
+        } catch (_: FileNotFoundException) {
+            return null
+        }
+        return input.use { it.channel.map(FileChannel.MapMode.READ_ONLY, 0, it.channel.size()) }
+    }
+
+    /**
      * Strict UTF-8 — libjd would reject a stray byte line by line; the app
      * says so once. A UTF-8 BOM is dropped: libjd would otherwise take
      * U+FEFF as part of the first value.
@@ -62,12 +80,12 @@ object UserDictFile {
 
     /** Atomic replace: a reader, or a sudden kill, never sees a partial file. */
     @Throws(IOException::class)
-    fun write(text: String, file: File) {
+    fun write(bytes: ByteArray, file: File) {
         file.parentFile?.mkdirs()
         val atomic = AtomicFile(file)
         val out = atomic.startWrite()
         try {
-            out.write(text.toByteArray(Charsets.UTF_8))
+            out.write(bytes)
             atomic.finishWrite(out)
         } catch (e: IOException) {
             atomic.failWrite(out)
@@ -82,19 +100,41 @@ object UserDictFile {
      * row whose value is the whole line and whose keys are empty.
      */
     fun parse(text: String): List<UserDictRow> {
+        // Indices into the text, and a String only for each field kept: a
+        // list of hundreds of thousands of phrases reads in a blink, not in
+        // a garbage collector's worth of throwaway lines.
         val rows = ArrayList<UserDictRow>()
-        text.split('\n').forEachIndexed { index, raw ->
-            val line = raw.trim { it == ' ' || it == '\r' }
-            if (line.isEmpty() || line.startsWith("#")) return@forEachIndexed
-            val tab = line.indexOf('\t')
-            val entry = if (tab < 0) {
-                UserDictEntry(line, "")
+        var line = 0
+        var start = 0
+        while (start <= text.length) {
+            line++
+            var end = text.indexOf('\n', start)
+            if (end < 0) end = text.length
+            var lo = start
+            var hi = end
+            start = end + 1
+            while (lo < hi && (text[lo] == ' ' || text[lo] == '\r')) lo++
+            while (hi > lo && (text[hi - 1] == ' ' || text[hi - 1] == '\r')) hi--
+            if (lo == hi || text[lo] == '#') continue
+            var tab = lo
+            while (tab < hi && text[tab] != '\t') tab++
+            val entry = if (tab == hi) {
+                UserDictEntry(text.substring(lo, hi), "")
             } else {
-                UserDictEntry(line.substring(0, tab).trim(' '), line.substring(tab + 1).trim(' '))
+                UserDictEntry(field(text, lo, tab), field(text, tab + 1, hi))
             }
-            rows.add(UserDictRow(index + 1, entry))
+            rows.add(UserDictRow(line, entry))
         }
         return rows
+    }
+
+    /** `text[from, to)`, spaces trimmed from both ends. */
+    private fun field(text: String, from: Int, to: Int): String {
+        var lo = from
+        var hi = to
+        while (lo < hi && text[lo] == ' ') lo++
+        while (hi > lo && text[hi - 1] == ' ') hi--
+        return text.substring(lo, hi)
     }
 
     /** The header plus one `value<TAB>keys` line per entry, LF-terminated. Entry `i` lands on line `i + 2`. */
@@ -102,22 +142,4 @@ object UserDictFile {
         append(HEADER).append('\n')
         for (e in entries) append(e.value).append('\t').append(e.keys).append('\n')
     }
-
-    /**
-     * FNV-1a, 64-bit, over UTF-8 — the same function as the Swift clients'.
-     * It is the cached blob's source tag: a blob tagged with another hash
-     * was built from another text. Taken over the file's bytes as read, so
-     * a load whose cache is good never decodes the text at all; a file the
-     * app wrote has no BOM, so its bytes are its text's.
-     */
-    fun hash(bytes: ByteArray): Long {
-        var hash = -0x340d631b7bdddcdbL // 0xcbf29ce484222325
-        for (byte in bytes) {
-            hash = hash xor (byte.toLong() and 0xFF)
-            hash *= 0x100000001b3L
-        }
-        return hash
-    }
-
-    fun hash(text: String): Long = hash(text.toByteArray(Charsets.UTF_8))
 }

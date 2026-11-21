@@ -48,19 +48,28 @@ sealed interface UserDictProblem {
     companion object {
         /**
          * One verdict per row, from the notes of the build of the text the
-         * rows came from; `lines[i]` is row `i`'s 1-based line in that text.
-         * A null [report] — the text could not be built at all — flags
+         * rows came from; `lines[i]` is row `i`'s 1-based line in that text,
+         * ascending, as [UserDictFile.parse] returns them. A null [report] — the text could not be built at all — flags
          * nothing: the engine has no notes on a file it could not read.
          */
         fun forRows(lines: List<Int>, report: UserDictReport?): List<UserDictProblem?> {
-            if (report == null) return List(lines.size) { null }
-            val notes = report.notes.associateBy { it.line }
-            val rowByLine = HashMap<Int, Int>(lines.size)
-            lines.forEachIndexed { index, line -> rowByLine[line] = index }
-            return lines.map { line ->
-                val note = notes[line] ?: return@map null
-                val other = rowByLine[note.other]
-                when {
+            val problems = arrayOfNulls<UserDictProblem>(lines.size)
+            if (report == null) return problems.asList()
+            // Rows read from a file come ascending by line, and so do the
+            // notes: each row's note is found by walking the two together,
+            // and a note's other row by a binary search — no table over
+            // hundreds of thousands of rows.
+            val rowLines = lines.toIntArray()
+            for (i in 1 until rowLines.size) {
+                require(rowLines[i - 1] < rowLines[i]) { "rows out of line order" }
+            }
+            var index = 0
+            for (note in report.notes) {
+                while (index < rowLines.size && rowLines[index] < note.line) index++
+                if (index == rowLines.size) break
+                if (rowLines[index] != note.line) continue
+                val other = rowLines.binarySearch(note.other).takeIf { note.other != 0 && it >= 0 }
+                problems[index] = when {
                     note.isInvalid -> Invalid(note.flags)
                     note.has(UserDictNote.REPEATS_LINE) -> Duplicate(other)
                     note.has(UserDictNote.REPEATS_BUILT_IN) -> Duplicate(null)
@@ -72,6 +81,7 @@ sealed interface UserDictProblem {
                     else -> null
                 }
             }
+            return problems.asList()
         }
     }
 }

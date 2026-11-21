@@ -39,13 +39,33 @@ class UserDictFileTest {
         assertEquals(entries, UserDictFile.parse(text).map { it.entry })
     }
 
-    /** The cached blob's tag: FNV-1a 64, the Swift clients' function, on its published vectors. */
+    /** A line without a TAB is a row of its own: the next line's TAB is not its. */
     @Test
-    fun theHashIsFnv1a64() {
-        assertEquals(0xcbf29ce484222325uL.toLong(), UserDictFile.hash(""))
-        assertEquals(0xaf63dc4c8601ec8cuL.toLong(), UserDictFile.hash("a"))
-        assertEquals(0x85944171f73967e8uL.toLong(), UserDictFile.hash("foobar"))
-        assertEquals("over the UTF-8 bytes", 0x07f46b66f9515be2L, UserDictFile.hash("键道\tzzzzzz\n"))
+    fun aLineWithoutATabKeepsToItself() {
+        assertEquals(
+            listOf(UserDictRow(1, UserDictEntry("a", "")), UserDictRow(2, UserDictEntry("b", "c"))),
+            UserDictFile.parse("a\nb\tc"),
+        )
+        assertEquals(listOf(UserDictRow(2, UserDictEntry("甲", ""))), UserDictFile.parse("\r\n 甲 \r\n#\tx\n  "))
+    }
+
+    @Test
+    fun theSearchFindsEachRowOnceCaseFoldedAndNeverAcrossFields() {
+        val search = UserDictSearch(
+            listOf(
+                UserDictEntry("键道", "zzjd"),
+                UserDictEntry("Alpha", "ab"),
+                UserDictEntry("ab", "ab"),
+                UserDictEntry("道", "dao"),
+            ),
+        )
+        assertEquals(listOf(0, 1, 2, 3), search.matches(""))
+        assertEquals(listOf(0, 3), search.matches("道"))
+        assertEquals("once per row, value or keys", listOf(1, 2), search.matches("ab"))
+        assertEquals(listOf(1), search.matches("ALPHA"))
+        assertEquals("not across the TAB", emptyList<Int>(), search.matches("道\tz"))
+        assertEquals("not across rows", emptyList<Int>(), search.matches("jdalpha"))
+        assertEquals(emptyList<Int>(), UserDictSearch(emptyList()).matches("a"))
     }
 
     @Test
