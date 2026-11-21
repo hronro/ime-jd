@@ -234,7 +234,7 @@ final class KeyboardView: UIView {
         // rebuilt keys to have real frames.
         layoutIfNeeded()
         return keyGrid.subviews.compactMap { $0 as? KeyButton }
-            .first { $0.displayText == label }
+            .first { !$0.isHidden && $0.displayText == label }
     }
 
     func applyTheme(_ theme: KeyboardTheme) {
@@ -287,9 +287,12 @@ final class KeyboardView: UIView {
 
     private func buildKeys() {
         let geometry = keyGeometry
+        // Everything but the plane that decides the keys: the grid keeps each
+        // plane's buttons while this stays the same.
+        let family = "\(idiom) \(geometry) \(theme.style) globe:\(showsNextKeyboardKey) large:\(largePhone)"
         keyGrid.setRows(KeyLayout.rows(layer: layer_, idiom: idiom, showGlobe: showsNextKeyboardKey,
                                        geometry: geometry, largePhone: largePhone, style: theme.style),
-                        geometry: geometry)
+                        geometry: geometry, plane: "\(layer_)", family: family)
         keyGrid.updateShift(shift)
         keysStale = false
     }

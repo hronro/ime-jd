@@ -107,8 +107,50 @@ final class KeyboardLayoutView: UIView {
         for row in rows { for item in row { if let b = item.button { body(b) } } }
     }
 
-    func setRows(_ specRows: [[KeySpec]], geometry: KeyGeometry = .classic) {
-        forEachButton { $0.removeFromSuperview() }
+    /// The planes built so far (letters, 123, #+=), kept so that switching
+    /// back to one swaps its buttons in instead of building ~35 new ones —
+    /// 19–25 ms on an iPhone 16 Pro Max, every time punctuation took a trip
+    /// to 123. They stay valid while `family` (everything else that shapes
+    /// the keys) does; `theme` is what each was last styled with.
+    private struct Plane {
+        let rows: [[RowItem]]
+        let geometry: KeyGeometry
+        var theme: KeyboardTheme
+    }
+    private var planes: [String: Plane] = [:]
+    private var family = ""
+    private var plane = ""
+
+    /// Show these rows as `plane`: its buttons as built earlier when `family`
+    /// is unchanged, else newly built (and kept). Kept planes stay subviews,
+    /// hidden, so a switch only flips visibility.
+    func setRows(_ specRows: [[KeySpec]], geometry: KeyGeometry = .classic, plane: String = "", family: String = "") {
+        forEachButton { $0.isHidden = true }
+        if family != self.family {
+            for kept in planes.values { kept.rows.joined().forEach { $0.button?.removeFromSuperview() } }
+            forEachButton { $0.removeFromSuperview() }
+            planes.removeAll()
+            self.family = family
+        }
+        if plane != self.plane { planes[self.plane]?.theme = theme }
+        self.plane = plane
+        if let built = planes[plane] {
+            self.geometry = built.geometry
+            rows = built.rows
+            forEachButton { b in
+                if built.theme != theme { b.apply(theme: theme) }
+                relabel(b)
+                b.isHidden = false
+            }
+            planes[plane]?.theme = theme
+        } else {
+            build(specRows, geometry: geometry)
+            planes[plane] = Plane(rows: rows, geometry: geometry, theme: theme)
+        }
+        setNeedsLayout()
+    }
+
+    private func build(_ specRows: [[KeySpec]], geometry: KeyGeometry) {
         self.geometry = geometry
         rows = specRows.map { row in
             row.map { spec -> RowItem in

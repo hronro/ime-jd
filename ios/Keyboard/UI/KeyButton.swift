@@ -17,7 +17,7 @@ final class KeyButton: UIControl {
     /// Overrides the displayed glyph (e.g. uppercase letters when shift is on,
     /// or ⇪ for caps-lock). Defaults to `spec.cap.label`.
     var displayText: String {
-        didSet { titleLabel.text = displayText; updateFace() }
+        didSet { if displayText != oldValue { titleLabel.text = displayText; updateFace() } }
     }
     /// When true (shift armed/locked), render the key in the "active" style.
     var isAccented = false {
