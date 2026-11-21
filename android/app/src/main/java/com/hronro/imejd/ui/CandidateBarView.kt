@@ -17,6 +17,7 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.AbsoluteSizeSpan
 import android.text.style.ForegroundColorSpan
+import android.util.SparseArray
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -57,10 +58,9 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
     private val density = context.resources.displayMetrics.density
     private val composingLabel = TextView(context)
     private val scroll = HorizontalScrollView(context)
-    private val stack = LinearLayout(context)
+    private val strip = Strip(context)
     private val expandButton = ChevronView(context, pointsUp = false)
     private val separatorPaint = Paint()
-    private var shownCount = 0
 
     /**
      * An announcement for the idle bar — "a new version is out", set by the
@@ -74,11 +74,10 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
 
     /**
      * True while reset() rebuilds the strip. The programmatic scrollTo fires the
-     * scroll-change listener synchronously against the STALE stack width (layout
-     * hasn't run yet), and re-entering onNeedMore mid-rebuild would append a
-     * prefetched page ahead of page 1 — cells would no longer line up with the
-     * owner's item indices, so taps would commit a different candidate than
-     * displayed.
+     * scroll-change listener synchronously against the emptied strip, and
+     * re-entering onNeedMore mid-rebuild would append a prefetched page ahead
+     * of page 1 — cells would no longer line up with the owner's item indices,
+     * so taps would commit a different candidate than displayed.
      */
     private var isResetting = false
 
@@ -87,7 +86,7 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
         gravity = Gravity.CENTER_VERTICAL
         setWillNotDraw(false)
         build()
-        apply(theme)
+        style()
     }
 
     private fun dp(v: Int) = (v * density).toInt()
@@ -97,12 +96,11 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
         composingLabel.setPadding(dp(10), 0, dp(6), 0)
         addView(composingLabel, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT))
 
-        stack.orientation = LinearLayout.HORIZONTAL
-        stack.gravity = Gravity.CENTER_VERTICAL
         scroll.isHorizontalScrollBarEnabled = false
-        scroll.addView(stack, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT))
+        scroll.addView(strip, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT))
         scroll.setOnScrollChangeListener { _, scrollX, _, _, _ ->
-            if (!isResetting && scrollX + scroll.width * 2 >= stack.width) onNeedMore?.invoke()
+            if (strip.showVisibleCells()) strip.requestLayout()
+            if (!isResetting && scrollX + scroll.width * 2 >= strip.contentWidth) onNeedMore?.invoke()
         }
         addView(scroll, LayoutParams(0, LayoutParams.MATCH_PARENT, 1f))
 
@@ -126,7 +124,12 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
     }
 
     fun apply(theme: KeyboardTheme) {
+        if (theme == this.theme) return
         this.theme = theme
+        style()
+    }
+
+    private fun style() {
         composingLabel.setTextColor(theme.composingText)
         expandButton.tint = theme.candidateHint
         expandButton.background = rippleBackground(theme)
@@ -135,6 +138,7 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
         noticeLabel.background = rippleBackground(theme)
         separatorPaint.color = theme.separator
         separatorPaint.strokeWidth = 0.5f * density
+        strip.restyle()
         invalidate()
     }
 
@@ -142,10 +146,9 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
     fun reset(composing: String, items: List<Candidate>, canExpand: Boolean) {
         composingLabel.text = composing
         isResetting = true
-        stack.removeAllViews()
-        shownCount = 0
+        strip.clear()
         scroll.scrollTo(0, 0)
-        append(items)
+        strip.append(items)
         isResetting = false
         expandButton.visibility = if (canExpand) View.VISIBLE else View.GONE
         idle = composing.isEmpty() && items.isEmpty()
@@ -167,34 +170,177 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
     }
 
     /** Append a freshly-loaded page of candidates (lazy pagination). */
-    fun append(items: List<Candidate>) {
-        for (cand in items) {
-            val idx = shownCount
-            if (idx > 0) stack.addView(separator())
-            stack.addView(cell(cand, idx))
-            shownCount++
-        }
-    }
+    fun append(items: List<Candidate>) = strip.append(items)
 
-    private fun cell(cand: Candidate, index: Int): TextView {
-        return TextView(context).apply {
-            text = styledTitle(cand, theme, density)
-            gravity = Gravity.CENTER
-            setPadding(dp(12), dp(4), dp(12), dp(4))
-            isClickable = true
-            background = rippleBackground(theme)
-            setOnClickListener { onSelect?.invoke(index) }
-        }
+    /** One candidate's cell: its title centered in 12dp of room left and
+     *  right, 4dp above and below; the cell's index is its tag. */
+    private fun newCell() = TextView(context).apply {
+        gravity = Gravity.CENTER
+        setPadding(dp(12), dp(4), dp(12), dp(4))
+        isClickable = true
+        background = rippleBackground(theme)
+        setOnClickListener { v -> onSelect?.invoke(v.tag as Int) }
     }
 
     private fun rippleBackground(theme: KeyboardTheme) =
         RippleDrawable(ColorStateList.valueOf(theme.rippleColor), null, ColorDrawable(Color.WHITE))
 
-    private fun separator(): View {
-        return View(context).apply {
-            setBackgroundColor(theme.separator)
-            layoutParams = LinearLayout.LayoutParams((0.5f * density).toInt().coerceAtLeast(1), dp(24)).apply {
-                gravity = Gravity.CENTER_VERTICAL
+    /**
+     * The scrolling row of candidates. It changes on every keystroke, so it is
+     * built for that: each candidate is measured once ([CellSizes]), cells are
+     * placed by arithmetic, and a small pool of reused cells covers only what
+     * is on screen and half a screen to either side. It used to build a
+     * TextView, its ripple and a separator for every loaded candidate (16 a
+     * page) in a LinearLayout on every keystroke. Cells sit where that
+     * LinearLayout put them: back to back with a hairline between, each
+     * vertically centered.
+     */
+    private inner class Strip(context: Context) : ViewGroup(context) {
+        private val candidates = ArrayList<Candidate>()
+        /** Where each cell starts and its size, in px. */
+        private var cellX = IntArray(32)
+        private var cellW = IntArray(32)
+        private var cellH = IntArray(32)
+        var contentWidth = 0
+            private set
+
+        /** Cells on screen by candidate index, and spare ones to reuse. */
+        private val shown = SparseArray<TextView>()
+        private val spare = ArrayList<TextView>()
+        /** Sizes titles the way a cell would; never shown. (TextView needs
+         *  layout params to take new text after its first measure.) */
+        private val measurer = newCell().apply { layoutParams = generateDefaultLayoutParams() }
+
+        private val separatorFill = Paint()
+        private val separatorWidth = (0.5f * density).toInt().coerceAtLeast(1)
+        private val separatorHeight = dp(24)
+
+        init { setWillNotDraw(false) }
+
+        fun restyle() {
+            separatorFill.color = theme.separator
+            for (k in 0 until shown.size()) shown.valueAt(k).let { cell ->
+                cell.background = rippleBackground(theme)
+                cell.text = styledTitle(candidates[shown.keyAt(k)], theme, density)
+            }
+            for (cell in spare) cell.background = rippleBackground(theme)
+            invalidate()
+        }
+
+        /** Empty the strip; its cells go back to the pool. */
+        fun clear() {
+            candidates.clear()
+            contentWidth = 0
+            for (k in 0 until shown.size()) spare.add(shown.valueAt(k))
+            shown.clear()
+        }
+
+        fun append(items: List<Candidate>) {
+            if (items.isNotEmpty()) {
+                ensureCapacity(candidates.size + items.size)
+                for (cand in items) {
+                    val i = candidates.size
+                    val size = CellSizes.size(cand, density, measurer) { styledTitle(cand, theme, density) }
+                    cellX[i] = if (i == 0) 0 else cellX[i - 1] + cellW[i - 1] + separatorWidth
+                    cellW[i] = (size ushr 32).toInt()
+                    cellH[i] = size.toInt()
+                    candidates.add(cand)
+                }
+                val last = candidates.size - 1
+                contentWidth = cellX[last] + cellW[last]
+            }
+            showVisibleCells()
+            requestLayout()
+        }
+
+        private fun ensureCapacity(n: Int) {
+            if (n <= cellX.size) return
+            val size = maxOf(n, cellX.size * 2)
+            cellX = cellX.copyOf(size)
+            cellW = cellW.copyOf(size)
+            cellH = cellH.copyOf(size)
+        }
+
+        /**
+         * Put cells on the candidates on screen and half a screen to either
+         * side; hand the rest back to the pool. Returns whether that changed
+         * anything, so the strip needs laying out.
+         */
+        fun showVisibleCells(): Boolean {
+            val count = candidates.size
+            val width = scroll.width
+            var first = 0
+            var end = 0
+            if (width > 0 && count > 0) {
+                val minX = scroll.scrollX - width / 2
+                val maxX = scroll.scrollX + width * 3 / 2
+                first = firstCellEndingAfter(minX)
+                end = first
+                while (end < count && cellX[end] <= maxX) end++
+            }
+            var changed = false
+            for (k in shown.size() - 1 downTo 0) {
+                val i = shown.keyAt(k)
+                if (i < first || i >= end) {
+                    spare.add(shown.valueAt(k))
+                    shown.removeAt(k)
+                    changed = true
+                }
+            }
+            for (i in first until end) {
+                if (shown.get(i) != null) continue
+                val cell = spare.removeLastOrNull()
+                    ?: newCell().also { addViewInLayout(it, -1, generateDefaultLayoutParams(), true) }
+                cell.text = styledTitle(candidates[i], theme, density)
+                cell.tag = i
+                cell.visibility = VISIBLE
+                shown.put(i, cell)
+                changed = true
+            }
+            for (cell in spare) if (cell.visibility != GONE) cell.visibility = GONE
+            return changed
+        }
+
+        private fun firstCellEndingAfter(x: Int): Int {
+            var low = 0
+            var high = candidates.size
+            while (low < high) {
+                val mid = (low + high) ushr 1
+                if (cellX[mid] + cellW[mid] <= x) low = mid + 1 else high = mid
+            }
+            return low
+        }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            setMeasuredDimension(contentWidth, MeasureSpec.getSize(heightMeasureSpec))
+        }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            // The first layout is the first time the strip's width is known.
+            showVisibleCells()
+            val height = b - t
+            for (k in 0 until shown.size()) {
+                val i = shown.keyAt(k)
+                val h = minOf(cellH[i], height)
+                val top = (height - h) / 2
+                shown.valueAt(k).apply {
+                    measure(
+                        MeasureSpec.makeMeasureSpec(cellW[i], MeasureSpec.EXACTLY),
+                        MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY),
+                    )
+                    layout(cellX[i], top, cellX[i] + cellW[i], top + h)
+                }
+            }
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            // The hairline before every cell but the first.
+            val top = ((height - separatorHeight) / 2).toFloat()
+            for (k in 0 until shown.size()) {
+                val i = shown.keyAt(k)
+                if (i == 0) continue
+                val x = cellX[i].toFloat()
+                canvas.drawRect(x - separatorWidth, top, x, top + separatorHeight, separatorFill)
             }
         }
     }
@@ -203,6 +349,35 @@ class CandidateBarView(context: Context, private var theme: KeyboardTheme) : Lin
         super.onDraw(canvas)
         // Top separator hairline.
         canvas.drawLine(0f, 0.25f * density, width.toFloat(), 0.25f * density, separatorPaint)
+    }
+}
+
+/**
+ * Measured candidate cells. A cell's size depends only on its title's text
+ * (and the display density), and the same few thousand candidates come back
+ * keystroke after keystroke, so each is measured once; the cache is dropped if
+ * it ever grows past a few thousand.
+ */
+private object CellSizes {
+    private val sizes = HashMap<String, Long>()
+    private var density = 0f
+
+    /** [measurer]'s size around [title]: width in the high 32 bits, height in the low. */
+    fun size(cand: Candidate, density: Float, measurer: TextView, title: () -> CharSequence): Long {
+        if (density != this.density) {
+            sizes.clear()
+            this.density = density
+        }
+        val hint = cand.hint
+        val key = if (hint.isNullOrEmpty()) cand.value else cand.value + '\u0000' + hint
+        sizes[key]?.let { return it }
+        if (sizes.size > 4096) sizes.clear()
+        measurer.text = title()
+        val unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        measurer.measure(unspecified, unspecified)
+        val size = (measurer.measuredWidth.toLong() shl 32) or measurer.measuredHeight.toLong()
+        sizes[key] = size
+        return size
     }
 }
 
