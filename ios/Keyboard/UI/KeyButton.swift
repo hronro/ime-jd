@@ -8,6 +8,9 @@ import UIKit
 final class KeyButton: UIControl {
     let spec: KeySpec
     var onTap: ((KeyCap) -> Void)?
+    /// Called first thing when a press begins, so the grid can type any key
+    /// still held from before (see `commitForRollover`).
+    var onPressBegan: ((KeyButton) -> Void)?
     /// Non-clipping view the preview bubble is added to (so it can draw above keys).
     weak var popupHost: UIView?
 
@@ -42,6 +45,12 @@ final class KeyButton: UIControl {
     /// True once a press-and-hold expanded the popup into the alternates row:
     /// tracking then slides the selection instead of press-highlighting.
     private var showingAlternates = false
+    /// This press was typed early, when another key went down while it was
+    /// held; its release then types nothing.
+    private var committedEarly = false
+    /// When this key's current press began, in presses across all keys.
+    private(set) var pressOrder = 0
+    private static var presses = 0
 
     private var isRepeating: Bool { spec.cap == .backspace }
 
@@ -222,6 +231,10 @@ final class KeyButton: UIControl {
     // MARK: - Touch tracking
 
     override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
+        committedEarly = false
+        Self.presses += 1
+        pressOrder = Self.presses
+        onPressBegan?(self)
         KeyClick.play(spec.cap)
         applyColors(pressed: true)
         showPopupIfPreviewable()
@@ -231,6 +244,7 @@ final class KeyButton: UIControl {
     }
 
     override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
+        if committedEarly { return true }
         if showingAlternates, let popup {
             popup.updateSelection(forTouch: touch.location(in: popup))
             return true
@@ -245,6 +259,7 @@ final class KeyButton: UIControl {
     }
 
     override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
+        if committedEarly { return }
         applyColors(pressed: false)
         stopRepeat()
         if showingAlternates {
@@ -271,6 +286,25 @@ final class KeyButton: UIControl {
     private var hitSlop: CGRect { bounds.insetBy(dx: -8, dy: -8) }
 
     private func fire() { onTap?(spec.cap) }
+
+    /// Another key went down while this one is still held: type this one
+    /// now. Keys type when released, and in fast two-thumb typing the next
+    /// key often goes down before this one comes up — and could come up
+    /// first, typing the two in the wrong order (z m typed as "mz"). The
+    /// system keyboard commits the held key at that moment too. Only keys
+    /// that type text roll over; modifiers, the repeating delete and an
+    /// open press-and-hold row keep to their own release.
+    func commitForRollover() {
+        guard isTracking, !committedEarly, !showingAlternates else { return }
+        switch spec.cap {
+        case .char, .insertLiteral, .space, .ret: break
+        default: return
+        }
+        committedEarly = true
+        hidePopup()
+        applyColors(pressed: false)
+        fire()
+    }
 
     /// QA hook: render the pressed state + preview bubble without a touch.
     /// Popups only live during a touch, so screenshots need this (see the

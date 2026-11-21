@@ -117,11 +117,20 @@ final class KeyboardLayoutView: UIView {
                 b.popupHost = popupHost
                 relabel(b)
                 b.onTap = { [weak self] cap in self?.onKey?(cap) }
+                b.onPressBegan = { [weak self] pressed in self?.rollOver(pressed) }
                 addSubview(b)
                 return RowItem(spec: spec, button: b)
             }
         }
         setNeedsLayout()
+    }
+
+    /// A key went down: type any other key still held (see
+    /// `KeyButton.commitForRollover`), in the order they were pressed.
+    private func rollOver(_ pressed: KeyButton) {
+        var held: [KeyButton] = []
+        forEachButton { if $0 !== pressed, $0.isTracking { held.append($0) } }
+        for key in held.sorted(by: { $0.pressOrder < $1.pressOrder }) { key.commitForRollover() }
     }
 
     func apply(theme: KeyboardTheme) {
