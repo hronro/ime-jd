@@ -45,7 +45,7 @@ final class UserDictContainerTests: XCTestCase {
         let text = try XCTUnwrap(try UserDictFile.read(at: textURL))
         XCTAssertEqual(text, UserDictFile.serialize(entries), "the file is the rows, as typed")
         let blob = try Data(contentsOf: blobURL)
-        XCTAssertEqual(try UserDict.check(blob).sourceTag, UserDictFile.hash(text), "the blob is tagged with the text")
+        XCTAssertEqual(try UserDict.check(blob).sourceTag, UserDict.hash(text), "the blob is tagged with the text")
 
         let loaded = try XCTUnwrap(container.load())
         XCTAssertEqual(loaded.source, .blob)
@@ -68,7 +68,7 @@ final class UserDictContainerTests: XCTestCase {
         try FileManager.default.removeItem(at: blobURL)
         var loaded = try XCTUnwrap(container.load())
         XCTAssertEqual(loaded.source, .rebuilt)
-        XCTAssertEqual(loaded.dict.sourceTag, UserDictFile.hash(text))
+        XCTAssertEqual(loaded.dict.sourceTag, UserDict.hash(text))
         XCTAssertFalse(FileManager.default.fileExists(atPath: blobURL.path), "the keyboard never writes")
 
         // A blob of another text — what an app that died between its two
@@ -95,13 +95,25 @@ final class UserDictContainerTests: XCTestCase {
         XCTAssertEqual(container.load()?.source, .blob)
     }
 
-    func testAnUnreadableTextMeansNoDictionaryNotAnError() throws {
+    func testATextNotInUTF8IsTheEnginesToJudgeAndNoTextMeansNoDictionary() throws {
         store.isEnabled = true
         try store.save([UserDictEntry(value: "键道", keys: "zzzzzz")])
         try Data([0xC4, 0xE3, 0x09, 0x61, 0x0A]).write(to: textURL)
-        XCTAssertNil(container.load(), "not UTF-8: the blob may not be trusted either")
+        let loaded = try XCTUnwrap(container.load())
+        XCTAssertEqual(loaded.source, .rebuilt, "the blob is another text's: not trusted")
+        XCTAssertEqual(loaded.dict.entries, 0, "libjd skips a line that is not UTF-8, as it skips any bad line")
         try FileManager.default.removeItem(at: textURL)
         XCTAssertNil(container.load(), "no text, no dictionary, whatever blob is left")
+    }
+
+    func testATextWithAByteOrderMarkStillMatchesItsBlob() throws {
+        store.isEnabled = true
+        try store.save([UserDictEntry(value: "键道", keys: "zzzzzz")])
+        let text = try Data(contentsOf: textURL)
+        try (Data([0xEF, 0xBB, 0xBF]) + text).write(to: textURL)
+        let loaded = try XCTUnwrap(container.load())
+        XCTAssertEqual(loaded.source, .blob, "the mark is dropped before hashing, as decoding drops it")
+        XCTAssertEqual(loaded.dict.entries, 1)
     }
 
     func testTheStampTracksTheSwitchAndBothFiles() throws {
