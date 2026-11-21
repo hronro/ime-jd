@@ -12,9 +12,9 @@
 //   Enabled=true
 //
 // There is no blob cache. The process holding the store — fcitx5 itself, or
-// the IBus engine's own — runs once per login session, and a build is a
-// couple of milliseconds, so the file is read and compiled at start and after
-// every change. A line that does not parse is skipped by the engine, so a
+// the IBus engine's own — runs once per login session, and a build is about
+// 6 ms per 100 000 phrases on a recent desktop, so the file is read and
+// compiled at start and after every change. A line that does not parse is skipped by the engine, so a
 // typo costs that line and nothing else. When the file cannot be loaded at
 // all — not UTF-8, unreadable, over the engine's caps — the last good
 // dictionary stays in use; the failure is kept in lastError() and reported
@@ -70,8 +70,8 @@ inline constexpr const char *fileName = "用户自造词.txt";
 
 /// The comment a new file starts with.
 std::string header();
-/// FNV-1a, 64-bit, over the UTF-8 text: the dictionary's source tag, and
-/// how the store tells an unchanged file from an edited one.
+/// libjd's hash of the text (jd_user_dict_hash): the dictionary's source tag,
+/// and how the store tells an unchanged file from an edited one.
 uint64_t hash(std::string_view text);
 /// Whether `text` is well-formed UTF-8.
 bool isUtf8(std::string_view text);

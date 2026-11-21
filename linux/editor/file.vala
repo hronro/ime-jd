@@ -104,22 +104,64 @@ namespace ImeJd {
          * becomes a row whose value is the whole line and whose keys are
          * empty. */
         public FileRow[] parse (string text) {
+            // Byte offsets into the text, and a string only for each field
+            // kept: a list of hundreds of thousands of phrases reads in a
+            // blink, not in a line's worth of copies per line. Every byte cut
+            // at is ASCII, which no byte of a multi-byte character equals.
             FileRow[] rows = {};
-            string[] lines = text.split ("\n");
-            for (int index = 0; index < lines.length; index++) {
-                string line = trim (lines[index], " \r");
-                if (line == "" || line[0] == '#') {
+            int length = text.length;
+            int line = 0;
+            int start = 0;
+            while (start <= length) {
+                line++;
+                int end = text.index_of_char ('\n', start);
+                if (end < 0) {
+                    end = length;
+                }
+                int lo = start;
+                int hi = end;
+                start = end + 1;
+                while (lo < hi && (text[lo] == ' ' || text[lo] == '\r')) {
+                    lo++;
+                }
+                while (hi > lo && (text[hi - 1] == ' ' || text[hi - 1] == '\r')) {
+                    hi--;
+                }
+                if (lo == hi || text[lo] == '#') {
                     continue;
                 }
-                int tab = line.index_of_char ('\t');
-                FileRow row = { index + 1, line, "" };
-                if (tab >= 0) {
-                    row.value = trim (line.substring (0, tab), " ");
-                    row.keys = trim (line.substring (tab + 1), " ");
+                int tab = lo;
+                while (tab < hi && text[tab] != '\t') {
+                    tab++;
+                }
+                FileRow row = { line, "", "" };
+                if (tab == hi) {
+                    row.value = slice (text, lo, hi);
+                } else {
+                    row.value = field (text, lo, tab);
+                    row.keys = field (text, tab + 1, hi);
                 }
                 rows += row;
             }
             return rows;
+        }
+
+        /** `text`'s bytes from `from` to `to`, spaces trimmed from both ends. */
+        private string field (string text, int from, int to) {
+            while (from < to && text[from] == ' ') {
+                from++;
+            }
+            while (to > from && text[to - 1] == ' ') {
+                to--;
+            }
+            return slice (text, from, to);
+        }
+
+        /** `text`'s bytes from `from` to `to`, copied. Not substring(), which
+         * looks for the string's end from its start — over a whole file,
+         * once per field. */
+        private string slice (string text, int from, int to) {
+            return text.offset (from).ndup (to - from);
         }
 
         /** The header and one `value<TAB>keys` line per phrase, each ending in
@@ -157,15 +199,10 @@ namespace ImeJd {
             return text.substring (start, end - start);
         }
 
-        /** FNV-1a, 64-bit, over the UTF-8 text, as the engines compute it: how
+        /** libjd's hash of the UTF-8 text, as the engines compute it: how
          * the editor tells its own write from an edit made elsewhere. */
         public uint64 hash (string text) {
-            uint64 hash = 0xcbf29ce484222325;
-            foreach (uint8 byte in text.data) {
-                hash ^= byte;
-                hash *= 0x100000001b3;
-            }
-            return hash;
+            return Jd.user_dict_hash ((void*) text, text.length);
         }
     }
 }

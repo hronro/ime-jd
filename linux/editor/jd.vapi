@@ -10,6 +10,8 @@ namespace Jd {
     public const uint USER_DICT_MAX_ENTRIES;
     [CCode (cname = "JD_USER_DICT_VALUE_MAX")]
     public const uint USER_DICT_VALUE_MAX;
+    [CCode (cname = "JD_USER_DICT_TEXT_MAX")]
+    public const uint USER_DICT_TEXT_MAX;
 
     [CCode (cname = "JD_USER_DICT_OK")]
     public const uint USER_DICT_OK;
@@ -61,6 +63,9 @@ namespace Jd {
     public uint user_dict_build (string phrases, size_t phrases_len, uint64 source_tag,
                                  void *buf, size_t buf_cap, out size_t blob_len,
                                  out UserDictReport report);
+
+    [CCode (cname = "jd_user_dict_hash")]
+    public uint64 user_dict_hash (void *bytes, size_t len);
 
     [CCode (cname = "JD_CODE_USER")]
     public const uint CODE_USER;

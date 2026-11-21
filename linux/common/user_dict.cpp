@@ -59,12 +59,7 @@ std::string header() {
 }
 
 uint64_t hash(std::string_view text) {
-    uint64_t hash = 0xcbf29ce484222325ull;
-    for (const char c : text) {
-        hash ^= static_cast<unsigned char>(c);
-        hash *= 0x100000001b3ull;
-    }
-    return hash;
+    return jd_user_dict_hash(text.data(), text.size());
 }
 
 bool isUtf8(std::string_view text) {
@@ -127,7 +122,7 @@ std::string UserDictStore::LoadError::message() const {
             return "第 " + std::to_string(line) + " 行起超过 " + std::to_string(JD_USER_DICT_MAX_ENTRIES) +
                    " 条上限";
         case JD_USER_DICT_TEXT_TOO_LONG:
-            return "文件超过 8 MB 上限";
+            return "文件超过 " + std::to_string(JD_USER_DICT_TEXT_MAX / (1024 * 1024)) + " MB 上限";
         default:
             return "无法编译词库（状态 " + std::to_string(status) + "）";
         }

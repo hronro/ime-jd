@@ -83,6 +83,33 @@ namespace ImeJd {
             if (report == null) {
                 return problems;
             }
+            // The notes come ascending by line; so do the rows of a file read
+            // and not reordered or added to since. Then each row's note is
+            // found by walking the two together, and a note's other row by a
+            // binary search — no table over hundreds of thousands of rows.
+            for (int index = 0; index < lines.length; index++) {
+                if (lines[index] <= (index > 0 ? lines[index - 1] : 0)) {
+                    return for_unordered_rows (lines, report);
+                }
+            }
+            int index = 0;
+            foreach (unowned Jd.UserDictNote note in report.notes) {
+                while (index < lines.length && lines[index] < (int) note.line) {
+                    index++;
+                }
+                if (index == lines.length) {
+                    break;
+                }
+                if (lines[index] == (int) note.line) {
+                    problems[index] = of_note (note, note.other == 0 ? -1 : row_of (lines, (int) note.other));
+                }
+            }
+            return problems;
+        }
+
+        /** `for_rows`, for rows in any order: two tables, by line. */
+        private static Problem?[] for_unordered_rows (int[] lines, Report report) {
+            var problems = new Problem?[lines.length];
             var notes = new HashTable<int, int> (direct_hash, direct_equal);
             for (int i = 0; i < report.notes.length; i++) {
                 notes[(int) report.notes[i].line] = i + 1;
@@ -100,19 +127,39 @@ namespace ImeJd {
                     continue;
                 }
                 Jd.UserDictNote note = report.notes[found - 1];
-                int other = row_by_line[(int) note.other] - 1;
-                if ((note.flags & (Jd.LINE_MALFORMED | Jd.LINE_BAD_KEYS | Jd.LINE_BAD_VALUE)) != 0) {
-                    problems[index] = new Problem.invalid (note.flags);
-                } else if ((note.flags & Jd.LINE_REPEATS_LINE) != 0) {
-                    problems[index] = new Problem.duplicate (other);
-                } else if ((note.flags & Jd.LINE_REPEATS_BUILTIN) != 0) {
-                    problems[index] = new Problem.duplicate (-1);
-                } else if ((note.flags & (Jd.LINE_CODE_IN_BUILTIN | Jd.LINE_CODE_IN_LINE)) != 0) {
-                    problems[index] = new Problem.shared_code (
-                        note.builtin, (note.flags & Jd.LINE_CODE_IN_LINE) != 0 ? other : -1, note.peers);
-                }
+                problems[index] = of_note (note, row_by_line[(int) note.other] - 1);
             }
             return problems;
+        }
+
+        /** The row on `line`, in rows ascending by line; -1 for none. */
+        private static int row_of (int[] lines, int line) {
+            int lo = 0, hi = lines.length;
+            while (lo < hi) {
+                int mid = (lo + hi) / 2;
+                if (lines[mid] < line) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            return lo < lines.length && lines[lo] == line ? lo : -1;
+        }
+
+        /** The verdict a note gives its row; `other` is the row of the line
+         * the note names, -1 for none. */
+        private static Problem? of_note (Jd.UserDictNote note, int other) {
+            if ((note.flags & (Jd.LINE_MALFORMED | Jd.LINE_BAD_KEYS | Jd.LINE_BAD_VALUE)) != 0) {
+                return new Problem.invalid (note.flags);
+            } else if ((note.flags & Jd.LINE_REPEATS_LINE) != 0) {
+                return new Problem.duplicate (other);
+            } else if ((note.flags & Jd.LINE_REPEATS_BUILTIN) != 0) {
+                return new Problem.duplicate (-1);
+            } else if ((note.flags & (Jd.LINE_CODE_IN_BUILTIN | Jd.LINE_CODE_IN_LINE)) != 0) {
+                return new Problem.shared_code (
+                    note.builtin, (note.flags & Jd.LINE_CODE_IN_LINE) != 0 ? other : -1, note.peers);
+            }
+            return null;
         }
     }
 
