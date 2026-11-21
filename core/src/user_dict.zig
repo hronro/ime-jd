@@ -45,8 +45,10 @@ const Trie = trie_mod.Trie;
 pub const MAX_KEYS_LEN: usize = trie_mod.MAX_KEYS_LEN;
 
 /// Hard cap on phrases per dictionary. Mirrors `JD_USER_DICT_MAX_ENTRIES`
-/// in `include/jd.h`; reported through `jd_abi_layout`.
-pub const MAX_ENTRIES: u32 = 10_000;
+/// in `include/jd.h`; reported through `jd_abi_layout`. Sized for the
+/// tightest host, an iOS keyboard extension: at the cap a blob is about
+/// 12 MB and a build's buffer about 26 MB.
+pub const MAX_ENTRIES: u32 = 500_000;
 
 /// Longest phrase value in bytes, excluding the NUL. Mirrors
 /// `JD_USER_DICT_VALUE_MAX`. Independent of the built-in tables so the
@@ -54,10 +56,10 @@ pub const MAX_ENTRIES: u32 = 10_000;
 pub const VALUE_MAX: u32 = 255;
 
 /// Hard cap on the input text handed to `build`. Mirrors
-/// `JD_USER_DICT_TEXT_MAX`. Source offsets and line numbers are tracked in
-/// 32-bit fields during the build (see `Entry`); a real dictionary is far
-/// below this.
-pub const TEXT_MAX: usize = 8 * 1024 * 1024;
+/// `JD_USER_DICT_TEXT_MAX`. Room for `MAX_ENTRIES` phrases at over 30
+/// bytes a line. Source offsets and line numbers are tracked in 32-bit
+/// fields during the build (see `Entry`).
+pub const TEXT_MAX: usize = 16 * 1024 * 1024;
 
 /// Bumped whenever the blob layout changes; an older blob then validates
 /// as `stale` and the host rebuilds it from the phrases it persisted.
@@ -69,6 +71,11 @@ const ENDIAN_TAG: u32 = 0x0102_0304;
 /// User keys are letters only, so every stored rank is below this; ';'
 /// (rank 26) is the built-in symbol codes' key — see `parseLine`.
 const LETTERS: u8 = 26;
+
+/// `Entry.code`'s packing: a code's length, then 5 bits per key.
+const RANK_BITS = 5;
+const LEN_BITS = 3;
+const CODE_BITS = LEN_BITS + RANK_BITS * MAX_KEYS_LEN;
 
 /// Mirrors the `JD_USER_DICT_*` status codes in `include/jd.h`. These are
 /// failures of a call as a whole; a line that does not parse is not one —
@@ -206,13 +213,14 @@ pub const Header = extern struct {
 /// 16-byte entry. Keys are rank bytes (see `trie.keyRank`), zero-padded
 /// beyond `keys_len`.
 ///
-/// While `build` runs — between its second pass and its third — the two
-/// value fields describe the *source text* instead: `value_off` is the
-/// value's offset in the input, and `value_len` packs the 1-based line
-/// number above the byte length (`line << 8 | len`), which is what lets
-/// dropped phrases be reported by line without a second scan of the text.
-/// `VALUE_MAX` fits in 8 bits and `TEXT_MAX` keeps line numbers below 2^24,
-/// so the packing is lossless; the third pass writes the final fields.
+/// While `build` runs — between its first pass and its last — the value
+/// fields describe the *source text* instead: `value_off` is the value's
+/// offset in the input, and the 1-based line number rides above the byte
+/// length — its low 24 bits in `value_len` (`line << 8 | len`), its high 8
+/// in `_pad` — which is what lets dropped phrases be reported by line
+/// without a second scan of the text. `VALUE_MAX` fits in 8 bits and the
+/// line in 32, so the packing is lossless; the last pass writes the final
+/// fields and zeroes `_pad`.
 pub const Entry = extern struct {
     keys: [MAX_KEYS_LEN]u8,
     keys_len: u8,
@@ -232,7 +240,20 @@ pub const Entry = extern struct {
     }
 
     inline fn srcLine(self: Entry) u32 {
-        return self.value_len >> 8;
+        return (self.value_len >> 8) | (@as(u32, self._pad) << 24);
+    }
+
+    /// The value's bytes in the source text (build time only).
+    inline fn srcValue(self: Entry, phrases: []const u8) []const u8 {
+        return phrases[self.value_off..][0..self.srcLen()];
+    }
+
+    /// Key length, then the keys in rank order, packed `CODE_BITS` wide:
+    /// the order candidates enumerate codes in, as an integer.
+    inline fn code(self: Entry) u64 {
+        var c: u64 = self.keys_len;
+        inline for (self.keys) |r| c = (c << RANK_BITS) | r;
+        return c;
     }
 };
 
@@ -246,9 +267,13 @@ comptime {
     std.debug.assert(@sizeOf(Note) == 20);
     std.debug.assert(@alignOf(Note) == 4);
     std.debug.assert(MAX_KEYS_LEN <= 255);
-    // The build-time packing in `Entry.value_len`.
+    // The build-time packing in `Entry.value_len` and `_pad`.
     std.debug.assert(VALUE_MAX <= 0xFF);
-    std.debug.assert(TEXT_MAX + 1 < (1 << 24));
+    std.debug.assert(TEXT_MAX + 1 <= std.math.maxInt(u32));
+    // `Entry.code` packs the keys and their length into a u64.
+    std.debug.assert(LETTERS <= 1 << RANK_BITS);
+    std.debug.assert(MAX_KEYS_LEN < 1 << LEN_BITS);
+    std.debug.assert(CODE_BITS <= 64);
 }
 
 /// A half-open range of entry indices.
@@ -307,30 +332,35 @@ pub const UserDict = struct {
 
         const starts = h.length_starts;
         if (starts[0] != 0 or starts[MAX_KEYS_LEN] != h.entry_count) return error.Corrupt;
+        // Every entry sits in its length's bucket, holds letters only with
+        // zero padding, comes no earlier than the one before it in code
+        // order — which, the length leading, orders the buckets too — and
+        // owns the next value in the pool, NUL-terminated.
         var max_value_len: u32 = 0;
+        var prev_code: u64 = 0;
+        var pos: usize = 0;
         for (1..MAX_KEYS_LEN + 1) |len| {
             const lo = starts[len - 1];
             const hi = starts[len];
             if (hi < lo) return error.Corrupt;
-            var i = lo;
-            while (i < hi) : (i += 1) {
-                const e = &entries[i];
-                if (e.keys_len != len or e._pad != 0) return error.Corrupt;
-                for (e.keys[0..len]) |r| if (r >= LETTERS) return error.Corrupt;
-                for (e.keys[len..]) |r| if (r != 0) return error.Corrupt;
-                if (e.value_len == 0 or e.value_len > VALUE_MAX) return error.Corrupt;
-                const end = @as(u64, e.value_off) + e.value_len;
-                if (end >= strings.len) return error.Corrupt;
-                const v = strings[e.value_off..][0..e.value_len];
-                if (strings[@intCast(end)] != 0) return error.Corrupt;
-                if (!isCleanValue(v)) return error.Corrupt;
-                if (i > lo and std.mem.order(u8, entries[i - 1].keys[0..len], e.keys[0..len]) == .gt) {
-                    return error.Corrupt;
-                }
+            for (entries[lo..hi]) |*e| {
+                if (e.keys_len != len or e._pad != 0 or !lettersOnly(e.keys, len)) return error.Corrupt;
+                const c = e.code();
+                if (c < prev_code) return error.Corrupt;
+                prev_code = c;
+                if (e.value_len == 0 or e.value_len > VALUE_MAX or e.value_off != pos) return error.Corrupt;
+                pos += e.value_len;
+                if (pos >= strings.len or strings[pos] != 0) return error.Corrupt;
+                pos += 1;
                 max_value_len = @max(max_value_len, e.value_len);
             }
         }
-        if (h.max_value_len != max_value_len) return error.Corrupt;
+        if (pos != strings.len or h.max_value_len != max_value_len) return error.Corrupt;
+        // The values tile the pool, so the pool is checked whole: its only
+        // NULs are the terminators just seen, and around them it is clean
+        // UTF-8 — a NUL is ASCII, so no sequence runs across one into the
+        // next value.
+        if (!isCleanPool(strings, n)) return error.Corrupt;
 
         return .{
             .entries = entries,
@@ -444,16 +474,115 @@ pub fn ranksOf(keys: []const u8, buf: *[MAX_KEYS_LEN]u8) []const u8 {
     return buf[0..keys.len];
 }
 
+/// Are a code's `len` key bytes all letters, with zero padding past them?
+/// All six bytes at once.
+fn lettersOnly(keys: [MAX_KEYS_LEN]u8, len: usize) bool {
+    const Word = @Int(.unsigned, 8 * MAX_KEYS_LEN);
+    const ones: Word = std.math.maxInt(Word) / 0xFF; // 0x01 in every byte
+    const w = std.mem.readInt(Word, &keys, .little);
+    const used: Word = @truncate((@as(u64, 1) << @intCast(8 * len)) - 1);
+    // A byte at or above LETTERS sets its high bit once (127 - (LETTERS -
+    // 1)) is added to it, or already has it set; no carry can clear one.
+    const high = ((w +% ones * (127 - (LETTERS - 1))) | w) & (ones * 0x80);
+    return w & ~used == 0 and high == 0;
+}
+
+/// A blob's strings pool, which holds `terminators` values back to back,
+/// each followed by its NUL: exactly that many NULs, and between them
+/// `isCleanValue`'s rules — one pass over the whole pool, in vector
+/// registers where the target has them. Every load runs it over every
+/// value, so it is the load's hot loop.
+fn isCleanPool(pool: []const u8, terminators: usize) bool {
+    if (comptime std.simd.suggestVectorLength(u8) != null) return isCleanPoolVector(pool, terminators);
+    return isCleanPoolScalar(pool, terminators);
+}
+
+fn isCleanPoolScalar(pool: []const u8, terminators: usize) bool {
+    var nuls: usize = 0;
+    for (pool) |b| nuls += @intFromBool(b == 0);
+    return nuls == terminators and isClean(pool, true);
+}
+
+const POOL_LANES = 16;
+const PoolBytes = @Vector(POOL_LANES, u8);
+const PoolMask = @Vector(POOL_LANES, bool);
+
+/// A `@shuffle` mask that moves a block `k` bytes later, its first `k`
+/// lanes taken from the end of the block before: the byte `k` places back
+/// from each lane.
+fn backMask(comptime k: usize) [POOL_LANES]i32 {
+    var m: [POOL_LANES]i32 = undefined;
+    for (0..POOL_LANES) |j| m[j] = if (j >= k) @intCast(j - k) else ~@as(i32, @intCast(POOL_LANES - k + j));
+    return m;
+}
+
+/// `isCleanPoolScalar`'s rules as lane-wise comparisons: a byte is a
+/// continuation exactly when the lead byte one, two or three places back
+/// asks for one; the leads that can never start a sequence, and the
+/// second bytes that make one overlong, a surrogate or past U+10FFFF, are
+/// refused; so are the control bytes other than NUL, which are counted.
+fn isCleanPoolVector(pool: []const u8, terminators: usize) bool {
+    const splat = struct {
+        inline fn f(b: u8) PoolBytes {
+            return @splat(b);
+        }
+    }.f;
+    var bad: PoolMask = @splat(false);
+    var nuls: usize = 0;
+    var prev: PoolBytes = splat(0);
+    var i: usize = 0;
+    // One block past the end, all NUL, so a sequence the pool cuts short
+    // is caught; its NULs are not counted.
+    const blocks = pool.len / POOL_LANES + 1;
+    var tail: [POOL_LANES]u8 = @splat(0);
+    @memcpy(tail[0 .. pool.len % POOL_LANES], pool[pool.len - pool.len % POOL_LANES ..]);
+    var block: usize = 0;
+    while (block <= blocks) : (block += 1) {
+        const cur: PoolBytes = if (block < blocks - 1)
+            pool[i..][0..POOL_LANES].*
+        else if (block == blocks - 1)
+            tail
+        else
+            splat(0);
+        i += POOL_LANES;
+        const back1 = @shuffle(u8, cur, prev, backMask(1));
+        const back2 = @shuffle(u8, cur, prev, backMask(2));
+        const back3 = @shuffle(u8, cur, prev, backMask(3));
+
+        const is_cont = (cur & splat(0xC0)) == splat(0x80);
+        const wants_cont = (back1 >= splat(0xC0)) | (back2 >= splat(0xE0)) | (back3 >= splat(0xF0));
+        bad |= is_cont != wants_cont;
+        bad |= (cur == splat(0xC0)) | (cur == splat(0xC1)) | (cur >= splat(0xF5));
+        bad |= (back1 == splat(0xE0)) & (cur < splat(0xA0));
+        bad |= (back1 == splat(0xED)) & (cur > splat(0x9F));
+        bad |= (back1 == splat(0xF0)) & (cur < splat(0x90));
+        bad |= (back1 == splat(0xF4)) & (cur > splat(0x8F));
+        const nul = cur == splat(0);
+        bad |= ((cur < splat(0x20)) & !nul) | (cur == splat(0x7F));
+        if (block < blocks) nuls += @popCount(@as(@Int(.unsigned, POOL_LANES), @bitCast(nul)));
+        prev = cur;
+    }
+    // The tail block's padding is NUL too.
+    nuls -= POOL_LANES - pool.len % POOL_LANES;
+    return !@reduce(.Or, bad) and nuls == terminators;
+}
+
 /// One pass over `v`: well-formed UTF-8 (the Unicode byte-sequence table,
 /// so no overlong forms, no surrogates, nothing above U+10FFFF) with no C0
-/// control byte and no DEL. Values are checked on every build and on every
-/// load, so this is validation's hot loop; it stays a single pass.
+/// control byte and no DEL. Values are checked on every build, so this is
+/// the build's hot loop; it stays a single pass.
 fn isCleanValue(v: []const u8) bool {
+    return isClean(v, false);
+}
+
+/// `isCleanValue`, letting NUL through when `nul_ok` — for a pool of
+/// values, whose NULs are counted separately.
+inline fn isClean(v: []const u8, comptime nul_ok: bool) bool {
     var i: usize = 0;
     while (i < v.len) {
         const b = v[i];
         if (b < 0x80) {
-            if (b < 0x20 or b == 0x7f) return false;
+            if ((b < 0x20 and !(nul_ok and b == 0)) or b == 0x7f) return false;
             i += 1;
             continue;
         }
@@ -498,26 +627,61 @@ fn isCleanValue(v: []const u8) bool {
 }
 
 // =========================================================================
+// Content hash
+// =========================================================================
+
+/// A 64-bit hash of `bytes` for a host's `source_tag`: Wyhash (final v4)
+/// with seed 0, several gigabytes a second, so a host can hash its whole
+/// phrases file at every launch to see whether a cached blob still matches
+/// it. Pinned by the test vectors below — the same bytes must hash the
+/// same in every release, or every host's cache would look stale.
+pub fn hash(bytes: []const u8) u64 {
+    return std.hash.Wyhash.hash(0, bytes);
+}
+
+// =========================================================================
 // Builder
 // =========================================================================
 
-fn lineCount(phrases: []const u8) usize {
-    return std.mem.count(u8, phrases, "\n") + 1;
-}
+/// How `build` lays out the host's buffer for a text, from one count over
+/// it: the lines with at least one byte, the only ones that can hold a
+/// phrase or earn a note.
+const Layout = struct {
+    /// Lines with at least one byte: at most one note each.
+    filled: usize,
+    /// Entry slots: one per filled line, up to `MAX_ENTRIES`.
+    slots: usize,
+    /// Just past the largest blob the text can produce — one entry and one
+    /// NUL per slot, plus the text itself for the values — rounded up to 4.
+    notes_offset: usize,
+    /// The notes' end: what the host's buffer must hold.
+    bound: usize,
 
-/// Where `build` leaves its notes: just past the largest blob the text can
-/// produce — one entry and one NUL per line, plus the text itself for the
-/// values — rounded up to 4.
-fn notesOffset(phrases: []const u8) usize {
-    const lines = lineCount(phrases);
-    return std.mem.alignForward(usize, @sizeOf(Header) + lines * @sizeOf(Entry) + phrases.len + lines, 4);
-}
+    fn of(phrases: []const u8) Layout {
+        // A filled line starts at a byte that is not LF and follows LF or
+        // the start of the text.
+        var filled: usize = @intFromBool(phrases.len != 0 and phrases[0] != '\n');
+        if (phrases.len > 1) {
+            for (phrases[0 .. phrases.len - 1], phrases[1..]) |prev, b| {
+                filled += @intFromBool(prev == '\n' and b != '\n');
+            }
+        }
+        const slots: usize = @min(filled, MAX_ENTRIES);
+        const notes_offset = std.mem.alignForward(usize, @sizeOf(Header) + slots * @sizeOf(Entry) + phrases.len + slots, 4);
+        return .{
+            .filled = filled,
+            .slots = slots,
+            .notes_offset = notes_offset,
+            .bound = notes_offset + filled * @sizeOf(Note),
+        };
+    }
+};
 
 /// Upper bound on what `build` writes into the host's buffer from
-/// `phrases`: the blob, and past it one `Note` per line. Pure arithmetic
-/// over a newline count — size the output buffer with it.
+/// `phrases`: the blob, and past it one `Note` per line that is not empty.
+/// One pass over the text, no parsing — size the output buffer with it.
 pub fn blobBound(phrases: []const u8) usize {
-    return notesOffset(phrases) + lineCount(phrases) * @sizeOf(Note);
+    return Layout.of(phrases).bound;
 }
 
 const Line = struct {
@@ -546,42 +710,94 @@ fn parseLine(raw: []const u8) ParseError!?Line {
     return .{ .value = value, .keys = keys };
 }
 
-fn lessThan(_: void, a: Entry, b: Entry) bool {
-    if (a.keys_len != b.keys_len) return a.keys_len < b.keys_len;
-    return switch (std.mem.order(u8, a.ranks(), b.ranks())) {
+const RADIX_BITS = 11;
+const RADIX_PASSES = (CODE_BITS + RADIX_BITS - 1) / RADIX_BITS;
+
+/// Sort `entries` by `Entry.code`, stably — entries on one code keep the
+/// order they came in — with `scratch` (as long as `entries`) as the other
+/// half of each pass. A least-significant-digit radix sort: a few linear
+/// passes, no comparisons, and the counts on the stack.
+fn sortByCode(entries: []Entry, scratch: []Entry) void {
+    std.debug.assert(scratch.len == entries.len);
+    var src = entries;
+    var dst = scratch;
+    var counts: [1 << RADIX_BITS]u32 = undefined;
+    inline for (0..RADIX_PASSES) |pass| {
+        const shift = pass * RADIX_BITS;
+        const mask = (1 << RADIX_BITS) - 1;
+        @memset(&counts, 0);
+        for (src) |e| counts[@intCast((e.code() >> shift) & mask)] += 1;
+        // A digit every entry shares orders nothing: skip the pass.
+        if (std.mem.findScalar(u32, &counts, @intCast(src.len)) == null) {
+            var sum: u32 = 0;
+            for (&counts) |*c| {
+                const here = c.*;
+                c.* = sum;
+                sum += here;
+            }
+            for (src) |e| {
+                const d: usize = @intCast((e.code() >> shift) & mask);
+                dst[counts[d]] = e;
+                counts[d] += 1;
+            }
+            std.mem.swap([]Entry, &src, &dst);
+        }
+    }
+    if (src.ptr != entries.ptr) @memcpy(entries, src);
+}
+
+/// Value bytes, then source order (`value_off` is the source offset during
+/// the build, so it is monotonic in line order), for the entries on one
+/// code: every copy of a phrase sits right after its first one.
+fn valueOrder(phrases: []const u8, a: Entry, b: Entry) bool {
+    return switch (std.mem.order(u8, a.srcValue(phrases), b.srcValue(phrases))) {
         .lt => true,
         .gt => false,
-        // Same code: keep source order (`value_off` is the source offset
-        // at this point, so it is monotonic in line order).
         .eq => a.value_off < b.value_off,
     };
 }
 
-fn sameKeys(a: Entry, b: Entry) bool {
-    return a.keys_len == b.keys_len and std.mem.eql(u8, a.ranks(), b.ranks());
+/// Source order, for the kept phrases on one code.
+fn sourceOrder(_: void, a: Entry, b: Entry) bool {
+    return a.value_off < b.value_off;
 }
 
-/// Does the built-in trie already carry `value` on exactly this code?
-fn baseHas(base: *const Trie, entry: Entry, value: []const u8) bool {
-    var node = base.root();
-    for (entry.ranks()) |r| {
-        node = node.getChild(base, trie_mod.keyOfRank(r)) orelse return false;
+/// The built-in trie's nodes along the last code looked up, so the next
+/// code — sorted, it usually shares a prefix with this one — walks only
+/// from where the two part.
+const BasePath = struct {
+    base: *const Trie,
+    /// `nodes[i]` is the node for the first `i` keys of `keys`, for every
+    /// `i <= depth`.
+    nodes: [MAX_KEYS_LEN + 1]*const Trie.Node,
+    keys: [MAX_KEYS_LEN]u8 = @splat(0),
+    depth: usize = 0,
+
+    fn init(base: *const Trie) BasePath {
+        var self: BasePath = .{ .base = base, .nodes = undefined };
+        self.nodes[0] = base.root();
+        return self;
     }
-    const vals = node.values(base);
-    for (0..vals.len()) |i| {
-        if (std.mem.eql(u8, vals.at(i), value)) return true;
+
+    /// The node for exactly `ranks`, if the trie has the path.
+    fn node(self: *BasePath, ranks: []const u8) ?*const Trie.Node {
+        var depth: usize = 0;
+        while (depth < self.depth and depth < ranks.len and self.keys[depth] == ranks[depth]) depth += 1;
+        while (depth < ranks.len) : (depth += 1) {
+            self.keys[depth] = ranks[depth];
+            self.nodes[depth + 1] = self.nodes[depth].getChild(self.base, trie_mod.keyOfRank(ranks[depth])) orelse break;
+        }
+        self.depth = depth;
+        return if (depth == ranks.len) self.nodes[depth] else null;
+    }
+};
+
+/// Does the built-in node carry `value`?
+fn nodeHas(values: Trie.Values, value: []const u8) bool {
+    for (0..values.len()) |i| {
+        if (std.mem.eql(u8, values.at(i), value)) return true;
     }
     return false;
-}
-
-/// How many words the built-in trie carries on exactly this code — 0 when
-/// it does not even have the path.
-fn baseWordCount(base: *const Trie, entry: Entry) u32 {
-    var node = base.root();
-    for (entry.ranks()) |r| {
-        node = node.getChild(base, trie_mod.keyOfRank(r)) orelse return 0;
-    }
-    return @intCast(node.values(base).len());
 }
 
 fn fail(report: *Report, status: Status, line: u32) usize {
@@ -618,23 +834,25 @@ pub fn build(
     report.* = Report.empty;
     if (phrases.len > TEXT_MAX) return fail(report, .text_too_long, 0);
     // The bound is the contract: room for every entry, the whole text as
-    // values, and one note per line past the largest possible blob.
-    if (out.len < blobBound(phrases)) return fail(report, .buffer_too_small, 0);
-    const lines = lineCount(phrases);
-    const notes_off = notesOffset(phrases);
+    // values, and one note per non-empty line past the largest possible
+    // blob.
+    const layout = Layout.of(phrases);
+    if (out.len < layout.bound) return fail(report, .buffer_too_small, 0);
+    const notes_off = layout.notes_offset;
     const notes: []Note = std.mem.bytesAsSlice(
         Note,
-        @as([]align(4) u8, @alignCast(out[notes_off..][0 .. lines * @sizeOf(Note)])),
+        @as([]align(4) u8, @alignCast(out[notes_off..][0 .. layout.filled * @sizeOf(Note)])),
     );
     var note_count: u32 = 0;
 
     // ---- Pass 1: one entry per line that parses, values still referenced
     // by their offset in the source text and their line number (see
     // `Entry`). A line that does not parse is skipped with a note saying
-    // why. The entry region is sized for every line; the bound covers it. ----
+    // why. The entry region has a slot for every line that is not empty,
+    // up to the cap; the bound covers it. ----
     const slots: []Entry = std.mem.bytesAsSlice(
         Entry,
-        @as([]align(4) u8, @alignCast(out[@sizeOf(Header)..][0 .. lines * @sizeOf(Entry)])),
+        @as([]align(4) u8, @alignCast(out[@sizeOf(Header)..][0 .. layout.slots * @sizeOf(Entry)])),
     );
     var n: u32 = 0;
     var invalid: u32 = 0;
@@ -662,7 +880,7 @@ pub fn build(
         var e: Entry = .{
             .keys = @splat(0),
             .keys_len = @intCast(line.keys.len),
-            ._pad = 0,
+            ._pad = @truncate(line_no >> 24),
             .value_off = @intCast(@intFromPtr(line.value.ptr) - @intFromPtr(phrases.ptr)),
             .value_len = (line_no << 8) | @as(u32, @intCast(line.value.len)),
         };
@@ -672,64 +890,87 @@ pub fn build(
     }
     const entries = slots[0..n];
 
-    // ---- Sort into enumeration order, then drop duplicates. The order is
-    // total (source offset breaks ties), so the result is deterministic. ----
-    std.sort.pdq(Entry, entries, {}, lessThan);
+    // ---- Drop duplicates and note shared codes, a code at a time. Sorted
+    // by code, stably, the phrases on a code stay in source order; a code
+    // with more than one is sorted by value for a moment, so the copies of
+    // a phrase follow its first one and a repeat is found without scanning
+    // the code's other phrases. One trie walk per code — from where it
+    // parts from the code before — answers both "is this a built-in word?"
+    // and "how many built-in words share this code?". The radix sort's
+    // scratch is the notes region past the notes written so far: every
+    // entry and every note so far has a non-empty line of its own, and the
+    // region holds a note for each. ----
+    {
+        const scratch_off = notes_off + note_count * @sizeOf(Note);
+        std.debug.assert(scratch_off + entries.len * @sizeOf(Entry) <= layout.bound);
+        const scratch: []Entry = std.mem.bytesAsSlice(
+            Entry,
+            @as([]align(4) u8, @alignCast(out[scratch_off..][0 .. entries.len * @sizeOf(Entry)])),
+        );
+        sortByCode(entries, scratch);
+    }
+    var path = BasePath.init(base);
     var kept: u32 = 0;
     var dropped: u32 = 0;
-    for (entries) |e| {
-        const value = phrases[e.value_off..][0..e.srcLen()];
-        // Entries on the same code are adjacent; scan back over the ones
-        // already kept for an exact repeat.
-        var repeats_line: u32 = 0;
-        var j = kept;
-        while (j > 0) : (j -= 1) {
-            const k = entries[j - 1];
-            if (!sameKeys(k, e)) break;
-            if (std.mem.eql(u8, phrases[k.value_off..][0..k.srcLen()], value)) {
-                repeats_line = k.srcLine();
-                break;
-            }
-        }
-        if (repeats_line == 0 and !baseHas(base, e, value)) {
-            entries[kept] = e;
-            kept += 1;
-            continue;
-        }
-        notes[note_count] = .{
-            .line = e.srcLine(),
-            .flags = if (repeats_line != 0) NoteFlag.repeats_line else NoteFlag.repeats_builtin,
-            .other = repeats_line,
-            .builtin = baseWordCount(base, e),
-            .peers = 0,
-        };
-        note_count += 1;
-        dropped += 1;
-    }
-
-    // ---- Notes for the kept phrases whose code is already taken — by a
-    // built-in word, by another kept phrase, or both. Same-code phrases are
-    // adjacent, so this is one walk over the groups, one trie walk each. ----
     var shared: u32 = 0;
     var g: usize = 0;
-    while (g < kept) {
+    while (g < n) {
+        const group_code = entries[g].code();
         var end = g + 1;
-        while (end < kept and sameKeys(entries[g], entries[end])) end += 1;
-        const builtin = baseWordCount(base, entries[g]);
-        const peers: u32 = @intCast(end - g - 1);
-        if (builtin != 0 or peers != 0) {
+        while (end < n and entries[end].code() == group_code) end += 1;
+        const node = path.node(entries[g].ranks());
+        const base_values: Trie.Values = if (node) |nd| nd.values(base) else .{ .slice = &.{}, .strings = &.{} };
+        const builtin: u32 = @intCast(base_values.len());
+        if (end - g > 1) std.sort.pdq(Entry, entries[g..end], phrases, valueOrder);
+
+        // Runs of one value: the first copy is kept unless a built-in word
+        // repeats it; every later copy repeats the first.
+        const group_start = kept;
+        var i = g;
+        while (i < end) {
+            const first = entries[i];
+            const value = first.srcValue(phrases);
+            var run_end = i + 1;
+            while (run_end < end and std.mem.eql(u8, entries[run_end].srcValue(phrases), value)) run_end += 1;
+            const in_base = nodeHas(base_values, value);
+            if (!in_base) {
+                // `kept <= i`: this never overwrites an entry still to come.
+                entries[kept] = first;
+                kept += 1;
+            }
+            for (entries[if (in_base) i else i + 1..run_end]) |e| {
+                notes[note_count] = .{
+                    .line = e.srcLine(),
+                    .flags = if (in_base) NoteFlag.repeats_builtin else NoteFlag.repeats_line,
+                    .other = if (in_base) 0 else first.srcLine(),
+                    .builtin = builtin,
+                    .peers = 0,
+                };
+                note_count += 1;
+                dropped += 1;
+            }
+            i = run_end;
+        }
+
+        // The kept phrases on this code, back in source order, each noted
+        // when the code is shared — with a built-in word, another kept
+        // phrase, or both.
+        const group = entries[group_start..kept];
+        if (group.len > 1) std.sort.pdq(Entry, group, {}, sourceOrder);
+        const peers: u32 = @intCast(group.len -| 1);
+        if (group.len > 0 and (builtin != 0 or peers != 0)) {
             var flags: u32 = 0;
             if (builtin != 0) flags |= NoteFlag.code_in_builtin;
             if (peers != 0) flags |= NoteFlag.code_in_line;
-            for (g..end) |m| {
+            for (group, 0..) |e, m| {
                 const other: u32 = if (peers == 0)
                     0
-                else if (m == g)
-                    entries[g + 1].srcLine()
+                else if (m == 0)
+                    group[1].srcLine()
                 else
-                    entries[g].srcLine();
+                    group[0].srcLine();
                 notes[note_count] = .{
-                    .line = entries[m].srcLine(),
+                    .line = e.srcLine(),
                     .flags = flags,
                     .other = other,
                     .builtin = builtin,
@@ -737,7 +978,7 @@ pub fn build(
                 };
                 note_count += 1;
             }
-            shared += @intCast(end - g);
+            shared += @intCast(group.len);
         }
         g = end;
     }
@@ -754,6 +995,7 @@ pub fn build(
         out[pos + value.len] = 0;
         e.value_off = @intCast(pos - pool_start);
         e.value_len = @intCast(value.len);
+        e._pad = 0;
         pos += value.len + 1;
         max_value_len = @max(max_value_len, e.value_len);
     }
@@ -1319,5 +1561,318 @@ test "blobBound covers the worst case" {
     // within the bound even when every line gets a note.
     try testing.expect(report.notes_offset >= len);
     try testing.expectEqual(@as(u32, 0), report.notes_offset % 4);
-    try testing.expectEqual(buf.len, report.notes_offset + 4 * @sizeOf(Note));
+    try testing.expectEqual(buf.len, report.notes_offset + 3 * @sizeOf(Note));
+
+    // Empty lines cost nothing; any other line costs an entry slot, its NUL
+    // and a note, whether or not it holds a phrase.
+    const expected = struct {
+        fn bound(t: []const u8, filled: usize) usize {
+            return std.mem.alignForward(usize, @sizeOf(Header) + filled * (@sizeOf(Entry) + 1) + t.len, 4) +
+                filled * @sizeOf(Note);
+        }
+    }.bound;
+    for ([_]struct { []const u8, usize }{
+        .{ "", 0 },
+        .{ "\n\n\n\n\n\n\n\n", 0 },
+        .{ "x\ta", 1 },
+        .{ "\n\nx\ta\n\n\n", 1 },
+        .{ " \n#\n\r", 3 },
+    }) |c| try testing.expectEqual(expected(c[0], c[1]), blobBound(c[0]));
+}
+
+test "every kind of line fits the bound exactly when each one earns a note" {
+    // Every line skipped or dropped: the notes region is filled to its end.
+    var base = try trie_mod.buildTrie(testing.allocator, &.{.{ .keys = "a", .value = "甲" }});
+    defer base.deinit(testing.allocator);
+    const text = "\n\n甲\ta\nno tab\n\n乙\tA\n\t\n甲\ta";
+    const bound = blobBound(text);
+    const buf = try testing.allocator.alignedAlloc(u8, .@"4", bound);
+    defer testing.allocator.free(buf);
+    var report: Report = undefined;
+    _ = build(text, buf, &base.trie, FP, 0, &report);
+    try testing.expectEqual(@as(u32, 0), report.status);
+    try testing.expectEqual(@as(u32, 5), report.notes);
+    try testing.expectEqual(bound, report.notes_offset + 5 * @sizeOf(Note));
+    // One byte short is refused.
+    _ = build(text, buf[0 .. bound - 1], &base.trie, FP, 0, &report);
+    try testing.expectEqual(@backingInt(Status.buffer_too_small), report.status);
+}
+
+/// The build's rules, spelled out the slow way — every repeat found by
+/// scanning the phrases already kept on its code — for `build` to be
+/// checked against.
+const Reference = struct {
+    const Kept = struct { keys: []const u8, value: []const u8, line: u32 };
+
+    report: Report,
+    notes: std.ArrayList(Note),
+    /// The blob's order: code (length, then key rank), then source order.
+    kept: std.ArrayList(Kept),
+
+    fn wordsOn(base: *const Trie, keys: []const u8) ?Trie.Values {
+        var node = base.root();
+        for (keys) |k| node = node.getChild(base, k) orelse return null;
+        return node.values(base);
+    }
+
+    fn codeLess(_: void, a: Kept, b: Kept) bool {
+        if (a.keys.len != b.keys.len) return a.keys.len < b.keys.len;
+        return switch (std.mem.order(u8, a.keys, b.keys)) {
+            .lt => true,
+            .gt => false,
+            .eq => a.line < b.line,
+        };
+    }
+
+    fn noteLess(_: void, a: Note, b: Note) bool {
+        return a.line < b.line;
+    }
+
+    fn init(allocator: std.mem.Allocator, text: []const u8, base: *const Trie) !Reference {
+        var self: Reference = .{ .report = Report.empty, .notes = .empty, .kept = .empty };
+        var parsed: std.ArrayList(Kept) = .empty;
+        defer parsed.deinit(allocator);
+        var it = std.mem.splitScalar(u8, text, '\n');
+        var line: u32 = 0;
+        while (it.next()) |raw| {
+            line += 1;
+            const l = (parseLine(raw) catch |err| {
+                try self.notes.append(allocator, .{
+                    .line = line,
+                    .flags = switch (err) {
+                        error.MalformedLine => NoteFlag.malformed,
+                        error.BadKeys => NoteFlag.bad_keys,
+                        error.BadValue => NoteFlag.bad_value,
+                    },
+                    .other = 0,
+                    .builtin = 0,
+                    .peers = 0,
+                });
+                self.report.invalid += 1;
+                continue;
+            }) orelse continue;
+            try parsed.append(allocator, .{ .keys = l.keys, .value = l.value, .line = line });
+        }
+        // a-z sort the same as their ranks, so plain bytes give code order.
+        std.sort.pdq(Kept, parsed.items, {}, codeLess);
+        for (parsed.items) |p| {
+            const words = wordsOn(base, p.keys);
+            const builtin: u32 = if (words) |w| @intCast(w.len()) else 0;
+            var repeats: u32 = 0;
+            for (self.kept.items) |k| {
+                if (std.mem.eql(u8, k.keys, p.keys) and std.mem.eql(u8, k.value, p.value)) {
+                    repeats = k.line;
+                    break;
+                }
+            }
+            const in_base = words != null and nodeHas(words.?, p.value);
+            if (repeats == 0 and !in_base) {
+                try self.kept.append(allocator, p);
+                continue;
+            }
+            try self.notes.append(allocator, .{
+                .line = p.line,
+                .flags = if (repeats != 0) NoteFlag.repeats_line else NoteFlag.repeats_builtin,
+                .other = repeats,
+                .builtin = builtin,
+                .peers = 0,
+            });
+            self.report.dropped += 1;
+        }
+        for (self.kept.items) |k| {
+            var on_code: std.ArrayList(u32) = .empty;
+            defer on_code.deinit(allocator);
+            for (self.kept.items) |o| if (std.mem.eql(u8, o.keys, k.keys)) try on_code.append(allocator, o.line);
+            const builtin: u32 = if (wordsOn(base, k.keys)) |w| @intCast(w.len()) else 0;
+            const peers: u32 = @intCast(on_code.items.len - 1);
+            if (builtin == 0 and peers == 0) continue;
+            var flags: u32 = 0;
+            if (builtin != 0) flags |= NoteFlag.code_in_builtin;
+            if (peers != 0) flags |= NoteFlag.code_in_line;
+            const other: u32 = if (peers == 0) 0 else if (on_code.items[0] == k.line) on_code.items[1] else on_code.items[0];
+            try self.notes.append(allocator, .{ .line = k.line, .flags = flags, .other = other, .builtin = builtin, .peers = peers });
+            self.report.shared += 1;
+        }
+        std.sort.pdq(Note, self.notes.items, {}, noteLess);
+        self.report.entries = @intCast(self.kept.items.len);
+        self.report.notes = @intCast(self.notes.items.len);
+        return self;
+    }
+
+    fn deinit(self: *Reference, allocator: std.mem.Allocator) void {
+        self.notes.deinit(allocator);
+        self.kept.deinit(allocator);
+    }
+};
+
+test "build agrees with the slow reference on random texts" {
+    var base = try trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = "a", .value = "甲" },
+        .{ .keys = "ab", .value = "乙" },
+        .{ .keys = "ab", .value = "丙" },
+        .{ .keys = "ba", .value = "丁" },
+    });
+    defer base.deinit(testing.allocator);
+
+    // Few codes and few values, so repeats, built-in words and shared codes
+    // are all common; now and then a line that does not parse.
+    const codes = [_][]const u8{ "a", "b", "ab", "ba", "aa", "abc" };
+    const values = [_][]const u8{ "甲", "乙", "丙", "丁", "戊" };
+    var prng = std.Random.DefaultPrng.init(0xD1C7);
+    const r = prng.random();
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(testing.allocator);
+    for (0..3000) |round| {
+        text.clearRetainingCapacity();
+        const lines = r.uintLessThan(usize, if (round % 100 == 0) 400 else 30);
+        for (0..lines) |_| {
+            switch (r.uintLessThan(u8, 20)) {
+                0 => try text.appendSlice(testing.allocator, "# note\n"),
+                1 => try text.appendSlice(testing.allocator, "\n"),
+                2 => try text.appendSlice(testing.allocator, "no tab\n"),
+                3 => try text.appendSlice(testing.allocator, "甲\tA\n"),
+                else => try text.print(testing.allocator, "{s}\t{s}\n", .{
+                    values[r.uintLessThan(usize, values.len)],
+                    codes[r.uintLessThan(usize, codes.len)],
+                }),
+            }
+        }
+        var want = try Reference.init(testing.allocator, text.items, &base.trie);
+        defer want.deinit(testing.allocator);
+        var blob = try buildAlloc(testing.allocator, text.items, &base.trie, FP, null);
+        defer blob.deinit(testing.allocator);
+
+        try testing.expectEqual(want.report.entries, blob.report.entries);
+        try testing.expectEqual(want.report.dropped, blob.report.dropped);
+        try testing.expectEqual(want.report.shared, blob.report.shared);
+        try testing.expectEqual(want.report.invalid, blob.report.invalid);
+        try testing.expectEqualDeep(@as([]const Note, want.notes.items), blob.notes());
+        const d = try blob.dict(FP);
+        var buf: [MAX_KEYS_LEN]u8 = undefined;
+        for (want.kept.items, 0..) |k, i| {
+            try testing.expectEqualStrings(k.keys, keysOf(&d, i, &buf));
+            try testing.expectEqualStrings(k.value, valueOf(&d, i));
+        }
+    }
+}
+
+test "many phrases on one code: repeats found without a quadratic scan" {
+    var base = try emptyBase(testing.allocator);
+    defer base.deinit(testing.allocator);
+    // 50 000 distinct phrases on one code, then every one of them again:
+    // the old scan back over a code's kept phrases took seconds here.
+    const distinct = 50_000;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(testing.allocator);
+    for (0..2) |_| {
+        for (0..distinct) |i| try text.print(testing.allocator, "词{d}\tzzzz\n", .{i});
+    }
+    var blob = try buildAlloc(testing.allocator, text.items, &base.trie, FP, null);
+    defer blob.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, distinct), blob.report.entries);
+    try testing.expectEqual(@as(u32, distinct), blob.report.dropped);
+    try testing.expectEqual(@as(u32, distinct), blob.report.shared);
+
+    // Kept in file order; each copy names its first line.
+    const d = try blob.dict(FP);
+    try testing.expectEqualStrings("词0", valueOf(&d, 0));
+    try testing.expectEqualStrings("词49999", valueOf(&d, distinct - 1));
+    const notes = blob.notes();
+    try testing.expectEqual(Note{ .line = 1, .flags = NoteFlag.code_in_line, .other = 2, .builtin = 0, .peers = distinct - 1 }, notes[0]);
+    try testing.expectEqual(Note{ .line = distinct + 7, .flags = NoteFlag.repeats_line, .other = 7, .builtin = 0, .peers = 0 }, notes[distinct + 6]);
+}
+
+test "the text cap, and line numbers up to it" {
+    var base = try emptyBase(testing.allocator);
+    defer base.deinit(testing.allocator);
+
+    // At the cap: a phrase on line 1 and its repeat on the last line, past
+    // 2^23 lines of blanks.
+    const text = try testing.allocator.alloc(u8, TEXT_MAX);
+    defer testing.allocator.free(text);
+    @memset(text, '\n');
+    @memcpy(text[0..4], "x\ta\n");
+    @memcpy(text[TEXT_MAX - 3 ..], "x\ta");
+    var blob = try buildAlloc(testing.allocator, text, &base.trie, FP, null);
+    defer blob.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 1), blob.report.entries);
+    // Line 1 is 4 bytes, the last line 3, and every byte between is a line.
+    const last: u32 = @intCast(1 + (TEXT_MAX - 7) + 1);
+    try testing.expectEqualDeep(
+        @as([]const Note, &.{.{ .line = last, .flags = NoteFlag.repeats_line, .other = 1, .builtin = 0, .peers = 0 }}),
+        blob.notes(),
+    );
+
+    // One byte more is refused before anything is read.
+    const over = try testing.allocator.alloc(u8, TEXT_MAX + 1);
+    defer testing.allocator.free(over);
+    @memset(over, '\n');
+    var report: Report = undefined;
+    try testing.expectError(error.BuildFailed, buildAlloc(testing.allocator, over, &base.trie, FP, &report));
+    try testing.expectEqual(@backingInt(Status.text_too_long), report.status);
+    try testing.expectEqual(@as(u32, 0), report.line);
+}
+
+test "the vector pool check agrees with the scalar one" {
+    // Random pools, biased toward the bytes that matter — NULs, controls,
+    // lead and continuation bytes — at every length across a few blocks,
+    // so sequences straddle block edges and the tail.
+    var prng = std.Random.DefaultPrng.init(0xB10C);
+    const r = prng.random();
+    var buf: [5 * POOL_LANES + 7]u8 = undefined;
+    var agreed_clean: usize = 0;
+    for (0..200_000) |round| {
+        const len = r.uintLessThan(usize, buf.len + 1);
+        for (buf[0..len]) |*b| {
+            b.* = switch (r.uintLessThan(u8, 12)) {
+                0 => r.int(u8),
+                1 => 0,
+                2 => r.uintLessThan(u8, 0x20),
+                3, 4 => 0x20 + r.uintLessThan(u8, 0x60),
+                5, 6 => 0x80 + r.uintLessThan(u8, 0x40),
+                7 => 0xC0 + r.uintLessThan(u8, 0x20),
+                8 => 0xE0 + r.uintLessThan(u8, 0x10),
+                9 => 0xF0 + r.uintLessThan(u8, 0x10),
+                else => "a\x00"[r.uintLessThan(usize, 2)],
+            };
+        }
+        // Splice in whole sequences at random spots, half the time.
+        if (round % 2 == 0 and len >= 4) {
+            const at = r.uintLessThan(usize, len - 3);
+            @memcpy(buf[at..][0..3], "你");
+        }
+        const pool = buf[0..len];
+        var nuls: usize = 0;
+        for (pool) |b| nuls += @intFromBool(b == 0);
+        const want = isCleanPoolScalar(pool, nuls);
+        try testing.expectEqual(want, isCleanPoolVector(pool, nuls));
+        if (want) agreed_clean += 1;
+        // A wrong terminator count is refused either way.
+        try testing.expect(!isCleanPoolVector(pool, nuls + 1));
+    }
+    try testing.expect(agreed_clean > 1000);
+
+    // Clean text of every length, cut and uncut.
+    const text = "键道\x00a\x00\xF0\x9F\x98\x80\x00©x\x00中文输入法\x00";
+    for (0..text.len + 1) |cut| {
+        const pool = text[0..cut];
+        var nuls: usize = 0;
+        for (pool) |b| nuls += @intFromBool(b == 0);
+        try testing.expectEqual(isCleanPoolScalar(pool, nuls), isCleanPoolVector(pool, nuls));
+    }
+}
+
+test "hash: pinned values, and a different value for any change" {
+    // Pinned: a host's cached blobs are tagged with these, so a change in
+    // the function (a Zig upgrade swapping its Wyhash) must not go unseen.
+    try testing.expectEqual(@as(u64, 0x0409638EE2BDE459), hash(""));
+    try testing.expectEqual(@as(u64, 0xB5F6C3766F38E694), hash("键道\tjd\n"));
+    var long: [1000]u8 = undefined;
+    for (&long, 0..) |*b, i| b.* = @truncate(i *% 31);
+    try testing.expectEqual(@as(u64, 0xA1C52CEC77FCE62F), hash(&long));
+
+    var copy = long;
+    copy[999] ^= 1;
+    try testing.expect(hash(&copy) != hash(&long));
+    try testing.expect(hash(long[0..999]) != hash(&long));
 }
