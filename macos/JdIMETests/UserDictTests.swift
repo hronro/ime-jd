@@ -179,9 +179,57 @@ final class UserDictTests: XCTestCase {
     }
 
     func testLimitsMatchTheHeader() {
-        XCTAssertEqual(UserDict.maxEntries, 10_000)
+        XCTAssertEqual(UserDict.maxEntries, 500_000)
         XCTAssertEqual(UserDict.maxValueBytes, 255)
+        XCTAssertEqual(UserDict.maxTextBytes, 16 * 1024 * 1024)
         XCTAssertEqual(UserDict.maxKeyLength, 6)
         XCTAssertEqual(UserDict.keyAlphabet.count, 26)
+    }
+
+    func testHashIsLibjdsPinnedWyhash() {
+        // The values libjd pins in its own tests: a cache tagged by one
+        // release must read the same in the next.
+        XCTAssertEqual(UserDict.hash(""), 0x0409_638E_E2BD_E459)
+        XCTAssertEqual(UserDict.hash("键道\tjd\n"), 0xB5F6_C376_6F38_E694)
+        XCTAssertEqual(Data("键道\tjd\n".utf8).withUnsafeBytes { UserDict.hash($0) }, 0xB5F6_C376_6F38_E694)
+        XCTAssertNotEqual(UserDict.hash("好\thz\n"), UserDict.hash("好\thz"))
+    }
+
+    func testBuildingFromBytesMatchesBuildingFromText() throws {
+        let text = "测试词\tb\n不\tb\n乙\tA\n"
+        let fromText = try build(text, tag: 7)
+        let fromBytes = try Data(text.utf8).withUnsafeBytes { try UserDict.build(utf8: $0, sourceTag: 7) }
+        XCTAssertEqual(fromBytes.dict.blob, fromText.dict.blob)
+        XCTAssertEqual(fromBytes.report.notes, fromText.report.notes)
+        // Empty bytes build an empty dictionary.
+        let empty = try UserDict.build(utf8: UnsafeRawBufferPointer(start: nil, count: 0))
+        XCTAssertEqual(empty.dict.entries, 0)
+    }
+
+    func testAMappedBlobIsUsedWhereItLies() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("dict.blob")
+        let (built, _) = try build("测试词\tb\n", tag: 42)
+        try built.blob.write(to: url, options: .atomic)
+
+        let file = try XCTUnwrap(MappedFile.open(url))
+        let mapped = try UserDict(mapping: file)
+        XCTAssertEqual(mapped.sourceTag, 42)
+        XCTAssertEqual(mapped.entries, 1)
+        XCTAssertEqual(mapped.bytes.baseAddress, file.bytes.baseAddress, "no copy")
+        let engine = Engine(userDict: mapped)
+        engine.pressKey(UInt8(ascii: "b"))
+        XCTAssertEqual(engine.readRange(from: 0, count: 1).map(\.value), ["测试词"])
+
+        // No file is nil, not an error; an empty or damaged one is refused.
+        XCTAssertNil(try MappedFile.open(dir.appendingPathComponent("missing")))
+        try Data().write(to: url, options: .atomic)
+        XCTAssertThrowsError(try UserDict(mapping: XCTUnwrap(MappedFile.open(url))))
+        try Data(built.blob.dropLast()).write(to: url, options: .atomic)
+        XCTAssertThrowsError(try UserDict(mapping: XCTUnwrap(MappedFile.open(url)))) { error in
+            XCTAssertEqual((error as? UserDictError)?.status, .corrupt)
+        }
     }
 }

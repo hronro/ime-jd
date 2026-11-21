@@ -98,9 +98,14 @@ final class UserDictFileTests: XCTestCase {
         XCTAssertEqual(UserDictEntry(value: "\u{3000}好", keys: "hz").normalized().value, "\u{3000}好")
     }
 
-    func testHashMatchesTheFNV1aReferenceVectors() {
-        XCTAssertEqual(UserDictFile.hash(""), 0xcbf2_9ce4_8422_2325)
-        XCTAssertEqual(UserDictFile.hash("a"), 0xaf63_dc4c_8601_ec8c)
-        XCTAssertNotEqual(UserDictFile.hash("好\thz\n"), UserDictFile.hash("好\thz"))
+    func testWithoutBOMDropsOnlyALeadingMark() {
+        let marked = Data([0xEF, 0xBB, 0xBF] + Array("好\thz\n".utf8))
+        marked.withUnsafeBytes { bytes in
+            XCTAssertEqual(Array(UserDictFile.withoutBOM(bytes)), Array("好\thz\n".utf8))
+        }
+        let plain = Data("好\thz\n\u{FEFF}".utf8)
+        plain.withUnsafeBytes { bytes in
+            XCTAssertEqual(Array(UserDictFile.withoutBOM(bytes)), Array(plain))
+        }
     }
 }
