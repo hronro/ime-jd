@@ -66,6 +66,38 @@ enum UserDictProblem: Equatable {
         guard let report else {
             return Array(repeating: nil, count: lines.count)
         }
+        // The notes come ascending by line; so do the rows of a list read
+        // from a file and not reordered since. Then each row's note is found
+        // by walking the two together, and a note's `other` row by a binary
+        // search — no table over hundreds of thousands of rows.
+        var rowLines: [Int] = []
+        rowLines.reserveCapacity(lines.count)
+        for line in lines {
+            guard let line, line > rowLines.last ?? 0 else {
+                return forUnorderedRows(lines: lines, report: report)
+            }
+            rowLines.append(line)
+        }
+        func row(at line: Int) -> Int? {
+            var lo = 0, hi = rowLines.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if rowLines[mid] < line { lo = mid + 1 } else { hi = mid }
+            }
+            return lo < rowLines.count && rowLines[lo] == line ? lo : nil
+        }
+        var problems = [UserDictProblem?](repeating: nil, count: lines.count)
+        var index = 0
+        for note in report.notes {
+            let line = Int(note.line)
+            while index < rowLines.count, rowLines[index] < line { index += 1 }
+            guard index < rowLines.count, rowLines[index] == line else { continue }
+            problems[index] = problem(for: note, other: note.other == 0 ? nil : row(at: Int(note.other)))
+        }
+        return problems
+    }
+
+    private static func forUnorderedRows(lines: [Int?], report: UserDictReport) -> [UserDictProblem?] {
         var notes: [Int: UserDictNote] = [:]
         for note in report.notes {
             notes[Int(note.line)] = note
@@ -76,24 +108,29 @@ enum UserDictProblem: Equatable {
         }
         return lines.map { line -> UserDictProblem? in
             guard let line, let note = notes[line] else { return nil }
-            let other = rowByLine[Int(note.other)]
-            if note.isInvalid {
-                return .invalid(note.flags)
-            }
-            if note.flags.contains(.repeatsLine) {
-                return .duplicate(ofRow: other)
-            }
-            if note.flags.contains(.repeatsBuiltIn) {
-                return .duplicate(ofRow: nil)
-            }
-            if note.isShared {
-                return .sharedCode(
-                    builtIn: Int(note.builtIn),
-                    otherRow: note.flags.contains(.codeInLine) ? other : nil,
-                    peers: Int(note.peers)
-                )
-            }
-            return nil
+            return problem(for: note, other: rowByLine[Int(note.other)])
         }
+    }
+
+    /// The verdict a note gives its row; `other` is the row of the line the
+    /// note names, if that line is a row.
+    private static func problem(for note: UserDictNote, other: Int?) -> UserDictProblem? {
+        if note.isInvalid {
+            return .invalid(note.flags)
+        }
+        if note.flags.contains(.repeatsLine) {
+            return .duplicate(ofRow: other)
+        }
+        if note.flags.contains(.repeatsBuiltIn) {
+            return .duplicate(ofRow: nil)
+        }
+        if note.isShared {
+            return .sharedCode(
+                builtIn: Int(note.builtIn),
+                otherRow: note.flags.contains(.codeInLine) ? other : nil,
+                peers: Int(note.peers)
+            )
+        }
+        return nil
     }
 }

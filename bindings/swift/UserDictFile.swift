@@ -52,8 +52,7 @@ enum UserDictFile {
     static let header =
         "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，1 到 \(UserDict.maxKeyLength) 个字符。"
 
-    /// What libjd trims from a raw line, and from each field.
-    static let lineTrim = CharacterSet(charactersIn: " \r")
+    /// What libjd trims from each field.
     static let fieldTrim = CharacterSet(charactersIn: " ")
 
     // MARK: - Reading and writing
@@ -68,6 +67,14 @@ enum UserDictFile {
             return nil
         }
         return try decode(data)
+    }
+
+    /// The file's bytes as libjd should read them: a UTF-8 BOM dropped, as
+    /// `decode` drops it, so a mapped file hashes and builds the same as its
+    /// decoded text.
+    static func withoutBOM(_ bytes: UnsafeRawBufferPointer) -> UnsafeRawBufferPointer {
+        guard bytes.starts(with: [0xEF, 0xBB, 0xBF]) else { return bytes }
+        return UnsafeRawBufferPointer(rebasing: bytes[3...])
     }
 
     static func decode(_ data: Data) throws -> String {
@@ -96,25 +103,48 @@ enum UserDictFile {
     /// trimmed from both ends — skipping comments and blank lines. Lenient
     /// on purpose: fields are not validated, and a line without a TAB
     /// becomes a row whose value is the whole line and whose keys are empty.
+    ///
+    /// Byte by byte, as libjd reads it: every byte it splits or trims on is
+    /// ASCII, which no byte of a multi-byte character can equal, so cutting
+    /// the UTF-8 there is cutting between characters — and a byte loop keeps
+    /// a list of hundreds of thousands of phrases quick to read.
     static func parse(_ text: String) -> [UserDictRow] {
+        var text = text
+        return text.withUTF8 { parse(utf8: $0) }
+    }
+
+    private static func parse(utf8 bytes: UnsafeBufferPointer<UInt8>) -> [UserDictRow] {
+        let newline = UInt8(ascii: "\n"), cr = UInt8(ascii: "\r"), space = UInt8(ascii: " ")
+        let tab = UInt8(ascii: "\t"), hash = UInt8(ascii: "#")
+        func string(_ range: Range<Int>) -> String {
+            String(decoding: UnsafeBufferPointer(rebasing: bytes[range]), as: UTF8.self)
+        }
+        func trimmed(_ range: Range<Int>, _ isTrim: (UInt8) -> Bool) -> Range<Int> {
+            var lo = range.lowerBound, hi = range.upperBound
+            while lo < hi, isTrim(bytes[lo]) { lo += 1 }
+            while hi > lo, isTrim(bytes[hi - 1]) { hi -= 1 }
+            return lo..<hi
+        }
         var rows: [UserDictRow] = []
-        // `components`, not `split`: a Swift `Character` treats "\r\n" as
-        // one grapheme, which `split(separator: "\n")` would never match.
-        for (index, raw) in text.components(separatedBy: "\n").enumerated() {
-            let line = raw.trimmingCharacters(in: lineTrim)
-            // The first byte, as libjd checks it: `hasPrefix("#")` compares
-            // whole `Character`s, and "#" plus a combining mark is one.
-            if line.isEmpty || line.utf8.first == UInt8(ascii: "#") { continue }
+        var line = 0
+        var start = 0
+        while start <= bytes.count {
+            line += 1
+            var end = start
+            while end < bytes.count, bytes[end] != newline { end += 1 }
+            defer { start = end + 1 }
+            let raw = trimmed(start..<end) { $0 == space || $0 == cr }
+            if raw.isEmpty || bytes[raw.lowerBound] == hash { continue }
             let entry: UserDictEntry
-            if let tab = line.firstIndex(of: "\t") {
+            if let split = raw.first(where: { bytes[$0] == tab }) {
                 entry = UserDictEntry(
-                    value: String(line[..<tab]).trimmingCharacters(in: fieldTrim),
-                    keys: String(line[line.index(after: tab)...]).trimmingCharacters(in: fieldTrim)
+                    value: string(trimmed(raw.lowerBound..<split) { $0 == space }),
+                    keys: string(trimmed(split + 1..<raw.upperBound) { $0 == space })
                 )
             } else {
-                entry = UserDictEntry(value: line, keys: "")
+                entry = UserDictEntry(value: string(raw), keys: "")
             }
-            rows.append(UserDictRow(line: index + 1, entry: entry))
+            rows.append(UserDictRow(line: line, entry: entry))
         }
         return rows
     }
@@ -122,28 +152,21 @@ enum UserDictFile {
     /// The header plus one `value<TAB>keys` line per entry, LF-terminated.
     /// Entry `i` lands on line `i + 2`.
     static func serialize(_ entries: [UserDictEntry]) -> String {
-        var text = header + "\n"
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(header.utf8.count + 1 + entries.count * 20)
+        bytes.append(contentsOf: header.utf8)
+        bytes.append(UInt8(ascii: "\n"))
         for entry in entries {
-            text += "\(entry.value)\t\(entry.keys)\n"
+            bytes.append(contentsOf: entry.value.utf8)
+            bytes.append(UInt8(ascii: "\t"))
+            bytes.append(contentsOf: entry.keys.utf8)
+            bytes.append(UInt8(ascii: "\n"))
         }
-        return text
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     /// The line an entry at `index` occupies after `serialize`.
     static func line(ofEntryAt index: Int) -> Int {
         index + 2
-    }
-
-    // MARK: - Identity
-
-    /// FNV-1a, 64-bit, over the UTF-8 text: the dictionary's source tag, and
-    /// how a client tells an unchanged file (or its own write) from an edit.
-    static func hash(_ text: String) -> UInt64 {
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-        for byte in text.utf8 {
-            hash ^= UInt64(byte)
-            hash = hash &* 0x0100_0000_01b3
-        }
-        return hash
     }
 }

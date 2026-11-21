@@ -175,6 +175,10 @@ final class Engine {
             Int(jd_abi_layout(UInt32(JD_ABI_USER_DICT_VALUE_MAX))) == UserDict.maxValueBytes,
             "libjd user dictionary value cap mismatch — core/include/jd.h is out of sync with the library"
         )
+        precondition(
+            Int(jd_abi_layout(UInt32(JD_ABI_USER_DICT_TEXT_MAX))) == UserDict.maxTextBytes,
+            "libjd user dictionary text cap mismatch — core/include/jd.h is out of sync with the library"
+        )
     }()
 
     /// Run the one-time layout check. `UserDict` calls it too, since a

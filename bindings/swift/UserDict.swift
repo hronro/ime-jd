@@ -4,9 +4,9 @@
 //
 // The engine never copies the blob (see jd_init in core/include/jd.h): it must
 // be 4-byte aligned and must outlive every context created with it and every
-// candidate `value` that points into it. A `UserDict` owns aligned storage and
-// frees it in `deinit`; an `Engine` created with one retains it for as long as
-// the context lives. What remains for a frontend is documented on `Candidate`:
+// candidate `value` that points into it. A `UserDict` owns aligned storage,
+// or a read-only mapping of a cached file, and lets it go in `deinit`; an
+// `Engine` created with one retains it for as long as the context lives. What remains for a frontend is documented on `Candidate`:
 // a candidate read from such an engine must not outlive the engine.
 //
 // Where the phrases live — a text file, a table behind a GUI — is each
@@ -184,10 +184,11 @@ struct UserDictInfo: Equatable {
 
 /// A user dictionary: phrases compiled into the blob the engine reads in
 /// place. Build it from text with `build` and hand it to `Engine(userDict:)`,
-/// keeping the text as the source of truth — a rebuild costs a couple of
-/// milliseconds for thousands of phrases. `blob` is the bytes to cache if a
-/// frontend wants to skip even that; `init(blob:)` takes them back and
-/// `check` reads a cached blob's tag and count without constructing one.
+/// keeping the text as the source of truth — a rebuild costs about 6 ms per
+/// 100 000 phrases on a recent Mac. `blob` is the bytes to cache if a
+/// frontend wants to skip even that; `init(mapping:)` reads a cached file in
+/// place, `init(blob:)` takes the bytes back as a copy, and `check` reads a
+/// cached blob's tag and count without constructing one.
 ///
 /// A blob is tied to the build of libjd it was made with (the format, and the
 /// built-in dictionary it was deduplicated against): after a library update
@@ -197,6 +198,9 @@ final class UserDict {
     static let maxEntries = Int(JD_USER_DICT_MAX_ENTRIES)
     /// Longest value in UTF-8 bytes (`JD_USER_DICT_VALUE_MAX`).
     static let maxValueBytes = Int(JD_USER_DICT_VALUE_MAX)
+    /// Most text one build may read, in bytes (`JD_USER_DICT_TEXT_MAX`, an
+    /// expression Swift does not import; checked against the library's).
+    static let maxTextBytes = 16 * 1024 * 1024
     /// Longest code in keys. `jd.h` states the cap in prose (keys are 1 to 6
     /// bytes) rather than as a macro; the library skips a longer code with a
     /// `badKeys` note.
@@ -204,9 +208,19 @@ final class UserDict {
     /// The characters a code is made of.
     static let keyAlphabet = Set("abcdefghijklmnopqrstuvwxyz")
 
-    /// 16-byte aligned; the engine requires 4.
-    private let storage: UnsafeMutableRawPointer
-    /// The blob's length in bytes. The storage may be longer.
+    /// Where the blob's bytes live: memory of the dictionary's own, or a
+    /// cached file's pages.
+    private enum Backing {
+        /// 16-byte aligned; the engine requires 4.
+        case allocated(UnsafeMutableRawPointer)
+        case mapped(MappedFile)
+    }
+
+    private let backing: Backing
+    /// The blob's first byte; nil only for an empty mapping, which never
+    /// validates.
+    private let base: UnsafeRawPointer?
+    /// The blob's length in bytes.
     let byteCount: Int
     /// Phrases in the blob.
     let entries: UInt32
@@ -214,25 +228,47 @@ final class UserDict {
     /// revision. The engine never interprets it.
     let sourceTag: UInt64
 
-    private init(storage: UnsafeMutableRawPointer, byteCount: Int, entries: UInt32, sourceTag: UInt64) {
-        self.storage = storage
+    private init(backing: Backing, byteCount: Int, entries: UInt32, sourceTag: UInt64) {
+        self.backing = backing
+        switch backing {
+        case .allocated(let storage): base = UnsafeRawPointer(storage)
+        case .mapped(let file): base = file.bytes.baseAddress
+        }
         self.byteCount = byteCount
         self.entries = entries
         self.sourceTag = sourceTag
     }
 
     deinit {
-        storage.deallocate()
+        if case .allocated(let storage) = backing {
+            storage.deallocate()
+        }
     }
 
     /// The blob as the engine reads it. Valid for as long as `self` is.
     var bytes: UnsafeRawBufferPointer {
-        UnsafeRawBufferPointer(start: storage, count: byteCount)
+        UnsafeRawBufferPointer(start: base, count: byteCount)
     }
 
     /// A copy of the blob, for caching.
     var blob: Data {
-        Data(bytes: storage, count: byteCount)
+        Data(bytes)
+    }
+
+    /// libjd's content hash (`jd_user_dict_hash`), for `sourceTag`: hash the
+    /// text a dictionary is built from, hash it again before trusting a
+    /// cached blob, and a blob whose tag differs was built from something
+    /// else. Gigabytes a second, so a whole phrases file costs well under a
+    /// millisecond. The same bytes hash the same on every platform and in
+    /// every release.
+    static func hash(_ bytes: UnsafeRawBufferPointer) -> UInt64 {
+        jd_user_dict_hash(bytes.baseAddress, bytes.count)
+    }
+
+    /// `hash` over the text's UTF-8.
+    static func hash(_ text: String) -> UInt64 {
+        var text = text
+        return text.withUTF8 { hash(UnsafeRawBufferPointer($0)) }
     }
 
     /// Build from lines of `value<TAB>keys` — the format of libjd's own table
@@ -248,46 +284,72 @@ final class UserDict {
     ///
     /// `sourceTag` is stored in the blob, uninterpreted.
     static func build(_ text: String, sourceTag: UInt64 = 0) throws -> (dict: UserDict, report: UserDictReport) {
+        // A native String is contiguous UTF-8 already: read in place.
+        var text = text
+        return try text.withUTF8 { try build(utf8: UnsafeRawBufferPointer($0), sourceTag: sourceTag) }
+    }
+
+    /// `build` from UTF-8 bytes as they are — a mapped file, say, so the
+    /// text is never copied. A byte-order mark is not skipped (libjd would
+    /// take U+FEFF as part of line 1): drop one first.
+    static func build(utf8 phrases: UnsafeRawBufferPointer, sourceTag: UInt64 = 0) throws -> (dict: UserDict, report: UserDictReport) {
         Engine.checkABI()
-        // NUL-terminated, so the buffer is never empty and its base address
-        // never nil; the NUL itself is not passed to the library.
-        let cString = text.utf8CString
-        let length = cString.count - 1
-        return try cString.withUnsafeBufferPointer { buffer -> (dict: UserDict, report: UserDictReport) in
-            let phrases = buffer.baseAddress!
-            let bound = jd_user_dict_blob_bound(phrases, length)
-            let storage = UnsafeMutableRawPointer.allocate(byteCount: bound, alignment: 16)
-            var blobLength = 0
-            var report = jd_user_dict_report()
-            let status = jd_user_dict_build(phrases, length, sourceTag, storage, bound, &blobLength, &report)
-            guard status == UInt32(JD_USER_DICT_OK) else {
-                storage.deallocate()
-                throw UserDictError(status: .init(code: status), line: report.line)
-            }
-            // The notes sit past the blob in the same storage, which the
-            // dictionary keeps; copy them into Swift values anyway, so the
-            // report stands on its own.
-            var notes: [UserDictNote] = []
-            if report.notes > 0 {
-                precondition(
-                    report.notes_offset % 4 == 0
-                        && Int(report.notes_offset) + Int(report.notes) * MemoryLayout<jd_user_dict_note>.stride <= bound,
-                    "libjd placed the notes outside the buffer it was given"
-                )
-                let raw = storage.advanced(by: Int(report.notes_offset))
-                    .assumingMemoryBound(to: jd_user_dict_note.self)
-                notes = UnsafeBufferPointer(start: raw, count: Int(report.notes)).map(UserDictNote.init(raw:))
-            }
-            let dict = UserDict(
-                storage: storage, byteCount: blobLength,
-                entries: report.entries, sourceTag: sourceTag
-            )
-            let summary = UserDictReport(
-                entries: report.entries, dropped: report.dropped, shared: report.shared,
-                invalid: report.invalid, notes: notes
-            )
-            return (dict, summary)
+        let text = phrases.baseAddress?.assumingMemoryBound(to: CChar.self)
+        let bound = jd_user_dict_blob_bound(text, phrases.count)
+        var storage = UnsafeMutableRawPointer.allocate(byteCount: bound, alignment: 16)
+        var blobLength = 0
+        var report = jd_user_dict_report()
+        let status = jd_user_dict_build(text, phrases.count, sourceTag, storage, bound, &blobLength, &report)
+        guard status == UInt32(JD_USER_DICT_OK) else {
+            storage.deallocate()
+            throw UserDictError(status: .init(code: status), line: report.line)
         }
+        // The notes sit past the blob in the same storage; copy them into
+        // Swift values so the report stands on its own.
+        var notes: [UserDictNote] = []
+        if report.notes > 0 {
+            precondition(
+                report.notes_offset % 4 == 0
+                    && Int(report.notes_offset) + Int(report.notes) * MemoryLayout<jd_user_dict_note>.stride <= bound,
+                "libjd placed the notes outside the buffer it was given"
+            )
+            let raw = storage.advanced(by: Int(report.notes_offset))
+                .assumingMemoryBound(to: jd_user_dict_note.self)
+            notes = UnsafeBufferPointer(start: raw, count: Int(report.notes)).map(UserDictNote.init(raw:))
+        }
+        // The bound leaves room for every line's note and the whole text,
+        // about twice the blob: keep only the blob.
+        if bound - blobLength > 64 * 1024 {
+            let exact = UnsafeMutableRawPointer.allocate(byteCount: max(blobLength, 1), alignment: 16)
+            exact.copyMemory(from: storage, byteCount: blobLength)
+            storage.deallocate()
+            storage = exact
+        }
+        let dict = UserDict(
+            backing: .allocated(storage), byteCount: blobLength,
+            entries: report.entries, sourceTag: sourceTag
+        )
+        let summary = UserDictReport(
+            entries: report.entries, dropped: report.dropped, shared: report.shared,
+            invalid: report.invalid, notes: notes
+        )
+        return (dict, summary)
+    }
+
+    /// A blob cached in a file, mapped rather than read (`MappedFile`) and
+    /// used where it lies: no copy, and pages a file backs count against no
+    /// memory limit — what an iOS keyboard extension needs at hundreds of
+    /// thousands of phrases. Validated exactly as `jd_init` would; `.stale`
+    /// or `.corrupt` means "rebuild from the phrases". The mapping lives as
+    /// long as the dictionary.
+    convenience init(mapping file: MappedFile) throws {
+        Engine.checkABI()
+        var info = jd_user_dict_info()
+        let status = jd_user_dict_check(file.bytes.baseAddress, file.bytes.count, &info)
+        guard status == UInt32(JD_USER_DICT_OK) else {
+            throw UserDictError(status: .init(code: status), line: 0)
+        }
+        self.init(backing: .mapped(file), byteCount: file.bytes.count, entries: info.entries, sourceTag: info.source_tag)
     }
 
     /// Wrap a blob cached from `blob`. The bytes are copied into aligned
@@ -302,7 +364,7 @@ final class UserDict {
             storage.deallocate()
             throw UserDictError(status: .init(code: status), line: 0)
         }
-        self.init(storage: storage, byteCount: blob.count, entries: info.entries, sourceTag: info.source_tag)
+        self.init(backing: .allocated(storage), byteCount: blob.count, entries: info.entries, sourceTag: info.source_tag)
     }
 
     /// Validate a cached blob and read its tag and phrase count without
