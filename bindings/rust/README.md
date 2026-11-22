@@ -91,18 +91,20 @@ let dict = match UserDict::from_blob(&std::fs::read(cache_path)?) {
 let mut ctx = JdContext::with_user_dict(dict.leak())?;
 ```
 
-**Performance tip: memory-map the cache.** A file mapping is page-aligned, sits at a fixed address, costs no copy, and its pages are shared with every other process that maps the same file — which is exactly what the engine wants. Peek at the tag first, and only leak the mapping once you know you will use it, so a rebuild can replace the file:
+**Performance tip: memory-map the cache.** A file mapping is page-aligned, sits at a fixed address, costs no copy, and its pages are shared with every other process that maps the same file — which is exactly what the engine wants. Peek at the tag first, so a mapping you will not use is dropped and a rebuild can replace the file:
 
 ```rust
 let file = std::fs::File::open(cache_path)?;
 let map = unsafe { memmap2::Mmap::map(&file)? }; // the file must not change while mapped
 let dict = match UserDict::check(&map) {
     Ok(info) if info.source_tag == phrases_mtime => {
-        UserDict::from_static_blob(Box::leak(Box::new(map)))? // no copy; validated
+        unsafe { UserDict::from_mapped_blob(map)? } // no copy; validated
     }
     _ => rebuild_from_phrases()?, // the mapping is dropped first
 };
 ```
+
+`from_mapped_blob` keeps the map and unmaps it when the dictionary is dropped, which is what a host that changes dictionaries wants; `from_static_blob` takes a map leaked for the rest of the process.
 
 Map the text file too when rebuilding — `build` only reads it, and `std::str::from_utf8(&map)` costs one validation pass and no copy.
 

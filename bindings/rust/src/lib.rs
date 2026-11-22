@@ -252,7 +252,7 @@ pub enum UserDictStatus {
     Corrupt,
     /// The blob pointer was not 4-byte aligned (a bug in this crate).
     Misaligned,
-    /// The text exceeds the library's input cap.
+    /// The text exceeds [`UserDict::MAX_TEXT_BYTES`].
     TextTooLong,
     /// A status this crate does not know (a newer library).
     Unknown(u32),
@@ -477,7 +477,8 @@ impl UserDictReport {
 /// cached bytes on later launches — [`Self::from_blob`] copies them into
 /// aligned storage; [`Self::from_static_blob`] takes memory you keep alive
 /// for the rest of the process, such as a leaked memory map of the cache
-/// file, with no copy at all. The [`Self::source_tag`] you gave `build` comes
+/// file, and [`Self::from_mapped_blob`] a memory map it unmaps when it is
+/// dropped, both with no copy at all. The [`Self::source_tag`] you gave `build` comes
 /// back from the cached blob ([`Self::check`] reads it without taking the
 /// blob over), so comparing it against the phrases' current tag tells you
 /// whether to rebuild.
@@ -503,9 +504,9 @@ pub struct UserDict {
     source_tag: u64,
 }
 
-/// The blob's backing memory: this crate's own aligned storage, or a
-/// `'static` slice the host owns and keeps alive, such as a leaked memory
-/// map of the cache file.
+/// The blob's backing memory: this crate's own aligned storage, a `'static`
+/// slice the host owns and keeps alive, such as a leaked memory map of the
+/// cache file, or a map the dictionary owns and drops with itself.
 enum Blob {
     Owned {
         /// 4-byte-aligned, as the engine requires.
@@ -514,6 +515,7 @@ enum Blob {
         len: usize,
     },
     Static(&'static [u8]),
+    Mapped(Box<dyn AsRef<[u8]> + Send + Sync>),
 }
 
 impl Blob {
@@ -524,6 +526,7 @@ impl Blob {
                 std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), *len)
             },
             Blob::Static(bytes) => bytes,
+            Blob::Mapped(map) => (**map).as_ref(),
         }
     }
 }
@@ -565,6 +568,9 @@ impl UserDict {
     pub const MAX_ENTRIES: u32 = 500_000;
     /// Longest phrase value in bytes (`JD_USER_DICT_VALUE_MAX`).
     pub const VALUE_MAX: u32 = 255;
+    /// Most text one build reads, in bytes (`JD_USER_DICT_TEXT_MAX`); more
+    /// fails with [`UserDictStatus::TextTooLong`].
+    pub const MAX_TEXT_BYTES: u32 = 16 * 1024 * 1024;
     /// Longest code. `jd.h` states it in prose — keys are 1 to 6 letters
     /// `a`-`z` — rather than as a macro; the builder skips a longer code
     /// with a [`UserDictNote::BAD_KEYS`] note.
@@ -690,6 +696,33 @@ impl UserDict {
         let info = check_in_place(bytes)?;
         Ok(Self {
             blob: Blob::Static(bytes),
+            entries: info.entries,
+            source_tag: info.source_tag,
+        })
+    }
+
+    /// Wrap a cached blob in memory that `map` owns — a memory map of the
+    /// cache file, typically — without copying it, and keep `map` for as
+    /// long as the dictionary lives: the engine reads the bytes where they
+    /// lie, and the file is unmapped when the dictionary is dropped, so a
+    /// host that changes dictionaries does not pile up old maps. The bytes
+    /// must be 4-byte aligned (a file mapping is page-aligned); otherwise
+    /// [`UserDictStatus::Misaligned`]. Validated exactly as `jd_init` would.
+    ///
+    /// # Safety
+    ///
+    /// The bytes `map.as_ref()` returns must stay at the same address, and
+    /// unchanged, until `map` is dropped. A file mapping keeps its address;
+    /// keeping its bytes is up to how the file is opened and replaced —
+    /// shared for reading only while it is mapped, and replaced by writing
+    /// a new file rather than rewriting this one.
+    pub unsafe fn from_mapped_blob(
+        map: impl AsRef<[u8]> + Send + Sync + 'static,
+    ) -> Result<Self, UserDictError> {
+        let blob = Blob::Mapped(Box::new(map));
+        let info = check_in_place(blob.bytes())?;
+        Ok(Self {
+            blob,
             entries: info.entries,
             source_tag: info.source_tag,
         })
@@ -857,6 +890,7 @@ const JD_ABI_SIZEOF_USER_DICT_INFO: u32 = 8;
 const JD_ABI_SIZEOF_USER_DICT_NOTE: u32 = 9;
 const JD_ABI_SIZEOF_CODE: u32 = 10;
 const JD_ABI_CODE_CAP: u32 = 11;
+const JD_ABI_USER_DICT_TEXT_MAX: u32 = 12;
 
 static ABI_CHECK: Once = Once::new();
 
@@ -879,6 +913,13 @@ fn check_abi() {
                 ffi::jd_abi_layout(JD_ABI_CODE_CAP) as usize,
             )
         };
+        // SAFETY: a pure query of a constant.
+        let text_max = unsafe { ffi::jd_abi_layout(JD_ABI_USER_DICT_TEXT_MAX) };
+        assert_eq!(
+            text_max,
+            UserDict::MAX_TEXT_BYTES,
+            "libjd user dictionary text cap mismatch — bindings/rust is out of sync with core"
+        );
         assert_eq!(
             code,
             size_of::<Code>(),

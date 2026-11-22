@@ -371,6 +371,14 @@ fn bad_lines_are_skipped_and_noted_never_fatal() {
             UserDict::MAX_ENTRIES
         )
     );
+
+    // Or too much text: the cap is the last byte that builds.
+    let cap = UserDict::MAX_TEXT_BYTES as usize;
+    let at_cap = format!("键道\tzzzzzz\n#{}", "x".repeat(cap - "键道\tzzzzzz\n#".len()));
+    assert_eq!(at_cap.len(), cap);
+    assert_eq!(UserDict::build(&at_cap, 0).expect("build").1.entries, 1);
+    let err = UserDict::build(&format!("{at_cap}x"), 0).unwrap_err();
+    assert_eq!(err.status, UserDictStatus::TextTooLong);
 }
 
 #[test]
@@ -536,6 +544,69 @@ fn a_static_blob_is_used_in_place_and_check_peeks_without_taking_over() {
     let leaked: &'static [u8] = Box::leak(shifted.into_boxed_slice());
     let err = UserDict::from_static_blob(&leaked[1..]).unwrap_err();
     assert_eq!(err.status, UserDictStatus::Misaligned);
+}
+
+#[test]
+fn a_mapped_blob_is_read_in_place_and_dropped_with_the_dictionary() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Stands in for a memory map: aligned bytes that count their drops.
+    struct Map {
+        storage: Vec<u32>,
+        len: usize,
+        skip: usize,
+        drops: Arc<AtomicUsize>,
+    }
+    impl AsRef<[u8]> for Map {
+        fn as_ref(&self) -> &[u8] {
+            // SAFETY: the storage holds `len + skip` bytes.
+            unsafe { std::slice::from_raw_parts(self.storage.as_ptr().cast::<u8>().add(self.skip), self.len) }
+        }
+    }
+    impl Drop for Map {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let map = |blob: &[u8], skip: usize, drops: &Arc<AtomicUsize>| {
+        let mut storage = vec![0u32; (blob.len() + skip).div_ceil(4)];
+        // SAFETY: the storage holds at least `skip + blob.len()` bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(blob.as_ptr(), storage.as_mut_ptr().cast::<u8>().add(skip), blob.len());
+        }
+        Map { storage, len: blob.len(), skip, drops: drops.clone() }
+    };
+
+    let (built, _) = UserDict::build("键道\tzzzzzz\n", 7).expect("build");
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mapped = map(built.as_bytes(), 0, &drops);
+    let at = mapped.as_ref().as_ptr();
+    // SAFETY: the storage neither moves nor changes while the map lives.
+    let dict = unsafe { UserDict::from_mapped_blob(mapped) }.expect("from_mapped_blob");
+    assert_eq!(dict.as_bytes().as_ptr(), at, "no copy");
+    assert_eq!((dict.source_tag(), dict.entries()), (7, 1));
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    drop(dict);
+    assert_eq!(drops.load(Ordering::SeqCst), 1, "unmapped with the dictionary");
+
+    // The engine reads it there.
+    // SAFETY: as above.
+    let dict = unsafe { UserDict::from_mapped_blob(map(built.as_bytes(), 0, &drops)) }.unwrap();
+    let mut ctx = JdContext::with_user_dict(dict.leak()).expect("jd_init failed");
+    for byte in *b"zzzzzz " {
+        ctx.press_key(byte);
+    }
+    assert_eq!(ctx.commit().unwrap().to_string(), "键道");
+
+    // Refused — misaligned, or not a blob — and dropped at once.
+    let drops = Arc::new(AtomicUsize::new(0));
+    // SAFETY: as above.
+    let err = unsafe { UserDict::from_mapped_blob(map(built.as_bytes(), 1, &drops)) }.unwrap_err();
+    assert_eq!(err.status, UserDictStatus::Misaligned);
+    let err = unsafe { UserDict::from_mapped_blob(map(&built.as_bytes()[..40], 0, &drops)) }.unwrap_err();
+    assert_eq!(err.status, UserDictStatus::Corrupt);
+    assert_eq!(drops.load(Ordering::SeqCst), 2);
 }
 
 fn keys(codes: &[Code]) -> Vec<&str> {
