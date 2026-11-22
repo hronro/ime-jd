@@ -107,6 +107,26 @@ fn decode(bytes: &[u8]) -> Result<&str, std::str::Utf8Error> {
     Ok(text.strip_prefix('\u{feff}').unwrap_or(text))
 }
 
+/// Each note with the line it is about. Line numbers are libjd's — lines
+/// split on `\n`, counted from 1 — and the notes come ascending by line, so
+/// one pass over the text finds them all: looking each one up from the start
+/// would make a file of hundreds of thousands of lines take minutes.
+fn with_lines(text: &str, notes: &[jd::UserDictNote]) -> Vec<(jd::UserDictNote, String)> {
+    let mut lines = text.split('\n');
+    let mut read = 0;
+    let mut current = "";
+    notes
+        .iter()
+        .map(|&note| {
+            while read < note.line as usize {
+                current = lines.next().unwrap_or("");
+                read += 1;
+            }
+            (note, current.trim_end_matches('\r').to_string())
+        })
+        .collect()
+}
+
 /// Write via a sibling temp file and a rename, so a concurrent reader never
 /// sees a half-written blob.
 fn write_cache(cache: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -168,19 +188,7 @@ pub fn load(path: &str) -> Result<Loaded, String> {
         );
     }
 
-    // Line numbers are libjd's: lines split on `\n`, counted from 1.
-    let notes = report
-        .notes
-        .iter()
-        .map(|&note| {
-            let line = text
-                .split('\n')
-                .nth(note.line as usize - 1)
-                .unwrap_or("")
-                .trim_end_matches('\r');
-            (note, line.to_string())
-        })
-        .collect();
+    let notes = with_lines(text, &report.notes);
 
     Ok(Loaded {
         dict: dict.leak(),
@@ -220,6 +228,32 @@ mod tests {
             "甲\ta\n\u{feff}"
         );
         assert!(decode(b"\xff\ta\n").is_err());
+    }
+
+    #[test]
+    fn notes_are_paired_with_their_lines_in_one_pass() {
+        // A skipped line (with its CR), a repeat, bad keys, and whatever
+        // the built-in words make of the rest: each note gets its own line,
+        // as looking it up from the start would.
+        let text = "# 键道\n甲\ta\nno tab\r\n\n甲\ta\n乙\tA";
+        let (_, report) = jd::UserDict::build(text, 0).unwrap();
+        let paired = with_lines(text, &report.notes);
+        assert!(paired.len() >= 3);
+        for (note, line) in &paired {
+            let looked_up = text.split('\n').nth(note.line as usize - 1).unwrap();
+            assert_eq!(line, looked_up.trim_end_matches('\r'));
+        }
+        assert!(
+            paired
+                .iter()
+                .any(|(note, line)| note.line == 3 && line == "no tab")
+        );
+        // Lines the text does not have read as empty, not as a panic.
+        let past = jd::UserDictNote {
+            line: 9,
+            ..report.notes[0]
+        };
+        assert_eq!(with_lines(text, &[past])[0].1, "");
     }
 
     #[test]
