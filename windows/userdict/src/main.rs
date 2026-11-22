@@ -12,8 +12,9 @@
 //!
 //! `--file <path>` edits that file instead of the user's own, to try the
 //! window out — screenshots, QA — without touching the real phrases: such a
-//! window grants nothing, remembers no placement and stands beside one
-//! already open. The switch is the user's either way.
+//! window grants nothing, remembers no placement, writes nothing to the
+//! IME's cache and stands beside one already open. The switch is the user's
+//! either way.
 
 mod lookup;
 mod window;
@@ -21,7 +22,7 @@ mod window;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use jd_userdict::{access, switch};
+use jd_userdict::{access, cache, file, switch};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
 
 fn main() {
@@ -79,8 +80,13 @@ fn set_switch(flag: &OsStr, state: &OsStr) {
     };
     let result = if flag == "--user-dict" {
         if on {
-            // The phrases this turns on, readable in sandboxed hosts too.
+            // The phrases this turns on, readable in sandboxed hosts too,
+            // and compiled for every application to map — before the
+            // switch, so they find it there.
             let _ = access::grant_all();
+            if let (Some(phrases), Some(dir)) = (file::path(), cache::dir()) {
+                let _ = cache::prime(&phrases, &dir);
+            }
         }
         switch::set_enabled(on)
     } else {

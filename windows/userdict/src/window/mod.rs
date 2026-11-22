@@ -28,6 +28,7 @@
 mod entry;
 mod problem;
 pub(crate) mod prompt;
+mod search;
 mod store;
 mod table;
 mod watch;
@@ -38,7 +39,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use jd::UserDict;
-use jd_userdict::{Entry, file, switch};
+use jd_userdict::{Entry, cache, file, switch};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     COLOR_GRAYTEXT, COLOR_WINDOWTEXT, ClientToScreen, GetSysColor, InvalidateRect,
@@ -55,9 +56,9 @@ use windows::Win32::UI::Controls::{
     InitCommonControlsEx, IsDlgButtonChecked, LIST_VIEW_ITEM_STATE_FLAGS, LVCF_FMT, LVCF_TEXT,
     LVCF_WIDTH, LVCFMT_LEFT, LVCOLUMNW, LVHITTESTINFO, LVIF_TEXT, LVIR_BOUNDS, LVIS_FOCUSED,
     LVIS_SELECTED, LVITEMW, LVM_ENSUREVISIBLE, LVM_GETCOLUMNWIDTH, LVM_GETITEMRECT,
-    LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE,
-    LVM_SETITEMCOUNT, LVM_SETITEMSTATE, LVM_SUBITEMHITTEST, LVN_GETDISPINFOW,
-    LVN_GETEMPTYMARKUP, LVN_ITEMCHANGED, LVN_KEYDOWN, LVN_ODSTATECHANGED, LVNI_FOCUSED,
+    LVM_GETITEMSTATE, LVM_GETNEXTITEM, LVM_GETSELECTEDCOUNT, LVM_INSERTCOLUMNW,
+    LVM_SETCOLUMNWIDTH, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMCOUNT, LVM_SETITEMSTATE,
+    LVM_SUBITEMHITTEST, LVN_GETDISPINFOW, LVN_GETEMPTYMARKUP, LVN_ITEMCHANGED, LVN_KEYDOWN, LVN_ODSTATECHANGED, LVNI_FOCUSED,
     LVNI_SELECTED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_EX_LABELTIP,
     LVSCW_AUTOSIZE_USEHEADER, LVSICF_NOSCROLL, NM_CUSTOMDRAW, NM_DBLCLK, NMHDR, NMITEMACTIVATE,
     NMLVCUSTOMDRAW, NMLVDISPINFOW, NMLVEMPTYMARKUP, NMLVKEYDOWN, SetWindowTheme,
@@ -148,7 +149,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
 /// What `run` hands the dialog procedure for WM_INITDIALOG.
 struct Launch {
     path: PathBuf,
-    remember_placement: bool,
+    own_file: bool,
 }
 
 struct Window {
@@ -216,8 +217,10 @@ pub fn activate_existing() -> bool {
     }
 }
 
-/// Show the window over the file at `path` until it is closed.
-pub fn run(path: PathBuf, remember_placement: bool) -> Result<()> {
+/// Show the window over the file at `path` until it is closed. `own_file`:
+/// whether that is the user's own phrases file, whose window comes back
+/// where it was, and whose builds go to the IME's shared cache.
+pub fn run(path: PathBuf, own_file: bool) -> Result<()> {
     // SAFETY: class registration and a modal dialog, all on this thread.
     unsafe {
         let controls = INITCOMMONCONTROLSEX {
@@ -227,12 +230,7 @@ pub fn run(path: PathBuf, remember_placement: bool) -> Result<()> {
         let _ = InitCommonControlsEx(&controls);
         register_dialog_class(CLASS)?;
 
-        LAUNCH.with(|launch| {
-            *launch.borrow_mut() = Some(Launch {
-                path,
-                remember_placement,
-            })
-        });
+        LAUNCH.with(|launch| *launch.borrow_mut() = Some(Launch { path, own_file }));
         let result = DialogBoxParamW(
             Some(instance()),
             PCWSTR(IDD_MAIN as usize as *const u16),
@@ -432,9 +430,39 @@ impl Window {
         self.update_status();
     }
 
-    /// The selected rows, as positions in the list.
+    fn selected_count(&self) -> usize {
+        // SAFETY: a plain message to the list.
+        let count = unsafe { SendMessageW(self.list, LVM_GETSELECTEDCOUNT, None, None) }.0;
+        count.max(0) as usize
+    }
+
+    fn is_selected(&self, view_row: usize) -> bool {
+        // SAFETY: a plain message to the list.
+        let state = unsafe {
+            SendMessageW(
+                self.list,
+                LVM_GETITEMSTATE,
+                Some(WPARAM(view_row)),
+                Some(LPARAM(LVIS_SELECTED.0 as isize)),
+            )
+        }
+        .0 as u32;
+        state & LVIS_SELECTED.0 != 0
+    }
+
+    /// The selected rows, as positions in the list. A walk of the selection
+    /// costs a message a row, about a second for 500 000, so the usual
+    /// extremes — nothing, everything (Ctrl+A) — are told by the count.
     fn selected_view_rows(&self) -> Vec<usize> {
-        let mut rows = Vec::new();
+        let count = self.selected_count();
+        let shown = self.table.borrow().shown().len();
+        if count == 0 {
+            return Vec::new();
+        }
+        if count >= shown {
+            return (0..shown).collect();
+        }
+        let mut rows = Vec::with_capacity(count);
         let mut index: isize = -1;
         loop {
             // SAFETY: LVM_GETNEXTITEM walks the selection from `index`.
@@ -456,11 +484,15 @@ impl Window {
 
     /// The selected rows, as indices into the table, ascending.
     fn selected_rows(&self) -> Vec<usize> {
-        let view_rows = self.selected_view_rows();
+        self.table_rows(&self.selected_view_rows())
+    }
+
+    /// Positions in the list as indices into the table.
+    fn table_rows(&self, view_rows: &[usize]) -> Vec<usize> {
         let table = self.table.borrow();
         view_rows
-            .into_iter()
-            .filter_map(|row| table.shown().get(row).copied())
+            .iter()
+            .filter_map(|&row| table.shown().get(row).copied())
             .collect()
     }
 
@@ -503,17 +535,27 @@ impl Window {
     /// Select exactly `rows` (indices into the table) as far as they are
     /// shown, focusing and revealing the first.
     fn select_rows(&self, rows: &[usize]) {
-        let view_rows = self.table.borrow().view_rows(rows);
+        let (view_rows, all) = {
+            let table = self.table.borrow();
+            let view_rows = table.view_rows(rows);
+            let all = !view_rows.is_empty() && view_rows.len() == table.shown().len();
+            (view_rows, all)
+        };
         let selected_and_focused = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0);
         // The list tells of each row as its state is set, and the buttons
-        // read the whole selection to follow it: once, below, not once a
-        // row — which took a second for a thousand rows, and half a minute
-        // for four thousand.
+        // follow: once, below, not once a row.
         self.selecting.set(true);
         self.set_item_state(-1, LIST_VIEW_ITEM_STATE_FLAGS(0), selected_and_focused);
-        for (n, &row) in view_rows.iter().enumerate() {
-            let state = if n == 0 { selected_and_focused } else { LVIS_SELECTED };
-            self.set_item_state(row as isize, state, state);
+        if all {
+            // Every row on screen, in one message rather than one a row.
+            self.set_item_state(-1, LVIS_SELECTED, LVIS_SELECTED);
+            self.set_item_state(view_rows[0] as isize, LVIS_FOCUSED, LVIS_FOCUSED);
+        } else {
+            // About 7 µs a row, within the list: half a second for 75 000.
+            for (n, &row) in view_rows.iter().enumerate() {
+                let state = if n == 0 { selected_and_focused } else { LVIS_SELECTED };
+                self.set_item_state(row as isize, state, state);
+            }
         }
         self.selecting.set(false);
         if let Some(&first) = view_rows.first() {
@@ -526,16 +568,21 @@ impl Window {
     }
 
     fn update_buttons(&self) {
-        let selected = self.selected_rows();
+        let count = self.selected_count();
         let (filtering, len) = {
             let table = self.table.borrow();
-            (table.is_filtering(), table.rows().len())
+            (table.is_filtering(), table.shown().len())
         };
+        // Up moves the selection above the row before its first, down below
+        // the row after its last: each has nowhere to go once the selection
+        // holds the first row or the last. Unfiltered, the list's rows are
+        // the table's, and those two rows say it with a message each.
+        let movable = count > 0 && !filtering;
         let states = [
-            (IDC_EDIT, selected.len() == 1),
-            (IDC_DELETE, !selected.is_empty()),
-            (IDC_UP, !filtering && selected.first().is_some_and(|&first| first > 0)),
-            (IDC_DOWN, !filtering && selected.last().is_some_and(|&last| last + 1 < len)),
+            (IDC_EDIT, count == 1),
+            (IDC_DELETE, count > 0),
+            (IDC_UP, movable && !self.is_selected(0)),
+            (IDC_DOWN, movable && len > 0 && !self.is_selected(len - 1)),
         ];
         // SAFETY: plain window calls.
         unsafe {
@@ -624,7 +671,8 @@ impl Window {
 
     /// 删除, after asking: the change is saved at once and cannot be undone.
     fn delete_selected(&self) {
-        let rows = self.selected_rows();
+        let view_rows = self.selected_view_rows();
+        let rows = self.table_rows(&view_rows);
         let instruction = match rows[..] {
             [] => return,
             [row] => format!("删除词条「{}」？", self.table.borrow().rows()[row].entry.value),
@@ -640,7 +688,7 @@ impl Window {
         if answer != ANSWER_DELETE {
             return;
         }
-        let first_view_row = self.selected_view_rows().first().copied().unwrap_or(0);
+        let first_view_row = view_rows.first().copied().unwrap_or(0);
         let result = self.table.borrow_mut().remove(&rows);
         self.refresh_list();
         // The keyboard stays where it was: on the row that took the place of
@@ -1277,9 +1325,12 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 hwnd,
                 list: GetDlgItem(Some(hwnd), IDC_LIST).unwrap_or_default(),
                 search: GetDlgItem(Some(hwnd), IDC_SEARCH).unwrap_or_default(),
-                table: RefCell::new(Table::open(launch.path)),
+                table: RefCell::new(Table::open(
+                    launch.path,
+                    if launch.own_file { cache::dir() } else { None },
+                )),
                 watcher: RefCell::new(None),
-                remember_placement: launch.remember_placement,
+                remember_placement: launch.own_file,
                 min_size: Cell::new((0, 0)),
                 dpi: Cell::new(GetDpiForWindow(hwnd).max(96)),
                 selecting: Cell::new(false),

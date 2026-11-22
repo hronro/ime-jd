@@ -83,42 +83,64 @@ impl Problem {
     /// report — the text could not be built at all — flags nothing: the
     /// engine has no notes on a file it could not read.
     pub fn for_rows(lines: &[Option<u32>], report: Option<&UserDictReport>) -> Vec<Option<Problem>> {
+        let mut problems = vec![None; lines.len()];
         let Some(report) = report else {
-            return vec![None; lines.len()];
+            return problems;
         };
-        let notes: std::collections::HashMap<u32, &UserDictNote> =
-            report.notes.iter().map(|note| (note.line, note)).collect();
-        let row_by_line: std::collections::HashMap<u32, usize> = lines
-            .iter()
-            .enumerate()
-            .filter_map(|(index, line)| line.map(|line| (line, index)))
-            .collect();
-        lines
-            .iter()
-            .map(|line| {
-                let note = notes.get(&(*line)?)?;
-                let other = row_by_line.get(&note.other).copied();
-                if note.is_invalid() {
-                    Some(Problem::Invalid { flags: note.flags })
-                } else if note.flags & UserDictNote::REPEATS_LINE != 0 {
-                    Some(Problem::Duplicate { of_row: other })
-                } else if note.flags & UserDictNote::REPEATS_BUILTIN != 0 {
-                    Some(Problem::Duplicate { of_row: None })
-                } else if note.is_shared() {
-                    Some(Problem::SharedCode {
-                        built_in: note.builtin,
-                        other_row: if note.flags & UserDictNote::CODE_IN_LINE != 0 {
-                            other
-                        } else {
-                            None
-                        },
-                        peers: note.peers,
-                    })
+        // A note's row, and the row it names, by binary search rather than
+        // a table over hundreds of thousands of rows. Rows as read or as
+        // just written are in file order already, and are searched as they
+        // are; rows moved since are sorted by line first.
+        let in_order = lines.is_sorted();
+        let mut by_line: Vec<(u32, usize)> = Vec::new();
+        if !in_order {
+            by_line = lines
+                .iter()
+                .enumerate()
+                .filter_map(|(index, line)| line.map(|line| (line, index)))
+                .collect();
+            by_line.sort_unstable();
+        }
+        let row_of = |line: u32| {
+            if in_order {
+                lines.binary_search(&Some(line)).ok()
+            } else {
+                by_line
+                    .binary_search_by_key(&line, |&(line, _)| line)
+                    .ok()
+                    .map(|at| by_line[at].1)
+            }
+        };
+        for note in &report.notes {
+            if let Some(row) = row_of(note.line) {
+                problems[row] = Self::of_note(note, row_of(note.other));
+            }
+        }
+        problems
+    }
+
+    /// The verdict a note gives its row; `other` is the row of the line the
+    /// note names, if that is a row.
+    fn of_note(note: &UserDictNote, other: Option<usize>) -> Option<Problem> {
+        if note.is_invalid() {
+            Some(Problem::Invalid { flags: note.flags })
+        } else if note.flags & UserDictNote::REPEATS_LINE != 0 {
+            Some(Problem::Duplicate { of_row: other })
+        } else if note.flags & UserDictNote::REPEATS_BUILTIN != 0 {
+            Some(Problem::Duplicate { of_row: None })
+        } else if note.is_shared() {
+            Some(Problem::SharedCode {
+                built_in: note.builtin,
+                other_row: if note.flags & UserDictNote::CODE_IN_LINE != 0 {
+                    other
                 } else {
                     None
-                }
+                },
+                peers: note.peers,
             })
-            .collect()
+        } else {
+            None
+        }
     }
 }
 
@@ -189,5 +211,11 @@ mod tests {
         assert_eq!(problems[1], Some(Problem::Duplicate { of_row: Some(0) }));
         assert_eq!(problems[2], None);
         assert_eq!(Problem::for_rows(&[Some(1), Some(2)], None), vec![None, None]);
+        // Rows out of file order: a note still finds its row, and the row it
+        // names, by line.
+        assert_eq!(
+            Problem::for_rows(&[None, Some(2), Some(1)], Some(&report)),
+            vec![None, Some(Problem::Duplicate { of_row: Some(2) }), None]
+        );
     }
 }

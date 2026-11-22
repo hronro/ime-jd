@@ -25,8 +25,11 @@ use windows::Win32::Storage::FileSystem::{
     GetFileAttributesExW, GetFileExInfoStandard, WIN32_FILE_ATTRIBUTE_DATA,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
-use windows::Win32::UI::Shell::{FOLDERID_RoamingAppData, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath};
-use windows::core::PCWSTR;
+use windows::Win32::UI::Shell::{
+    FOLDERID_RoamingAppData, KF_FLAG_DONT_VERIFY, KF_FLAG_NO_PACKAGE_REDIRECTION,
+    SHGetKnownFolderPath,
+};
+use windows::core::{GUID, PCWSTR};
 
 /// The file, in [`dir`].
 pub const FILE_NAME: &str = "用户自造词.txt";
@@ -66,13 +69,28 @@ pub struct Row {
 /// check fails there with access denied, while the folder ours sits in is
 /// granted to it ([`crate::access`]).
 pub fn dir() -> Option<PathBuf> {
+    Some(known_folder(&FOLDERID_RoamingAppData)?.join(DIR_NAME))
+}
+
+/// A known folder of the user's as the shell resolves it — the user's own,
+/// in a sandboxed host too, and without checking that it exists, a check a
+/// sandboxed host may not be allowed to make. In an AppContainer the shell
+/// otherwise answers for LocalAppData with the container's own folder,
+/// `…\AppData\Local\Packages\<container>\AC`, where nothing of the IME's
+/// lies (RoamingAppData it leaves alone); it has done so since Windows 8
+/// (`GetAppContainerFolderPath` documents the same path).
+/// `KF_FLAG_NO_PACKAGE_REDIRECTION` asks for the path a process outside any
+/// package gets; before Windows 10 1703 the same bit was called
+/// `KF_FLAG_NO_APPCONTAINER_REDIRECTION`.
+pub(crate) fn known_folder(id: &GUID) -> Option<PathBuf> {
     // SAFETY: on success the shell hands back a NUL-terminated path in
     // CoTaskMem memory, which is copied out and then freed.
     unsafe {
-        let raw = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, KF_FLAG_DONT_VERIFY, None).ok()?;
-        let roaming = OsString::from_wide(raw.as_wide());
+        let flags = KF_FLAG_DONT_VERIFY | KF_FLAG_NO_PACKAGE_REDIRECTION;
+        let raw = SHGetKnownFolderPath(id, flags, None).ok()?;
+        let path = OsString::from_wide(raw.as_wide());
         CoTaskMemFree(Some(raw.0 as *const c_void));
-        Some(PathBuf::from(roaming).join(DIR_NAME))
+        Some(PathBuf::from(path))
     }
 }
 
@@ -93,17 +111,29 @@ pub enum ReadError {
 /// The file's text, or `None` when there is no file. A UTF-8 BOM is
 /// dropped: libjd would otherwise take U+FEFF as part of the first value.
 pub fn read(path: &Path) -> Result<Option<String>, ReadError> {
-    let bytes = match fs::read(path) {
+    let Some(bytes) = read_bytes(path).map_err(ReadError::Io)? else {
+        return Ok(None);
+    };
+    String::from_utf8(bytes).map(Some).map_err(|_| ReadError::NotUtf8)
+}
+
+/// [`read`], but the bytes, not yet checked as UTF-8: what is hashed to find
+/// the file's compiled dictionary in the cache ([`crate::cache`]), which a
+/// file holds only if it was UTF-8.
+pub fn read_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    let mut bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(ReadError::Io(e)),
+        Err(e) => return Err(e),
     };
-    let mut text = String::from_utf8(bytes).map_err(|_| ReadError::NotUtf8)?;
-    if text.starts_with('\u{feff}') {
-        text.drain(..'\u{feff}'.len_utf8());
+    if bytes.starts_with(BOM) {
+        bytes.drain(..BOM.len());
     }
-    Ok(Some(text))
+    Ok(Some(bytes))
 }
+
+/// U+FEFF in UTF-8.
+const BOM: &[u8] = b"\xEF\xBB\xBF";
 
 /// Strict UTF-8, minus a leading byte-order mark — [`read`] on bytes
 /// already in hand.
@@ -172,7 +202,7 @@ pub fn header() -> String {
 
 /// The header plus one `value<TAB>keys` line per entry, LF-terminated.
 /// Entry `i` lands on line [`line_of_entry`]`(i)`.
-pub fn serialize(entries: &[Entry]) -> String {
+pub fn serialize<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> String {
     let mut text = header();
     text.push('\n');
     for entry in entries {
@@ -187,17 +217,6 @@ pub fn serialize(entries: &[Entry]) -> String {
 /// The 1-based line the entry at `index` occupies after [`serialize`].
 pub fn line_of_entry(index: usize) -> u32 {
     index as u32 + 2
-}
-
-/// FNV-1a, 64-bit — the Swift and Android clients' function — over the
-/// file's bytes: the dictionary's source tag.
-pub fn hash(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash
 }
 
 /// A file's size and last-write time: what changes whenever anything
@@ -357,8 +376,11 @@ mod tests {
 
         fs::write(&path, b"\xEF\xBB\xBF\xE5\xA5\xBD\thz\n").unwrap();
         assert_eq!(read(&path).unwrap().as_deref(), Some("好\thz\n"));
+        assert_eq!(read_bytes(&path).unwrap().as_deref(), Some("好\thz\n".as_bytes()));
         fs::write(&path, [0xC4, 0xE3, 0x09, 0x61]).unwrap();
         assert!(matches!(read(&path), Err(ReadError::NotUtf8)));
+        assert_eq!(read_bytes(&path).unwrap().as_deref(), Some(&[0xC4, 0xE3, 0x09, 0x61][..]));
+        assert!(read_bytes(&path.with_extension("none")).unwrap().is_none());
     }
 
     #[test]
@@ -374,13 +396,6 @@ mod tests {
         .unwrap();
         assert_eq!(bad.entries, 1);
         assert_eq!(bad.invalid_lines(), vec![1, 2]);
-    }
-
-    #[test]
-    fn hash_matches_the_fnv1a_reference_vectors() {
-        assert_eq!(hash(b""), 0xcbf2_9ce4_8422_2325);
-        assert_eq!(hash(b"a"), 0xaf63_dc4c_8601_ec8c);
-        assert_ne!(hash("好\thz\n".as_bytes()), hash("好\thz".as_bytes()));
     }
 
     #[test]

@@ -6,11 +6,13 @@
 //! two package groups register.bat grants on the install folder — ALL
 //! APPLICATION PACKAGES (S-1-15-2-1) and ALL RESTRICTED APPLICATION PACKAGES
 //! (S-1-15-2-2) — read access to the phrases folder, inherited by the file
-//! and by every file a save puts there, and to the switch's registry key.
+//! and by every file a save puts there, to the cache folder the same way
+//! ([`crate::cache`]), and to the switch's registry key.
 //!
 //! The price is that any sandboxed app can read the phrases, as any desktop
 //! app already can. The window grants this on every launch, so a folder or
-//! key created some other way is covered too.
+//! key created some other way is covered too; whoever writes the cache
+//! grants its folder as well.
 
 use std::ffi::c_void;
 use std::path::Path;
@@ -38,13 +40,16 @@ const PACKAGE_GROUPS: [PCWSTR; 2] = [w!("S-1-15-2-1"), w!("S-1-15-2-2")];
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 
 /// Everything the IME reads, readable by sandboxed hosts: the phrases
-/// folder and the switch's key, each created first if need be.
+/// folder, the cache folder and the switch's key, each created first if
+/// need be.
 pub fn grant_all() -> std::io::Result<()> {
-    let dir = crate::file::dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "no roaming AppData folder")
-    })?;
-    std::fs::create_dir_all(&dir)?;
-    grant_folder(&dir)?;
+    for dir in [crate::file::dir(), crate::cache::dir()] {
+        let dir = dir.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "no AppData folder")
+        })?;
+        std::fs::create_dir_all(&dir)?;
+        grant_folder(&dir)?;
+    }
     crate::switch::create_key()?;
     grant_key(crate::switch::KEY)?;
     Ok(())

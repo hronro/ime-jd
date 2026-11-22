@@ -11,11 +11,17 @@
 //!   ([`switch`], beside the IME's other switch, the update check), off
 //!   until the user turns it on.
 //!
+//! Beside them is the phrases compiled once for every application to map,
+//! in `%LOCALAPPDATA%\ime-jd\userdict-cache` ([`cache`]): written by the
+//! window, and by the IME in the first ordinary desktop application that
+//! finds none for the phrases as they are.
+//!
 //! Sandboxed (AppContainer) hosts — the Start menu's search box, Store apps —
-//! can read neither by default, so the window grants them read access
+//! can read none of them by default, so the window grants them read access
 //! ([`access`]) and phrases work there too.
 
 pub mod access;
+pub mod cache;
 pub mod file;
 pub mod switch;
 

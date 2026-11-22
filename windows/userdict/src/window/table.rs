@@ -14,6 +14,7 @@ use jd::UserDict;
 use jd_userdict::{Entry, file};
 
 use super::problem::Problem;
+use super::search::Search;
 use super::store::Store;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +53,15 @@ pub enum DuplicateCheck {
     },
 }
 
+/// How many rows each kind of verdict flags, for the status line, which is
+/// redrawn at every keystroke in the search box.
+#[derive(Clone, Copy, Debug, Default)]
+struct Counts {
+    invalid: usize,
+    duplicate: usize,
+    shared: usize,
+}
+
 pub struct Table {
     store: Store,
     rows: Vec<Row>,
@@ -59,24 +69,27 @@ pub struct Table {
     /// search hits.
     shown: Vec<usize>,
     filter: String,
-    /// What the last save wrote, or the text last read, so a change on
-    /// disk that reads back identical — our own write — reloads nothing.
-    last_known_text: Option<String>,
+    /// The rows as one searchable text, built at the first query after the
+    /// rows change.
+    search: Option<Search>,
+    counts: Counts,
 }
 
 impl Table {
-    /// The list over the file at `path`, read now.
-    pub fn open(path: PathBuf) -> Self {
-        let mut store = Store::new(path);
+    /// The list over the file at `path`, read now; what it builds goes to
+    /// the IME's shared cache in `cache_dir`, if one is given.
+    pub fn open(path: PathBuf, cache_dir: Option<PathBuf>) -> Self {
+        let mut store = Store::new(path, cache_dir);
         let text = store.reload();
         let mut table = Self {
             store,
             rows: Vec::new(),
             shown: Vec::new(),
             filter: String::new(),
-            last_known_text: None,
+            search: None,
+            counts: Counts::default(),
         };
-        table.load_rows(text);
+        table.load_rows(text.as_deref());
         table
     }
 
@@ -88,6 +101,7 @@ impl Table {
         &self.rows
     }
 
+    #[cfg(test)]
     pub fn entries(&self) -> Vec<Entry> {
         self.rows.iter().map(|row| row.entry.clone()).collect()
     }
@@ -129,23 +143,22 @@ impl Table {
         }
     }
 
-    /// The file changed on disk. A change that reads back as what the
-    /// window last wrote or read — its own save — only refreshes the
-    /// verdicts; anything else, a text editor's save most likely, reloads
-    /// the rows. Returns whether it did.
+    /// The file changed on disk. A change that reads back as the text the
+    /// window last wrote or read — its own save — costs a read and a hash;
+    /// anything else, a text editor's save most likely, reloads the rows.
+    /// Returns whether it did.
     pub fn file_changed(&mut self) -> bool {
+        let before = self.store.hash();
         let text = self.store.reload();
-        if text != self.last_known_text {
-            self.load_rows(text);
-            true
-        } else {
-            self.recompute_problems();
-            false
+        if self.store.hash() == before {
+            return false;
         }
+        self.load_rows(text.as_deref());
+        true
     }
 
-    fn load_rows(&mut self, text: Option<String>) {
-        self.rows = file::parse(text.as_deref().unwrap_or(""))
+    fn load_rows(&mut self, text: Option<&str>) {
+        self.rows = file::parse(text.unwrap_or(""))
             .into_iter()
             .map(|row| Row {
                 entry: row.entry,
@@ -153,7 +166,7 @@ impl Table {
                 problem: None,
             })
             .collect();
-        self.last_known_text = text;
+        self.search = None;
         self.recompute_problems();
         self.refresh_shown();
     }
@@ -165,13 +178,12 @@ impl Table {
         for (index, row) in self.rows.iter_mut().enumerate() {
             row.file_line = Some(file::line_of_entry(index));
         }
-        let result = self.store.save(&self.entries());
-        match &result {
-            Ok(text) => self.last_known_text = Some(text.clone()),
-            Err(_) => self.rows.iter_mut().for_each(|row| row.file_line = None),
+        let result = self.store.save(self.rows.iter().map(|row| &row.entry));
+        if result.is_err() {
+            self.rows.iter_mut().for_each(|row| row.file_line = None);
         }
         self.recompute_problems();
-        result.map(|_| ())
+        result
     }
 
     /// libjd's notes about the file as last read or written, mapped onto
@@ -183,9 +195,17 @@ impl Table {
             None => self.store.report(),
             Some(_) => None,
         };
+        let mut counts = Counts::default();
         for (row, problem) in self.rows.iter_mut().zip(Problem::for_rows(&lines, report)) {
+            match problem {
+                Some(Problem::Invalid { .. }) => counts.invalid += 1,
+                Some(Problem::Duplicate { .. }) => counts.duplicate += 1,
+                Some(Problem::SharedCode { .. }) => counts.shared += 1,
+                None => {}
+            }
             row.problem = problem;
         }
+        self.counts = counts;
     }
 
     fn refresh_shown(&mut self) {
@@ -193,14 +213,10 @@ impl Table {
             self.shown = (0..self.rows.len()).collect();
             return;
         }
-        let needle = self.filter.to_lowercase();
-        self.shown = (0..self.rows.len())
-            .filter(|&index| {
-                let entry = &self.rows[index].entry;
-                entry.value.to_lowercase().contains(&needle)
-                    || entry.keys.to_lowercase().contains(&needle)
-            })
-            .collect();
+        let search = self
+            .search
+            .get_or_insert_with(|| Search::new(self.rows.iter().map(|row| &row.entry)));
+        self.shown = search.matches(&self.filter);
     }
 
     /// Whether another row fits under the engine's cap.
@@ -220,29 +236,35 @@ impl Table {
                 problem: None,
             },
         );
+        self.search = None;
         self.filter.clear();
         self.refresh_shown();
         self.save().map(|()| at)
     }
 
     /// Put `entry` in place of the row at `index`, saving when that changes
-    /// it. Returns whether it saved.
+    /// it. Returns whether it saved. The row stays on screen under a search
+    /// it no longer matches, until the query changes.
     pub fn replace(&mut self, index: usize, entry: &Entry) -> io::Result<bool> {
         let entry = clean(entry);
         if self.rows[index].entry == entry && self.rows[index].file_line.is_some() {
             return Ok(false);
         }
         self.rows[index].entry = entry;
+        self.search = None;
         self.save().map(|()| true)
     }
 
+    /// Remove the rows at `indices`, in one pass over the rows however many
+    /// there are, and save.
     pub fn remove(&mut self, indices: &[usize]) -> io::Result<()> {
-        let mut doomed = indices.to_vec();
-        doomed.sort_unstable();
-        doomed.dedup();
-        for &index in doomed.iter().rev() {
-            self.rows.remove(index);
-        }
+        let doomed = self.mark(indices);
+        let mut index = 0;
+        self.rows.retain(|_| {
+            index += 1;
+            !doomed[index - 1]
+        });
+        self.search = None;
         self.refresh_shown();
         self.save()
     }
@@ -252,17 +274,30 @@ impl Table {
     /// matters only among phrases on one code: it is the order they are
     /// listed in. Returns where the moved rows are now.
     pub fn move_rows(&mut self, sources: &[usize], target: usize) -> io::Result<Range<usize>> {
-        let mut sources = sources.to_vec();
-        sources.sort_unstable();
-        sources.dedup();
+        let moving = self.mark(sources);
         let target = target.min(self.rows.len());
-        let insert_at = target - sources.iter().filter(|&&s| s < target).count();
-        let mut moving: Vec<Row> = sources.iter().rev().map(|&s| self.rows.remove(s)).collect();
-        moving.reverse();
-        let moved = insert_at..insert_at + moving.len();
-        self.rows.splice(insert_at..insert_at, moving);
+        let insert_at = moving[..target].iter().filter(|&&m| !m).count();
+        // The rows that stay and the rows that move, each in list order, in
+        // one pass, and the moving ones spliced back in at once.
+        let (mut rows, mut moved) = (Vec::with_capacity(self.rows.len()), Vec::new());
+        for (row, moves) in std::mem::take(&mut self.rows).into_iter().zip(moving) {
+            if moves { moved.push(row) } else { rows.push(row) }
+        }
+        let range = insert_at..insert_at + moved.len();
+        rows.splice(insert_at..insert_at, moved);
+        self.rows = rows;
+        self.search = None;
         self.refresh_shown();
-        self.save().map(|()| moved)
+        self.save().map(|()| range)
+    }
+
+    /// One flag per row, set for the rows at `indices`.
+    fn mark(&self, indices: &[usize]) -> Vec<bool> {
+        let mut marked = vec![false; self.rows.len()];
+        for &index in indices {
+            marked[index] = true;
+        }
+        marked
     }
 
     pub fn duplicate_check(&self) -> DuplicateCheck {
@@ -292,17 +327,11 @@ impl Table {
     /// The status line: the counts, why the file does not load if it does
     /// not, and whether the dictionary is switched off.
     pub fn summary(&self, enabled: bool) -> String {
-        let count = |pick: fn(&Problem) -> bool| {
-            self.rows
-                .iter()
-                .filter(|row| row.problem.as_ref().is_some_and(pick))
-                .count()
-        };
         let mut parts = vec![format!("共 {} 条", self.rows.len())];
         for (n, what) in [
-            (count(Problem::is_invalid), "无效"),
-            (count(Problem::is_duplicate), "重复"),
-            (count(Problem::is_shared_code), "同码"),
+            (self.counts.invalid, "无效"),
+            (self.counts.duplicate, "重复"),
+            (self.counts.shared, "同码"),
         ] {
             if n > 0 {
                 parts.push(format!("{n} 条{what}"));
@@ -358,7 +387,7 @@ mod tests {
                 fs::write(&path, text).unwrap();
             }
             Self {
-                table: Table::open(path),
+                table: Table::open(path, None),
                 dir,
             }
         }
@@ -491,9 +520,25 @@ mod tests {
         f.table.set_filter("键");
         assert_eq!(f.table.shown(), [0]);
         assert!(f.table.is_filtering());
+
+        // An edit under a search: the row stays on screen, and the next
+        // query sees what it holds now.
+        f.table.replace(0, &Entry::new("键盘", "zzzzzz")).unwrap();
+        assert_eq!(f.table.shown(), [0]);
+        f.table.set_filter("键道");
+        assert_eq!(f.table.shown(), [0usize; 0]);
+        f.table.set_filter("键");
+        assert_eq!(f.table.shown(), [0]);
+        // Removing rows under a search shows what is left of the hits.
+        f.table.remove(&[1]).unwrap();
+        f.table.set_filter("zzzzz");
+        assert_eq!(f.table.shown(), [0, 1]);
+        f.table.remove(&[0]).unwrap();
+        assert_eq!(f.table.shown(), [0]);
+
         f.table.add(1, &Entry::new("新", "zzzzzc")).unwrap();
         assert!(!f.table.is_filtering());
-        assert_eq!(f.table.shown(), [0, 1, 2, 3]);
+        assert_eq!(f.table.shown(), [0, 1]);
     }
 
     #[test]
@@ -570,6 +615,75 @@ mod tests {
             }
         );
         assert_eq!(f.table.summary(true), format!("共 0 条，{reason}"));
+    }
+
+    #[test]
+    fn scattered_rows_move_and_go_as_one_row_at_a_time_would_have_them() {
+        // The reference: moving and removing a row at a time, as the list
+        // did before it had to keep up with 500 000 rows.
+        fn moved(values: &[String], sources: &[usize], target: usize) -> (Vec<String>, Range<usize>) {
+            let mut sources = sources.to_vec();
+            sources.sort_unstable();
+            sources.dedup();
+            let target = target.min(values.len());
+            let insert_at = target - sources.iter().filter(|&&s| s < target).count();
+            let mut rest = values.to_vec();
+            let mut moving: Vec<String> = sources.iter().rev().map(|&s| rest.remove(s)).collect();
+            moving.reverse();
+            rest.splice(insert_at..insert_at, moving);
+            (rest, insert_at..insert_at + sources.len())
+        }
+
+        let text: String = (0..12).map(|i| format!("词{i}\tzzzzz{}\n", (b'a' + i) as char)).collect();
+        let mut f = Fixture::new("scattered", Some(text.as_bytes()));
+        let mut seed: u64 = 7;
+        let mut next = move |below: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize % below
+        };
+        for _ in 0..40 {
+            let len = f.table.rows().len();
+            let sources: Vec<usize> = (0..1 + next(4)).map(|_| next(len)).collect();
+            let target = next(len + 2);
+            let (expected, range) = moved(&f.values(), &sources, target);
+            assert_eq!(f.table.move_rows(&sources, target).unwrap(), range);
+            assert_eq!(f.values(), expected);
+        }
+        let on_disk: Vec<String> = file::parse(&f.file_text()).into_iter().map(|r| r.entry.value).collect();
+        assert_eq!(on_disk, f.values());
+
+        let mut expected = f.values();
+        for index in [9, 0, 4, 4, 11] {
+            expected[index].clear();
+        }
+        expected.retain(|value| !value.is_empty());
+        f.table.remove(&[9, 0, 4, 4, 11]).unwrap();
+        assert_eq!(f.values(), expected);
+        let on_disk: Vec<String> = file::parse(&f.file_text()).into_iter().map(|r| r.entry.value).collect();
+        assert_eq!(on_disk, expected);
+    }
+
+    #[test]
+    fn each_text_the_window_builds_goes_to_the_shared_cache() {
+        let mut f = Fixture::new("cached", Some("键道\tzzzzzz\n".as_bytes()));
+        let cache_dir = f.dir.join("cache");
+        let blob_of = |f: &Fixture| UserDict::hash(f.file_text().as_bytes());
+
+        f.table = Table::open(f.path(), Some(cache_dir.clone()));
+        let first = blob_of(&f);
+        assert_eq!(jd_userdict::cache::open_in(&cache_dir, first).unwrap().entries(), 1);
+
+        // A save: the new text's blob, and the old one gone.
+        f.table.add(1, &Entry::new("键道输入法", "zzzzza")).unwrap();
+        let second = blob_of(&f);
+        assert_eq!(jd_userdict::cache::open_in(&cache_dir, second).unwrap().entries(), 2);
+        assert!(!jd_userdict::cache::path_in(&cache_dir, first).exists());
+
+        // A file the window was pointed at (`--file`) writes nothing there.
+        let mut trial = Table::open(f.path(), None);
+        trial.add(0, &Entry::new("试", "zzzzzb")).unwrap();
+        assert!(jd_userdict::cache::open_in(&cache_dir, blob_of(&f)).is_none());
+        assert!(jd_userdict::cache::open_in(&cache_dir, second).is_some());
     }
 
     #[test]

@@ -3,8 +3,9 @@
 //! a word, and answers 查询 with the codes that type it, in a task dialog
 //! over it (report.rs words the answer). They come from what the IME types
 //! with right now: the built-in dictionary and, while it is switched on, the
-//! user's phrases, read from the file afresh for every query — so the
-//! candidate numbers count the user's phrases that lead a code.
+//! user's phrases, read from the file afresh for every query and mapped from
+//! the IME's cache when it holds them — so the candidate numbers count the
+//! user's phrases that lead a code.
 //!
 //! It is an ordinary window of a desktop process, so the word can be typed
 //! into it with 键道 itself — Enter and Esc are the IME's while a code is
@@ -15,7 +16,7 @@
 mod report;
 
 use jd::UserDict;
-use jd_userdict::{file, switch};
+use jd_userdict::{cache, file, switch};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Controls::{
     EM_SETCUEBANNER, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
@@ -152,13 +153,18 @@ fn look_up(hwnd: HWND) {
     }
 }
 
-/// The user's phrases, built from the file as the IME builds them. `None`
-/// when there is no file, or none that builds: the 用户自造词 window says
-/// why, and the IME types with the last one that did, which this process
-/// never had.
+/// The user's phrases, as the IME loads them: mapped from the shared cache
+/// when it holds the file's text, built from the file otherwise. `None` when
+/// there is no file, or none that builds: the 用户自造词 window says why,
+/// and the IME types with the last one that did, which this process never
+/// had.
 fn user_dict() -> Option<UserDict> {
-    let text = file::read(&file::path()?).ok()??;
-    let (dict, _) = UserDict::build(&text, file::hash(text.as_bytes())).ok()?;
+    let bytes = file::read_bytes(&file::path()?).ok()??;
+    let text_hash = UserDict::hash(&bytes);
+    if let Some(dict) = cache::dir().and_then(|dir| cache::open_in(&dir, text_hash)) {
+        return Some(dict);
+    }
+    let (dict, _) = UserDict::build(std::str::from_utf8(&bytes).ok()?, text_hash).ok()?;
     Some(dict)
 }
 

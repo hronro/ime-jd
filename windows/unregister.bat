@@ -44,6 +44,10 @@ if defined ASK_IME for %%F in ("%INSTALL_DIR%\jd-*-arm64.dll" "%INSTALL_DIR%\jd-
 REM The user-dictionary window's Start menu entry. The phrases themselves,
 REM in each user's %APPDATA%\ime-jd, are the user's and stay.
 del /Q "%SHORTCUT%" >nul 2>&1
+REM Their compiled copy, %LOCALAPPDATA%\ime-jd\userdict-cache, is the IME's
+REM and goes: the running user's, which is whoever approved this prompt.
+if defined LOCALAPPDATA rmdir /s /q "%LOCALAPPDATA%\ime-jd\userdict-cache" >nul 2>&1
+if defined LOCALAPPDATA rmdir "%LOCALAPPDATA%\ime-jd" >nul 2>&1
 
 REM Best-effort file cleanup. The DLLs may still be loaded into running
 REM processes that picked up the IME, and the window may be open; those hold

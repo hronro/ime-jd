@@ -4,7 +4,8 @@
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{APPMODEL_ERROR_NO_PACKAGE, CloseHandle, HANDLE};
+use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
 use windows::Win32::Security::{
     GetTokenInformation, IsWellKnownSid, TOKEN_QUERY, TOKEN_USER, TokenIsAppContainer, TokenUser,
     WinLocalSystemSid,
@@ -38,6 +39,23 @@ pub fn is_app_container() -> bool {
             let _ = CloseHandle(token);
             ok && flag != 0
         }
+    })
+}
+
+/// Whether this host is a packaged application — the new Notepad, Terminal,
+/// any Store app: the files it creates under AppData, Windows puts in a
+/// private copy of its package's that no other application reads (before
+/// Windows 10 1903, every change it makes there). A process's package never
+/// changes, so this is asked once.
+pub fn is_packaged() -> bool {
+    static PACKAGED: OnceLock<bool> = OnceLock::new();
+    *PACKAGED.get_or_init(|| {
+        let mut len = 0u32;
+        // SAFETY: a length query; no buffer is passed, so none is written.
+        let answer = unsafe { GetCurrentPackageFullName(&mut len, None) };
+        // Packaged, it says the buffer is too small; any answer but "no
+        // package" counts as packaged.
+        answer != APPMODEL_ERROR_NO_PACKAGE
     })
 }
 
@@ -102,5 +120,11 @@ mod tests {
     fn a_users_process_is_not_the_systems() {
         // The tests run as whoever started them, in CI too.
         assert!(!is_system());
+    }
+
+    #[test]
+    fn a_test_process_is_not_packaged() {
+        assert!(!is_packaged());
+        assert!(!is_app_container());
     }
 }
