@@ -129,7 +129,7 @@ print("libjd: read the file, jd_user_dict_build, jd_init, release the old contex
 print("(finalize, initialize, start_maintenance(full check)) and a new session. Both then type the edited phrase.\n")
 print("| phrases | libjd apply | of which build | libjd cached start | Rime, all schemas | Rime, main schema | × libjd (all / main) | peak RSS libjd / Rime |")
 print("|---|---|---|---|---|---|---|---|")
-for n in (1, 100, 1000, 10000):
+for n in (1, 100, 1000, 10000, 100000, 500000):
     j = load(f"userdict_libjd_{n}")
     ra = load(f"userdict_rime-all_schemas_{n}")
     rm = load(f"userdict_rime-main_schema_{n}")

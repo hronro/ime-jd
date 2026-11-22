@@ -11,7 +11,7 @@ Requirements: macOS, Zig (the version `core/` needs), the Xcode command line too
 ```sh
 benchmark/setup.sh                    # downloads, builds, deploys; a few minutes
 python3 benchmark/run_all.py --quick  # smoke test, about a minute
-python3 benchmark/run_all.py          # the full suite, about 25 minutes
+python3 benchmark/run_all.py          # the full suite, about 30 minutes
 python3 benchmark/report.py           # markdown tables from work/out/
 ```
 
@@ -22,7 +22,7 @@ Everything generated goes to `benchmark/work/`, which git ignores. `run_all.py` 
 | | |
 |---|---|
 | librime | the official 1.17.0 macOS release (`rime-33e7814-macOS-universal.tar.bz2`, sha256-checked), with the librime-lua plugin |
-| the scheme | commit `d3cece2` of its repository: `rime/` plus the desktop schema `schema/desktop/`, untouched |
+| the scheme | commit `07efecd` of its repository, the one `core/tables` was last synced from: `rime/` plus the desktop schema `schema/desktop/`, untouched |
 | shared data | [rime-prelude](https://github.com/rime/rime-prelude) at `082425e` |
 | libjd | `zig build -Doptimize=fast`, as the macOS app builds it, linked statically |
 | corpus | 11 zh.wikipedia articles in simplified Chinese, from `fetch_corpus.py` |
@@ -38,7 +38,7 @@ It deploys three Rime user directories, the configurations `run_all.py` compares
 
 ## The keystroke streams
 
-`gen_streams.py` segments the corpus against `core/tables/*.txt` — the same rows as the scheme's dictionaries — taking the longest word that has a code on which it can be picked from the first page, and writes two streams:
+`gen_streams.py` segments the corpus against `core/tables/*.txt` — the same rows as the scheme's dictionaries, as long as `SCHEME_COMMIT` in `setup.sh` is the commit `core/scripts/update-tables.py` last synced from; after a table update, move it there too, or a word whose code changed upstream commits something else in Rime and the run fails its comparison — taking the longest word that has a code on which it can be picked from the first page, and writes two streams:
 
 - `space`: every word is its code, then space, or a digit to pick it from the page.
 - `topup`: 顶功 — the space is left out wherever both engines commit on the next word's first key.
@@ -47,7 +47,7 @@ Words the two engines would type differently stay out: `o`-initial codes, where 
 
 Each run first replays its stream and compares the committed text with the expected text byte for byte; a mismatch fails the run.
 
-The corpus behind benchmark.md had sha256 `1f94260a98cf5230a6eb231fd786baadced7c061b6b1230893e32bdc6d504483` (152,871 汉字; 383,711 keys in the `space` stream, 330,997 in `topup`). Wikipedia articles change, so a fresh download differs a little; to reuse a corpus, put it at `work/corpus/corpus.txt` before running `setup.sh`.
+The corpus behind benchmark.md had sha256 `3ab5117f73cce4bf6bff439a6bd1640fb69f1fed60b0acd462983c53b5af8220` (153,088 汉字; 384,507 keys in the `space` stream, 331,682 in `topup`). Wikipedia articles change, so a fresh download differs a little; to reuse a corpus, put it at `work/corpus/corpus.txt` before running `setup.sh`.
 
 ## What each keystroke costs
 
@@ -62,7 +62,7 @@ Allocations are counted by `harness/allocc.c`, which interposes `malloc`, `callo
 
 ## Applying a user-dictionary edit
 
-Both engines read user phrases in the same `value<TAB>keys` line format, but apply an edit differently. The `userdict` step measures both at 1, 100, 1,000 and 10,000 phrases (libjd's limit when these numbers were taken; it is now 500,000 — `bindings/rust/examples/user_dict_bench.rs` measures libjd alone up to it), with random 2–4-character phrases on 键道-shaped codes (`userdict_inputs` in `run_all.py`):
+Both engines read user phrases in the same `value<TAB>keys` line format, but apply an edit differently. The `userdict` step measures both at 1, 100, 1,000, 10,000, 100,000 and 500,000 phrases (libjd's limit), with random 2–4-character phrases on 键道-shaped codes (`userdict_inputs` in `run_all.py`):
 
 - libjd (`eng_userdict` in `harness/bench_jd.c`): what a front end does when the user saves — read the file, `jd_user_dict_build` into a buffer, `jd_init` on the blob, release the old context. Afterwards it also times a later start with that blob cached: `jd_user_dict_check` plus `jd_init`.
 - Rime (`eng_userdict` in `harness/bench_rime.c`): the scheme's user dictionary is `keytao.user.dict.yaml`, compiled into its dictionaries, so an edit takes effect through 重新部署. The harness does what Squirrel's `deploy()` does — `finalize`, `initialize`, `start_maintenance` with a full check — waits for the deploy, and opens a new session. It runs with the three schemas the scheme enables by default, and again with the main schema alone.

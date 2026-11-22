@@ -136,7 +136,7 @@ def userdict_inputs(n_total):
 
 
 def userdict(quick):
-    sizes = (1, 1000) if quick else (1, 100, 1000, 10000)
+    sizes = (1, 1000) if quick else (1, 100, 1000, 10000, 100000, 500000)
     jd_reps, rime_reps = (3, 1) if quick else (20, 3)
     header = (RIME / "user-scheme" / "keytao.user.dict.yaml").read_text(encoding="utf-8-sig")
     tmp = WORK / "userdict"
