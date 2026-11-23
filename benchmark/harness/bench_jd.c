@@ -9,7 +9,7 @@ static query_option page[PAGE];
 
 static void eng_startup(double *ph, int *n, const char **names) {
   uint64_t t0 = now_ns();
-  ctx = jd_init(NULL, 0);
+  ctx = jd_init(NULL, 0, NULL, 0);
   uint64_t t1 = now_ns();
   if (!ctx) { fprintf(stderr, "jd_init failed\n"); exit(2); }
   st = jd_state_ptr(ctx);
@@ -62,13 +62,13 @@ static int eng_userdict(int argc, char **argv) {
     uint64_t t1 = now_ns();
     size_t c = (jd_user_dict_blob_bound((const char *)text, text_len) + 15) & ~(size_t)15;
     void *nb = aligned_alloc(16, c);
-    if (!nb || jd_user_dict_build((const char *)text, text_len, (unsigned long long)r, nb, c, &blob_len, &rep) != JD_USER_DICT_OK) {
+    if (!nb || jd_user_dict_build(NULL, 0, (const char *)text, text_len, (unsigned long long)r, nb, c, &blob_len, &rep) != JD_USER_DICT_OK) {
       fprintf(stderr, "jd_user_dict_build failed: status %u line %u\n", rep.status, rep.line);
       exit(2);
     }
     free(text);
     uint64_t t2 = now_ns();
-    jd_context *nc = jd_init(nb, blob_len);
+    jd_context *nc = jd_init(NULL, 0, nb, blob_len);
     if (!nc) { fprintf(stderr, "jd_init rejected the blob\n"); exit(2); }
     uint64_t t3 = now_ns();
     jd_deinit(ctx);
@@ -87,9 +87,9 @@ static int eng_userdict(int argc, char **argv) {
   for (int r = 0; r < reps; r++) {
     jd_user_dict_info info;
     uint64_t t0 = now_ns();
-    unsigned s = jd_user_dict_check(buf, blob_len, &info);
+    unsigned s = jd_user_dict_check(NULL, 0, buf, blob_len, &info);
     uint64_t t1 = now_ns();
-    jd_context *c2 = jd_init(buf, blob_len);
+    jd_context *c2 = jd_init(NULL, 0, buf, blob_len);
     uint64_t t2 = now_ns();
     if (s != JD_USER_DICT_OK || !c2) { fprintf(stderr, "cached blob rejected\n"); exit(2); }
     jd_deinit(c2);
@@ -111,6 +111,6 @@ static int eng_userdict(int argc, char **argv) {
 }
 
 static void eng_reset(void) { jd_reset(ctx); }
-static void *eng_new_session(void) { return jd_init(NULL, 0); }
+static void *eng_new_session(void) { return jd_init(NULL, 0, NULL, 0); }
 static void eng_free_session(void *s) { jd_deinit(s); }
 static const char *ENGINE = "libjd";
