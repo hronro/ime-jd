@@ -1,4 +1,4 @@
-// Runs the repository Worker (linux/repo/worker.js) on Node's HTTP server, as
+// Runs the repository Worker (cf-worker/worker.js) on Node's HTTP server, as
 // Cloudflare runs it, with github.py standing in for GitHub at <github>: its
 // requests marked as the Worker's, which github.py can be told to refuse, as
 // GitHub refuses Cloudflare's addresses, and a cache like the data center's.
@@ -6,7 +6,7 @@
 // Usage: node linux/tests/repo/worker.mjs <port> <github>
 import http from 'node:http'
 
-import worker from '../../repo/worker.js'
+import worker from '../../../cf-worker/worker.js'
 
 const [port, github] = process.argv.slice(2)
 const env = {

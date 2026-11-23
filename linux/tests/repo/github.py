@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitHub, as far as the repository Worker (linux/repo/worker.js) uses it:
+"""GitHub, as far as the repository Worker (cf-worker/worker.js) uses it:
 release assets, each a redirect to where it is stored, as GitHub's are, and
 the `packages` branch's raw files.
 

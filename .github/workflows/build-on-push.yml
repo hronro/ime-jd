@@ -761,7 +761,7 @@ jobs:
 
   # Each package as a user gets it, then run end to end in real fcitx5 and
   # ibus-daemon (linux/tests/e2e), whose other needs come after: from the
-  # package repositories, through the Worker (linux/repo/worker.js) on this
+  # package repositories, through the Worker (cf-worker/worker.js) on this
   # machine in front of a stand-in for GitHub, its package manager bringing
   # the framework and GTK 4; on Arch, from the package files. The tarball
   # goes in by its own install.sh, which installs the editor because GTK 4

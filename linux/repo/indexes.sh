@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the index files of 键道's package repositories, which the `packages`
-# branch holds and the Worker (worker.js) serves at ime-jd-repo.hronro.com,
-# from every release's packages:
+# branch holds and the Worker (cf-worker/worker.js) serves at
+# ime-jd-repo.hronro.com, from every release's packages:
 #
 #   apt/      Debian and Ubuntu: one suite, `stable`, for every release of
 #             both, as the .deb is built to run on all of them. Its packages

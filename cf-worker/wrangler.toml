@@ -2,7 +2,7 @@
 # Cloudflare zone. It changes only when worker.js does, so it is deployed by
 # hand, not by a release:
 #
-#   npx wrangler deploy --config linux/repo/wrangler.toml
+#   npx wrangler deploy --config cf-worker/wrangler.toml
 name = "ime-jd-repo"
 main = "worker.js"
 compatibility_date = "2026-10-01"

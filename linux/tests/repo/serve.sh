@@ -1,6 +1,6 @@
 #!/bin/sh
 # Serves 键道's package repositories on this machine as ime-jd-repo.hronro.com
-# serves them: the Worker (linux/repo/worker.js), under Node, on <port>, in
+# serves them: the Worker (cf-worker/worker.js), under Node, on <port>, in
 # front of github.py standing in for GitHub on the next port, with <branch>
 # the packages branch's tree and <assets> the releases' (assets.sh). Runs
 # until stopped.
