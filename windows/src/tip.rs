@@ -325,11 +325,11 @@ impl ITfKeyEventSink_Impl for TextInputProcessor_Impl {
 
         // -- Translated byte drives the engine forward ----------------------
         if let Some(byte) = translated {
-            // Nothing is in flight at the first key of a composition — the
-            // one moment the engine may be replaced, so this is where an
-            // edited user dictionary is adopted.
-            if !composition::is_active() {
-                jd::sync_user_dict();
+            // The first key of a composition: an edited user dictionary is
+            // adopted here, and with nothing to type from the key is the
+            // application's (`engine_takes_new_key`).
+            if !composition::is_active() && !engine_takes_new_key() {
+                return Ok(BOOL(0));
             }
             let result = jd::press_key(byte);
 
@@ -628,7 +628,18 @@ fn should_consume(vk: u16) -> bool {
     // mirrors OnKeyDown's own gate (`if let Some(byte) = translated`); the
     // authoritative pass-through decision happens there when the engine
     // returns neither a commit nor options (see tip.rs:257).
-    translate(vk).is_some()
+    translate(vk).is_some() && (composition::is_active() || engine_takes_new_key())
+}
+
+/// Whether the engine may take a key that would start a composition: not
+/// while it has nothing to type from — 忽略内置词库, with no phrases to be
+/// had — when every key reaches the application as typed, as in 英. Nothing
+/// is composing at such a key, the one moment the engine may be replaced,
+/// so this is where an edited user dictionary, or a switch flipped, is
+/// adopted.
+fn engine_takes_new_key() -> bool {
+    jd::sync_user_dict();
+    !jd::passes_keys()
 }
 
 /// What a key going down does before anything else, whichever call brings

@@ -1,14 +1,19 @@
-//! The user's two switches, DWORDs under `HKCU\Software\hronro\ime-jd` — the
-//! key the IME's update check keeps its state in (windows/src/update):
+//! The user's switches, DWORDs under `HKCU\Software\hronro\ime-jd` — the key
+//! the IME's update check keeps its state in (windows/src/update):
 //!
 //! - `UserDictEnabled`, the user dictionary: off — absent, or 0 — until the
 //!   user turns it on, in the window or in the mode icon's menu. Off means
 //!   every engine reads the built-in dictionary alone, whatever the file
 //!   holds; the file is kept either way.
+//! - `UserDictOnly`, 忽略内置词库: off until the user turns it on, in the
+//!   same places, and heeded only while the first is on. On, the phrases
+//!   are built on libjd's empty dictionary and are all there is to type
+//!   from; with none to be had, keys reach the application as typed — never
+//!   the built-in dictionary instead.
 //! - `CheckForUpdates`, the IME's daily update check: on — absent, or
 //!   anything but 0 — until the user turns it off in the menu.
 //!
-//! The IME reads both in every host process; only this package's binary
+//! The IME reads them in every host process; only this package's binary
 //! writes them, since a write from a packaged host lands in a private copy
 //! of the key that no other application sees (windows/src/settings.rs).
 
@@ -24,6 +29,7 @@ use windows::core::{HSTRING, PCWSTR, Result, w};
 /// The key, under `HKEY_CURRENT_USER`.
 pub const KEY: &str = r"Software\hronro\ime-jd";
 const USER_DICT: PCWSTR = w!("UserDictEnabled");
+const USER_DICT_ONLY: PCWSTR = w!("UserDictOnly");
 const CHECK_FOR_UPDATES: PCWSTR = w!("CheckForUpdates");
 
 /// Whether the user turned the dictionary on. A registry read, cheap enough
@@ -36,6 +42,21 @@ pub fn is_enabled() -> bool {
 /// Turn the dictionary on or off for every engine created from now on.
 pub fn set_enabled(on: bool) -> Result<()> {
     write(KEY, USER_DICT, on)
+}
+
+/// Whether 忽略内置词库 is set — which counts only while [`is_enabled`].
+pub fn is_user_only() -> bool {
+    read(KEY, USER_DICT_ONLY).is_some_and(|value| value != 0)
+}
+
+/// Set or clear 忽略内置词库 for every engine created from now on.
+pub fn set_user_only(on: bool) -> Result<()> {
+    write(KEY, USER_DICT_ONLY, on)
+}
+
+/// Whether the phrases are all there is to type from: both switches on.
+pub fn types_user_dict_only() -> bool {
+    is_enabled() && is_user_only()
 }
 
 /// Whether the IME may check for a new release, once a day.
@@ -127,10 +148,15 @@ mod tests {
         let on = |value| read(&key, value).is_some_and(|v| v != 0);
         let updates = |value| read(&key, value).is_none_or(|v| v != 0);
 
-        // Absent: the dictionary is off, the update check on.
+        // Absent: the dictionary is off, and so is 忽略内置词库; the update
+        // check is on.
         assert!(!on(USER_DICT));
+        assert!(!on(USER_DICT_ONLY));
         assert!(updates(CHECK_FOR_UPDATES));
 
+        write(&key, USER_DICT_ONLY, true).unwrap();
+        assert!(on(USER_DICT_ONLY));
+        assert!(!on(USER_DICT), "the switches are independent");
         write(&key, USER_DICT, true).unwrap();
         assert!(on(USER_DICT));
         write(&key, CHECK_FOR_UPDATES, false).unwrap();

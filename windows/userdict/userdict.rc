@@ -20,6 +20,7 @@
 #define IDC_SEARCH          1003
 #define IDC_LIST            1004
 #define IDC_STATUS          1005
+#define IDC_USER_ONLY       1006
 #define IDC_NEW             1010
 #define IDC_EDIT            1011
 #define IDC_DELETE          1012
@@ -42,7 +43,8 @@ CAPTION "键道用户自造词"
 CLASS "JdUserDictWindow"
 FONT 9, "Microsoft YaHei UI", 400, 0, 0x86
 BEGIN
-    AUTOCHECKBOX    "启用用户自造词(&Y)", IDC_ENABLE, 7, 8, 120, 12
+    AUTOCHECKBOX    "启用用户自造词(&Y)", IDC_ENABLE, 7, 8, 80, 12
+    AUTOCHECKBOX    "忽略内置词库(&I)", IDC_USER_ONLY, 91, 8, 74, 12
     RTEXT           "搜索(&S)：", IDC_SEARCH_LABEL, 174, 9, 38, 10
     EDITTEXT        IDC_SEARCH, 218, 7, 90, 14, ES_AUTOHSCROLL
     CONTROL         "", IDC_LIST, "SysListView32", LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 7, 25, 301, 197

@@ -2,11 +2,13 @@
 //! its code, typed into two fields and confirmed with 确定.
 //!
 //! The dialog constrains the code the way an edit control can — letters
-//! come out lowercase, at most `UserDict::MAX_KEY_LENGTH` of them, and no IME
-//! composes there, so a code is never turned into Chinese — and 确定 waits
-//! until both fields hold something. Everything else is the engine's to
-//! judge after the save: when editing a row it already flagged, the dialog
-//! repeats the verdict under the fields.
+//! come out lowercase, at most `UserDict::MAX_KEY_LENGTH` keys in all, `;`
+//! among them, and no IME composes there, so a code is never turned into
+//! Chinese — and 确定 waits until both fields hold something. The hint
+//! beside it says the rule in the words of the engine's verdict on a bad
+//! code; where a `;` may stand (before the first letter only), and
+//! everything else, is the engine's to judge after the save: when editing a
+//! row it already flagged, the dialog repeats the verdict under the fields.
 
 use std::ffi::c_void;
 
@@ -115,7 +117,7 @@ unsafe extern "system" fn entry_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpara
                 let _ = SetWindowTextW(hwnd, &HSTRING::from(state.title));
                 let _ = SetDlgItemTextW(hwnd, IDC_ENTRY_VALUE, &HSTRING::from(&state.entry.value));
                 let _ = SetDlgItemTextW(hwnd, IDC_ENTRY_KEYS, &HSTRING::from(&state.entry.keys));
-                let hint = format!("1 到 {} 个小写字母", UserDict::MAX_KEY_LENGTH);
+                let hint = format!("1 到 {} 个 a-z，开头可以有 ;", UserDict::MAX_KEY_LENGTH);
                 let _ = SetDlgItemTextW(hwnd, IDC_ENTRY_HINT, &HSTRING::from(hint));
                 if let Some(problem) = state.problem {
                     let note = format!("目前：{}", problem.text());

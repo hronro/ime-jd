@@ -5,7 +5,9 @@
 //! with right now: the built-in dictionary and, while it is switched on, the
 //! user's phrases, read from the file afresh for every query and mapped from
 //! the IME's cache when it holds them — so the candidate numbers count the
-//! user's phrases that lead a code.
+//! user's phrases that lead a code. Under 忽略内置词库, the phrases alone;
+//! with none to be had, the answer says why rather than look in the
+//! built-in dictionary.
 //!
 //! It is an ordinary window of a desktop process, so the word can be typed
 //! into it with 键道 itself — Enter and Esc are the IME's while a code is
@@ -15,8 +17,8 @@
 
 mod report;
 
-use jd::UserDict;
-use jd_userdict::{cache, file, switch};
+use jd::{Dict, UserDict};
+use jd_userdict::{LoadError, cache, file, switch};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Controls::{
     EM_SETCUEBANNER, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
@@ -30,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
 use crate::window::{instance, prompt, register_dialog_class, window_text};
-use report::Report;
+use report::{Report, Scope};
 
 /// The dialog's title, and its answer's.
 const TITLE: &str = "编码反查";
@@ -127,13 +129,25 @@ fn look_up(hwnd: HWND) {
     if query.is_empty() {
         return;
     }
-    let user_dict_enabled = switch::is_enabled();
-    let dict = if user_dict_enabled { user_dict() } else { None };
-    let report = Report::new(
-        query,
-        &report::codes(query, dict.as_ref()),
-        user_dict_enabled,
-    );
+    let enabled = switch::is_enabled();
+    let user_only = enabled && switch::is_user_only();
+    let base = jd_userdict::base(user_only);
+    let report = if !enabled {
+        Report::new(query, &report::codes(query, None, None), Scope::BuiltIn)
+    } else {
+        match user_dict(base) {
+            Ok(dict) => {
+                let scope = if user_only { Scope::UserOnly } else { Scope::BuiltInAndUser };
+                Report::new(query, &report::codes(query, Some(&dict), base), scope)
+            }
+            // The phrases alone, and there are none to be had: never the
+            // built-in dictionary instead.
+            Err(error) if user_only => {
+                Report::unavailable(query, &format!("用户自造词未能加载：{}", error.message()))
+            }
+            Err(_) => Report::new(query, &report::codes(query, None, None), Scope::BuiltInAndUser),
+        }
+    };
     prompt::tell_as(
         TITLE,
         hwnd,
@@ -153,19 +167,14 @@ fn look_up(hwnd: HWND) {
     }
 }
 
-/// The user's phrases, as the IME loads them: mapped from the shared cache
-/// when it holds the file's text, built from the file otherwise. `None` when
-/// there is no file, or none that builds: the 用户自造词 window says why,
-/// and the IME types with the last one that did, which this process never
-/// had.
-fn user_dict() -> Option<UserDict> {
-    let bytes = file::read_bytes(&file::path()?).ok()??;
-    let text_hash = UserDict::hash(&bytes);
-    if let Some(dict) = cache::dir().and_then(|dir| cache::open_in(&dir, text_hash)) {
-        return Some(dict);
-    }
-    let (dict, _) = UserDict::build(std::str::from_utf8(&bytes).ok()?, text_hash).ok()?;
-    Some(dict)
+/// The user's phrases on `base`, as the IME loads them: mapped from the
+/// shared cache when it holds the file's text, built from the file
+/// otherwise. `Err` when there is no file, or none that builds: the
+/// 用户自造词 window says why too, and the IME types with the last one that
+/// did, which this process never had.
+fn user_dict(base: Option<&Dict>) -> std::result::Result<UserDict, LoadError> {
+    let path = file::path().ok_or(LoadError::Missing)?;
+    Ok(cache::load(&path, cache::dir().as_deref(), base)?.dict)
 }
 
 unsafe extern "system" fn lookup_proc(

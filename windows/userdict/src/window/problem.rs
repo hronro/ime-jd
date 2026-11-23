@@ -31,7 +31,7 @@ impl Problem {
                     "缺少制表符（无编码），不生效".to_owned()
                 } else if flags & UserDictNote::BAD_KEYS != 0 {
                     format!(
-                        "编码无效（1 到 {} 个 a-z），不生效",
+                        "编码无效（1 到 {} 个 a-z，开头可以有 ;），不生效",
                         UserDict::MAX_KEY_LENGTH
                     )
                 } else {
@@ -197,8 +197,8 @@ mod tests {
             verdicts("no tab\n好\tZZ\n\tzzzzza\n"),
             vec![
                 Some("缺少制表符（无编码），不生效".to_owned()),
-                Some("编码无效（1 到 6 个 a-z），不生效".to_owned()),
-                Some("词无效（不能为空或含控制字符，最长 255 字节），不生效".to_owned()),
+                Some("编码无效（1 到 6 个 a-z，开头可以有 ;），不生效".to_owned()),
+                Some("词无效（不能为空或含控制字符，最长 1023 字节），不生效".to_owned()),
             ]
         );
     }

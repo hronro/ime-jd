@@ -14,9 +14,9 @@
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
-use ::jd::{JdContext, UserDict};
+use ::jd::JdContext;
 
-use crate::user_dict;
+use crate::user_dict::{self, Selection};
 
 /// Candidates shown per page in the TIP's UI. Purely a display choice now.
 pub const PAGE_SIZE: u8 = 8;
@@ -51,31 +51,40 @@ pub struct QueryResult {
 // state (composition::STATE, candidate_window::WINDOW, ui_element::ELEMENT)
 // and lets the call sites stay as plain `jd::press_key(b)` calls.
 
-/// A context and the user dictionary it reads, if any. The context reads
-/// the dictionary's blob in place for its whole lifetime, so the two travel
-/// together — and `ctx` is declared first, so it is dropped first.
+/// A context and what it was made from — the user dictionary it reads, if
+/// any. The context reads the dictionary's blob in place for its whole
+/// lifetime, so the two travel together — and `ctx` is declared first, so it
+/// is dropped first.
 struct Engine {
     ctx: JdContext,
-    dict: Option<Arc<UserDict>>,
+    made_from: Selection,
 }
 
 impl Engine {
     /// `None` on allocation failure.
-    fn new(dict: Option<Arc<UserDict>>) -> Option<Self> {
-        let ctx = match &dict {
-            // SAFETY: `with_user_dict` asks for `'static` because the context
-            // reads the blob in place and the candidates it hands out point
-            // into it. This blob lives as long as that requires: its `Arc`
-            // sits beside the context and is dropped after it (field order),
-            // and nothing read from the context outlives the `Engine` — this
-            // module copies every candidate and commit into owned `String`s
-            // (`owned`, `Commit::to_string`) before handing it on.
-            Some(dict) => JdContext::with_user_dict(unsafe { &*Arc::as_ptr(dict) }),
-            None => JdContext::new(),
+    fn new(made_from: Selection) -> Option<Self> {
+        // SAFETY: a context asks for `'static` because it reads the blob in
+        // place and the candidates it hands out point into it. This blob
+        // lives as long as that requires: its `Arc` sits beside the context,
+        // in `made_from`, and is dropped after it (field order), and nothing
+        // read from the context outlives the `Engine` — this module copies
+        // every candidate and commit into owned `String`s (`owned`,
+        // `Commit::to_string`) before handing it on. The empty dictionary is
+        // the process's for good.
+        let ctx = match &made_from {
+            Selection::BuiltIn(None) => JdContext::new(),
+            Selection::BuiltIn(Some(dict)) => JdContext::with_user_dict(unsafe { &*Arc::as_ptr(dict) }),
+            Selection::UserOnly(dict) => JdContext::with_dict(
+                jd_userdict::empty_dict(),
+                Some(unsafe { &*Arc::as_ptr(dict) }),
+            ),
+            // Nothing to type from: an engine on the empty dictionary that
+            // nothing consults — every key passes through (`passes_keys`).
+            Selection::Unavailable(_) => JdContext::with_dict(jd_userdict::empty_dict(), None),
         };
         Some(Self {
             ctx: ctx.ok()?,
-            dict,
+            made_from,
         })
     }
 }
@@ -107,7 +116,7 @@ pub fn activate() {
 /// switch and phrases are: what a test wants to read candidates from.
 #[cfg(test)]
 pub fn activate_builtin() {
-    ENGINE.with(|e| *e.borrow_mut() = Engine::new(None));
+    ENGINE.with(|e| *e.borrow_mut() = Engine::new(Selection::BuiltIn(None)));
     PAGE_START.with(|p| p.set(0));
 }
 
@@ -125,26 +134,32 @@ pub fn deactivate() {
 /// drops any in-flight state (and the paired-punctuation toggles). A no-op
 /// while nothing changed; `user_dict::current` says what looking costs.
 pub fn sync_user_dict() {
-    let dict = user_dict::current();
+    let selection = user_dict::current();
     ENGINE.with(|e| {
         let mut e = e.borrow_mut();
         let Some(engine) = e.as_ref() else {
             return;
         };
-        let unchanged = match (&engine.dict, &dict) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        };
-        if unchanged {
+        if engine.made_from.same_as(&selection) {
             return;
         }
         // On allocation failure the engine in hand carries on.
-        if let Some(engine) = Engine::new(dict) {
+        if let Some(engine) = Engine::new(selection) {
             *e = Some(engine);
             PAGE_START.with(|p| p.set(0));
         }
     });
+}
+
+/// Whether this thread has nothing to type from — 忽略内置词库, with no
+/// phrases to be had — so every key goes to the application as typed. Read
+/// it after `sync_user_dict`, while nothing is composing.
+pub fn passes_keys() -> bool {
+    ENGINE.with(|e| {
+        e.borrow()
+            .as_ref()
+            .is_some_and(|engine| matches!(engine.made_from, Selection::Unavailable(_)))
+    })
 }
 
 /// Runs `f` against the engine, or returns a default value when no engine
@@ -260,4 +275,54 @@ pub fn candidate_at(index: u32) -> Option<Candidate> {
 pub fn reset() {
     with_ctx(|c| c.reset());
     PAGE_START.with(|p| p.set(0));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidates(made_from: Selection, keys: &[u8]) -> Vec<String> {
+        let mut engine = Engine::new(made_from).expect("an engine");
+        for &key in keys {
+            engine.ctx.press_key(key);
+        }
+        engine.ctx.candidates(0, 9).iter().map(|c| c.value().to_owned()).collect()
+    }
+
+    #[test]
+    fn an_engine_types_from_what_it_was_made_from() {
+        let text = "测试词\tb\n";
+        let (merged, _) = jd_userdict::build(text, None).unwrap();
+        let (alone, _) = jd_userdict::build(text, Some(jd_userdict::empty_dict())).unwrap();
+
+        let builtin = candidates(Selection::BuiltIn(None), b"b");
+        assert!(builtin.iter().any(|word| word == "不"));
+        let both = candidates(Selection::BuiltIn(Some(Arc::new(merged))), b"b");
+        assert_eq!(both[0], "测试词");
+        assert!(both.iter().any(|word| word == "不"));
+        // 忽略内置词库: the phrase, and no built-in word.
+        assert_eq!(candidates(Selection::UserOnly(Arc::new(alone)), b"b"), ["测试词"]);
+        // Nothing to type from: nothing offered, whatever the keys.
+        assert!(candidates(Selection::Unavailable(String::new()), b"b").is_empty());
+
+        // A file with no phrases yet: letters find nothing, punctuation is
+        // still 键道's.
+        let (none, _) = jd_userdict::build("", Some(jd_userdict::empty_dict())).unwrap();
+        let mut engine = Engine::new(Selection::UserOnly(Arc::new(none))).unwrap();
+        engine.ctx.press_key(b'b');
+        assert_eq!(engine.ctx.state().options_count, 0);
+        engine.ctx.reset();
+        engine.ctx.press_key(b'.');
+        assert_eq!(engine.ctx.commit().map(|c| c.to_string()).as_deref(), Some("。"));
+    }
+
+    #[test]
+    fn keys_pass_only_with_nothing_to_type_from() {
+        activate_builtin();
+        assert!(!passes_keys());
+        ENGINE.with(|e| *e.borrow_mut() = Engine::new(Selection::Unavailable(String::new())));
+        assert!(passes_keys());
+        deactivate();
+        assert!(!passes_keys(), "no engine: nothing to pass for");
+    }
 }

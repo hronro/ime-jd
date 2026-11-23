@@ -76,10 +76,11 @@ pub struct Table {
 }
 
 impl Table {
-    /// The list over the file at `path`, read now; what it builds goes to
+    /// The list over the file at `path`, read now and built on the empty
+    /// dictionary when `user_only` (忽略内置词库); what it builds goes to
     /// the IME's shared cache in `cache_dir`, if one is given.
-    pub fn open(path: PathBuf, cache_dir: Option<PathBuf>) -> Self {
-        let mut store = Store::new(path, cache_dir);
+    pub fn open(path: PathBuf, cache_dir: Option<PathBuf>, user_only: bool) -> Self {
+        let mut store = Store::new(path, cache_dir, user_only);
         let text = store.reload();
         let mut table = Self {
             store,
@@ -151,6 +152,25 @@ impl Table {
         let before = self.store.hash();
         let text = self.store.reload();
         if self.store.hash() == before {
+            return false;
+        }
+        self.load_rows(text.as_deref());
+        true
+    }
+
+    /// 忽略内置词库 was set or cleared: build the file on the other base,
+    /// whose verdicts differ — a row that repeated a built-in word is a
+    /// phrase of its own on the empty dictionary. Returns whether the rows
+    /// were read again, the file having changed meanwhile; otherwise they
+    /// stand, with new verdicts.
+    pub fn set_user_only(&mut self, on: bool) -> bool {
+        if on == self.store.user_only() {
+            return false;
+        }
+        let before = self.store.set_user_only(on);
+        let text = self.store.reload();
+        if self.store.hash() == before {
+            self.recompute_problems();
             return false;
         }
         self.load_rows(text.as_deref());
@@ -325,7 +345,8 @@ impl Table {
     }
 
     /// The status line: the counts, why the file does not load if it does
-    /// not, and whether the dictionary is switched off.
+    /// not, and whether the dictionary is switched off — or, on, typed from
+    /// alone (忽略内置词库), in the words of the other clients' windows.
     pub fn summary(&self, enabled: bool) -> String {
         let mut parts = vec![format!("共 {} 条", self.rows.len())];
         for (n, what) in [
@@ -342,6 +363,12 @@ impl Table {
         }
         if !enabled {
             parts.push("已停用".to_owned());
+        } else if self.store.user_only() {
+            parts.push(if self.rows.is_empty() {
+                "已忽略内置词库，但尚无词条：键道只能输入字母和标点".to_owned()
+            } else {
+                "已忽略内置词库".to_owned()
+            });
         }
         parts.join("，")
     }
@@ -387,7 +414,7 @@ mod tests {
                 fs::write(&path, text).unwrap();
             }
             Self {
-                table: Table::open(path, None),
+                table: Table::open(path, None, false),
                 dir,
             }
         }
@@ -507,7 +534,7 @@ mod tests {
 
         // A code the engine rejects is written all the same, and flagged.
         assert!(f.table.replace(at, &Entry::new("键道输入法", "ZZ")).unwrap());
-        assert_eq!(f.status(at).as_deref(), Some("编码无效（1 到 6 个 a-z），不生效"));
+        assert_eq!(f.status(at).as_deref(), Some("编码无效（1 到 6 个 a-z，开头可以有 ;），不生效"));
     }
 
     #[test]
@@ -576,7 +603,7 @@ mod tests {
         // still found.
         let mut f = Fixture::new("skipped", Some("甲\tzzzzzz\n乙\tZZZZZA\n甲\tzzzzzz\n".as_bytes()));
         assert!(f.table.store().last_error().is_none());
-        assert_eq!(f.status(1).as_deref(), Some("编码无效（1 到 6 个 a-z），不生效"));
+        assert_eq!(f.status(1).as_deref(), Some("编码无效（1 到 6 个 a-z，开头可以有 ;），不生效"));
         assert_eq!(f.status(2).as_deref(), Some("与第 1 条重复，不生效"));
         assert_eq!(
             f.table.duplicate_check(),
@@ -669,21 +696,63 @@ mod tests {
         let cache_dir = f.dir.join("cache");
         let blob_of = |f: &Fixture| UserDict::hash(f.file_text().as_bytes());
 
-        f.table = Table::open(f.path(), Some(cache_dir.clone()));
+        f.table = Table::open(f.path(), Some(cache_dir.clone()), false);
         let first = blob_of(&f);
-        assert_eq!(jd_userdict::cache::open_in(&cache_dir, first).unwrap().entries(), 1);
+        assert_eq!(jd_userdict::cache::open_in(&cache_dir, first, None).unwrap().entries(), 1);
 
         // A save: the new text's blob, and the old one gone.
         f.table.add(1, &Entry::new("键道输入法", "zzzzza")).unwrap();
         let second = blob_of(&f);
-        assert_eq!(jd_userdict::cache::open_in(&cache_dir, second).unwrap().entries(), 2);
-        assert!(!jd_userdict::cache::path_in(&cache_dir, first).exists());
+        assert_eq!(jd_userdict::cache::open_in(&cache_dir, second, None).unwrap().entries(), 2);
+        assert!(!jd_userdict::cache::path_in(&cache_dir, first, None).exists());
+
+        // 忽略内置词库: the same text's blob on the empty dictionary.
+        f.table.set_user_only(true);
+        let empty = Some(jd_userdict::empty_dict());
+        assert!(jd_userdict::cache::open_in(&cache_dir, second, empty).is_some());
+        assert!(jd_userdict::cache::open_in(&cache_dir, second, None).is_none());
 
         // A file the window was pointed at (`--file`) writes nothing there.
-        let mut trial = Table::open(f.path(), None);
+        let mut trial = Table::open(f.path(), None, true);
         trial.add(0, &Entry::new("试", "zzzzzb")).unwrap();
-        assert!(jd_userdict::cache::open_in(&cache_dir, blob_of(&f)).is_none());
-        assert!(jd_userdict::cache::open_in(&cache_dir, second).is_some());
+        assert!(jd_userdict::cache::open_in(&cache_dir, blob_of(&f), empty).is_none());
+        assert!(jd_userdict::cache::open_in(&cache_dir, second, empty).is_some());
+    }
+
+    #[test]
+    fn ignoring_the_built_in_dictionary_judges_the_rows_on_the_empty_one() {
+        // "不" on b repeats a built-in word; "测试词" shares b with built-in
+        // words.
+        let mut f = Fixture::new("user-only", Some("不\tb\n测试词\tb\n".as_bytes()));
+        assert_eq!(f.status(0).as_deref(), Some("与内置词重复，不生效"));
+        assert!(f.status(1).unwrap().ends_with("个内置词同码"));
+        assert_eq!(f.table.summary(true), "共 2 条，1 条重复，1 条同码");
+
+        // The same text on the other base: the rows stand, their verdicts
+        // change — on the empty dictionary each is a phrase of its own.
+        assert!(!f.table.set_user_only(true));
+        assert_eq!(f.values(), ["不", "测试词"]);
+        assert_eq!(f.status(0).as_deref(), Some("与第 2 条同码"));
+        assert_eq!(f.status(1).as_deref(), Some("与第 1 条同码"));
+        assert_eq!(f.table.summary(true), "共 2 条，2 条同码，已忽略内置词库");
+        assert_eq!(f.table.summary(false), "共 2 条，2 条同码，已停用");
+        assert!(!f.table.set_user_only(true), "already so");
+        // A save stays on that base.
+        f.table.add(2, &Entry::new("键道", "zzzzzz")).unwrap();
+        assert_eq!(f.status(0).as_deref(), Some("与第 2 条同码"));
+
+        f.table.remove(&[0, 1, 2]).unwrap();
+        assert_eq!(
+            f.table.summary(true),
+            "共 0 条，已忽略内置词库，但尚无词条：键道只能输入字母和标点"
+        );
+
+        // Back on the built-in dictionary, with a file edited meanwhile: it
+        // is read anew.
+        file::write(&f.path(), "不\tb\n").unwrap();
+        assert!(f.table.set_user_only(false));
+        assert_eq!(f.values(), ["不"]);
+        assert_eq!(f.status(0).as_deref(), Some("与内置词重复，不生效"));
     }
 
     #[test]

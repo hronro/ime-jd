@@ -1,7 +1,7 @@
 //! The IME's settings, as the menu of its mode icon (mode_icon.rs) shows and
-//! changes them: the user dictionary — its window and its switch — and the
-//! daily update check (jd_userdict::switch keeps both switches); and the
-//! menu's 编码反查.
+//! changes them: the user dictionary — its window, its switch and
+//! 忽略内置词库 — and the daily update check (jd_userdict::switch keeps the
+//! switches); and the menu's 编码反查.
 //!
 //! The menu runs in whichever application is in front, and the IME reads the
 //! switches there but writes them nowhere: a packaged application (the new
@@ -34,6 +34,9 @@ const HELPER_EXE: &str = "ime_jd_userdict.exe";
 pub struct Settings {
     /// Whether the user dictionary is on.
     pub user_dict: bool,
+    /// 忽略内置词库: whether the phrases alone are typed from, while the
+    /// user dictionary is on.
+    pub user_only: bool,
     /// Whether the IME checks for a new release once a day.
     pub update_checks: bool,
     /// Whether they can be changed from this host.
@@ -44,6 +47,7 @@ pub struct Settings {
 pub fn current() -> Settings {
     Settings {
         user_dict: switch::is_enabled(),
+        user_only: switch::is_user_only(),
         update_checks: switch::checks_for_updates(),
         changeable: !host::is_app_container() && helper().is_some(),
     }
@@ -60,6 +64,12 @@ pub fn open_code_lookup() {
 
 pub fn set_user_dict(on: bool) {
     start_helper(&format!("--user-dict {}", on_off(on)));
+}
+
+/// 忽略内置词库. The helper also says, should it leave nothing to type
+/// from, why keys now reach applications as typed.
+pub fn set_user_only(on: bool) {
+    start_helper(&format!("--user-dict-only {}", on_off(on)));
 }
 
 pub fn set_update_checks(on: bool) {

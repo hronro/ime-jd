@@ -21,6 +21,7 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::str::Utf8Error;
 
+use jd::{UserDict, UserDictError, UserDictStatus};
 use windows::Win32::Storage::FileSystem::{
     GetFileAttributesExW, GetFileExInfoStandard, WIN32_FILE_ATTRIBUTE_DATA,
 };
@@ -106,6 +107,49 @@ pub enum ReadError {
     /// says so once.
     NotUtf8,
     Io(io::Error),
+}
+
+/// Why the phrases cannot be had as a dictionary at all. A line that does
+/// not parse is never this: the engine skips it, and the window's row says
+/// why.
+#[derive(Debug)]
+pub enum LoadError {
+    /// There is no file — no error for the window, which shows an empty
+    /// list, but nothing to type from under 忽略内置词库.
+    Missing,
+    NotUtf8,
+    Unreadable(io::Error),
+    /// The engine refused the whole file: too many phrases, too much text.
+    Build(UserDictError),
+}
+
+impl LoadError {
+    /// For the user, in the words every client uses.
+    pub fn message(&self) -> String {
+        match self {
+            LoadError::Missing => "没有词条文件".to_owned(),
+            LoadError::NotUtf8 => "文件不是 UTF-8 编码".to_owned(),
+            LoadError::Unreadable(error) => format!("无法读取文件：{error}"),
+            LoadError::Build(error) => match error.status {
+                UserDictStatus::TooManyEntries => {
+                    format!("第 {} 行起超过 {} 条上限", error.line, UserDict::MAX_ENTRIES)
+                }
+                UserDictStatus::TextTooLong => {
+                    format!("文件超过 {} MB 上限", UserDict::MAX_TEXT_BYTES / (1024 * 1024))
+                }
+                _ => format!("无法编译词库（{error}）"),
+            },
+        }
+    }
+}
+
+impl From<ReadError> for LoadError {
+    fn from(error: ReadError) -> Self {
+        match error {
+            ReadError::NotUtf8 => LoadError::NotUtf8,
+            ReadError::Io(error) => LoadError::Unreadable(error),
+        }
+    }
 }
 
 /// The file's text, or `None` when there is no file. A UTF-8 BOM is
@@ -195,7 +239,7 @@ pub fn parse(text: &str) -> Vec<Row> {
 /// a text editor.
 pub fn header() -> String {
     format!(
-        "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，1 到 {} 个字符。",
+        "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，开头可以有分号（;），1 到 {} 个字符。",
         jd::UserDict::MAX_KEY_LENGTH
     )
 }
@@ -386,16 +430,20 @@ mod tests {
     #[test]
     fn the_engine_owns_the_field_rules() {
         // The window mirrors none of libjd's rules: the boundary cases are
-        // the engine's to judge, and a bad line costs only itself.
-        let (_, ok) = UserDict::build(&format!("{}\tzzzzzz\n", "字".repeat(85)), 0).unwrap();
-        assert_eq!(ok.invalid, 0);
+        // the engine's to judge, and a bad line costs only itself. The
+        // longest phrase is VALUE_MAX bytes, 341 three-byte characters; a
+        // code may start with `;`, but none follows a letter.
+        let longest = "字".repeat(UserDict::VALUE_MAX as usize / 3);
+        assert_eq!(longest.len(), UserDict::VALUE_MAX as usize);
+        let (_, ok) = UserDict::build(&format!("{longest}\tzzzzzz\n分号\t;zzzzz\n"), 0).unwrap();
+        assert_eq!((ok.entries, ok.invalid), (2, 0));
         let (_, bad) = UserDict::build(
-            &format!("{}\tzzzzzz\n好\tabcdefg\n键道\tzzzzza\n", "字".repeat(86)),
+            &format!("{longest}字\tzzzzzz\n好\tabcdefg\n好\tzz;\n键道\tzzzzza\n"),
             0,
         )
         .unwrap();
         assert_eq!(bad.entries, 1);
-        assert_eq!(bad.invalid_lines(), vec![1, 2]);
+        assert_eq!(bad.invalid_lines(), vec![1, 2, 3]);
     }
 
     #[test]

@@ -4,11 +4,12 @@
 //! menu or from the menu of the IME's mode icon in the taskbar, and a second
 //! start brings the open window forward.
 //!
-//! That menu changes the IME's switches through it too: `--user-dict on|off`
-//! and `--check-updates on|off` set one and exit, so the change is made by a
-//! desktop process of the user's own, whichever application the menu was
-//! opened from (windows/src/settings.rs). And its 编码反查 is `--lookup`, a
-//! dialog of its own (lookup/), which a second start brings forward too.
+//! That menu changes the IME's switches through it too: `--user-dict on|off`,
+//! `--user-dict-only on|off` (忽略内置词库) and `--check-updates on|off` set
+//! one and exit, so the change is made by a desktop process of the user's
+//! own, whichever application the menu was opened from
+//! (windows/src/settings.rs). And its 编码反查 is `--lookup`, a dialog of its
+//! own (lookup/), which a second start brings forward too.
 //!
 //! `--file <path>` edits that file instead of the user's own, to try the
 //! window out — screenshots, QA — without touching the real phrases: such a
@@ -22,7 +23,7 @@ mod window;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use jd_userdict::{access, cache, file, switch};
+use jd_userdict::{LoadError, access, cache, file, switch};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
 
 fn main() {
@@ -35,7 +36,9 @@ fn main() {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let trial = match args.as_slice() {
         [flag, path] if flag == "--file" => Some(PathBuf::from(path)),
-        [flag, state] if flag == "--user-dict" || flag == "--check-updates" => {
+        [flag, state]
+            if flag == "--user-dict" || flag == "--user-dict-only" || flag == "--check-updates" =>
+        {
             set_switch(flag, state);
             return;
         }
@@ -78,21 +81,48 @@ fn set_switch(flag: &OsStr, state: &OsStr) {
         Some("off") => false,
         _ => return,
     };
-    let result = if flag == "--user-dict" {
-        if on {
-            // The phrases this turns on, readable in sandboxed hosts too,
-            // and compiled for every application to map — before the
-            // switch, so they find it there.
-            let _ = access::grant_all();
-            if let (Some(phrases), Some(dir)) = (file::path(), cache::dir()) {
-                let _ = cache::prime(&phrases, &dir);
-            }
+    if flag == "--check-updates" {
+        if let Err(error) = switch::set_checks_for_updates(on) {
+            window::report_setting_failure(&error.message());
         }
+        return;
+    }
+    // The user dictionary's switches as they are about to stand.
+    let (enabled, user_only) = if flag == "--user-dict" {
+        (on, switch::is_user_only())
+    } else {
+        (switch::is_enabled(), on)
+    };
+    // The phrases these switches type from, readable in sandboxed hosts too,
+    // and compiled for every application to map — before the switch, so
+    // they find it there.
+    let primed = enabled.then(|| {
+        let _ = access::grant_all();
+        prime(user_only)
+    });
+    let result = if flag == "--user-dict" {
         switch::set_enabled(on)
     } else {
-        switch::set_checks_for_updates(on)
+        switch::set_user_only(on)
     };
     if let Err(error) = result {
         window::report_setting_failure(&error.message());
+        return;
+    }
+    // The phrases alone, and none to be had: applications now let every key
+    // through as typed, and the user should know why.
+    if user_only && let Some(Err(error)) = primed {
+        window::report_phrases_unavailable(&error.message());
+    }
+}
+
+/// The phrases file's dictionary on the base `user_only` chooses, put in
+/// the IME's shared cache; `Err` says why there is none.
+fn prime(user_only: bool) -> Result<(), LoadError> {
+    let phrases = file::path().ok_or(LoadError::Missing)?;
+    let base = jd_userdict::base(user_only);
+    match cache::dir() {
+        Some(dir) => cache::prime(&phrases, &dir, base),
+        None => cache::load(&phrases, None, base).map(|_| ()),
     }
 }

@@ -11,7 +11,9 @@
 //! theme or the scale changes. A click on it reaches the IME in the
 //! application in front, whose window keeps the focus. A left click switches
 //! the mode, as Shift does; a right click opens the menu — 编码反查, the user
-//! dictionary's window and switch, and the daily update check (settings.rs).
+//! dictionary's window and switches, and the daily update check
+//! (settings.rs) — which, while 忽略内置词库 leaves nothing to type from,
+//! also says why in a line of its own.
 //! In a Store app the menu does not open — the window in front belongs to
 //! another process — and a sandbox could change none of it anyway
 //! (settings.rs again). Nor does it from the keyboard (Win+B), which leaves
@@ -64,10 +66,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::{
-    BOOL, BSTR, ComObject, GUID, IUnknown, Interface, PCWSTR, Ref, Result, implement, w,
+    BOOL, BSTR, ComObject, GUID, HSTRING, IUnknown, Interface, PCWSTR, Ref, Result, implement, w,
 };
 
 use crate::candidate_window::{high_contrast, read_hkcu_dword, system_color};
+use crate::user_dict::{self, Selection};
 use crate::{dll_hmodule, guids, host, input_mode, loader, settings};
 
 /// The two input modes' glyphs, as Windows' Chinese IMEs draw them.
@@ -96,6 +99,7 @@ const ITEM_CODE_LOOKUP: u32 = 1;
 const ITEM_USER_DICT_WINDOW: u32 = 2;
 const ITEM_USER_DICT: u32 = 3;
 const ITEM_UPDATE_CHECKS: u32 = 4;
+const ITEM_USER_DICT_ONLY: u32 = 5;
 
 /// The one connection `ITfSource` hands out: TSF's sink for this item.
 const SINK_COOKIE: u32 = 1;
@@ -335,6 +339,22 @@ fn show_menu(secure: bool, at: POINT) {
             ITEM_USER_DICT as usize,
             w!("启用用户自造词(&Y)"),
         );
+        // Usable only while the user dictionary is on.
+        let only = if current.user_dict {
+            flags(current.user_only)
+        } else {
+            flags(current.user_only) | MF_GRAYED
+        };
+        let _ = AppendMenuW(menu, only, ITEM_USER_DICT_ONLY as usize, w!("忽略内置词库(&I)"));
+        // Nothing to type from: why every key goes through as typed.
+        if let Selection::Unavailable(why) = user_dict::current() {
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING | MF_GRAYED,
+                0,
+                &HSTRING::from(format!("{why}，暂时直接输入字母")),
+            );
+        }
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(
             menu,
@@ -374,6 +394,7 @@ fn show_menu(secure: bool, at: POINT) {
         ITEM_CODE_LOOKUP => settings::open_code_lookup(),
         ITEM_USER_DICT_WINDOW => settings::open_user_dict_window(),
         ITEM_USER_DICT => settings::set_user_dict(!current.user_dict),
+        ITEM_USER_DICT_ONLY => settings::set_user_only(!current.user_only),
         ITEM_UPDATE_CHECKS => settings::set_update_checks(!current.update_checks),
         _ => {}
     }

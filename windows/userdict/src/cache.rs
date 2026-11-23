@@ -8,13 +8,15 @@
 //!
 //! A blob is named for what it is: libjd's hash of the text it was built
 //! from — the phrases file with its BOM dropped, its source tag too — and
-//! [`library`], what tells one libjd's blobs from another's. A name is
-//! therefore written once and never replaced: a new text, or a new version
-//! of the IME, is a new name, so no one rewrites a file an application has
-//! mapped, and two versions of the IME running side by side during an
-//! update never fight over one file. Every write sweeps away the blobs of
-//! other texts and other versions. Deleting a mapped file works — its name
-//! goes, and whoever mapped it keeps reading what it held.
+//! [`library`], what tells one libjd's blobs, on one dictionary, from
+//! another's: the phrases are built on the built-in dictionary, or under
+//! 忽略内置词库 on the empty one, and a blob built on one does not load on
+//! the other. A name is therefore written once and never replaced: a new
+//! text, a new version of the IME or the other base is a new name, so no one
+//! rewrites a file an application has mapped, and two versions of the IME
+//! running side by side during an update never fight over one file. Every
+//! write sweeps away the other blobs. Deleting a mapped file works — its
+//! name goes, and whoever mapped it keeps reading what it held.
 //!
 //! An application maps a blob with the file open for reading and shared
 //! with no writer, for as long as it reads the blob, so no one can change
@@ -39,10 +41,9 @@ use std::fs;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
-use jd::UserDict;
+use jd::{Dict, UserDict};
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, GetFileSizeEx,
@@ -55,7 +56,7 @@ use windows::Win32::System::Memory::{
 use windows::Win32::UI::Shell::FOLDERID_LocalAppData;
 use windows::core::PCWSTR;
 
-use crate::file;
+use crate::file::{self, LoadError};
 
 /// The folder under `%LOCALAPPDATA%\ime-jd`.
 pub const DIR_NAME: &str = "userdict-cache";
@@ -74,48 +75,83 @@ pub fn dir() -> Option<PathBuf> {
     Some(file::known_folder(&FOLDERID_LocalAppData)?.join(file::DIR_NAME).join(DIR_NAME))
 }
 
-/// What tells this libjd's blobs from another's: the hash of an empty
-/// dictionary's blob, which is only its header — the format version and the
-/// fingerprint of the built-in dictionary, the two things that decide
-/// whether a blob loads. Two versions of the IME whose blobs would load in
-/// each other share the files; two whose blobs would not name theirs apart.
-pub fn library() -> u64 {
-    static LIBRARY: OnceLock<u64> = OnceLock::new();
-    *LIBRARY.get_or_init(|| {
-        UserDict::build("", 0)
-            .map(|(dict, _)| UserDict::hash(dict.as_bytes()))
-            .unwrap_or(0)
-    })
+/// What tells this libjd's blobs on `base` ([`crate::base`]) from any
+/// other's: the hash of the blob of no phrases built on `base`, which is
+/// only its header — the format version and the fingerprint of the
+/// dictionary beneath, the things that decide whether a blob loads. Two
+/// versions of the IME whose blobs would load in each other share the files;
+/// two whose blobs would not, and the two bases, name theirs apart. A few
+/// microseconds: an empty build.
+pub fn library(base: Option<&Dict>) -> u64 {
+    let empty = match base {
+        Some(dict) => UserDict::build_on(dict, "", 0),
+        None => UserDict::build("", 0),
+    };
+    empty.map(|(dict, _)| UserDict::hash(dict.as_bytes())).unwrap_or(0)
 }
 
-/// Where the blob of the text whose hash is `text_hash` lies in `dir`.
-pub fn path_in(dir: &Path, text_hash: u64) -> PathBuf {
-    dir.join(format!("{text_hash:016x}-{:016x}.blob", library()))
+/// Where the blob of the text whose hash is `text_hash`, built on `base`,
+/// lies in `dir`.
+pub fn path_in(dir: &Path, text_hash: u64, base: Option<&Dict>) -> PathBuf {
+    dir.join(format!("{text_hash:016x}-{:016x}.blob", library(base)))
 }
 
-/// The dictionary of the text whose hash is `text_hash`, mapped from its
-/// blob in `dir`: `None` when there is none, or none that libjd accepts as
-/// that text's.
-pub fn open_in(dir: &Path, text_hash: u64) -> Option<UserDict> {
-    let map = Map::open(&path_in(dir, text_hash))?;
+/// The dictionary of the text whose hash is `text_hash`, on `base`, mapped
+/// from its blob in `dir`: `None` when there is none, or none that libjd
+/// accepts as that text's.
+pub fn open_in(dir: &Path, text_hash: u64, base: Option<&Dict>) -> Option<UserDict> {
+    let map = Map::open(&path_in(dir, text_hash, base))?;
     // SAFETY: the map keeps the file open, shared with no writer, until it
     // is dropped with the dictionary: its bytes neither move nor change.
-    let dict = unsafe { UserDict::from_mapped_blob(map) }.ok()?;
+    let dict = unsafe {
+        match base {
+            Some(base) => UserDict::from_mapped_blob_on(base, map),
+            None => UserDict::from_mapped_blob(map),
+        }
+    }
+    .ok()?;
     (dict.source_tag() == text_hash).then_some(dict)
 }
 
-/// Put `dict`, built from the text whose hash is its source tag, in `dir`
-/// for every application to map — unless a blob of that text is there
-/// already — and sweep away every other blob. Creates the folder, readable
-/// by sandboxed applications, when need be.
-pub fn write_in(dir: &Path, dict: &UserDict) -> io::Result<()> {
+/// A dictionary of the phrases file, and where it came from.
+pub struct Loaded {
+    pub dict: UserDict,
+    /// Mapped from the cache; built from the file otherwise.
+    pub mapped: bool,
+}
+
+/// The phrases file at `phrases` as a dictionary on `base`: mapped from the
+/// blob of its text in `dir` when there is one, built from it otherwise. The
+/// cache holds blobs only of texts that were UTF-8, so a blob of these
+/// bytes needs no check of them. `Err` says why there is no dictionary.
+pub fn load(phrases: &Path, dir: Option<&Path>, base: Option<&Dict>) -> Result<Loaded, LoadError> {
+    let bytes = file::read_bytes(phrases)
+        .map_err(LoadError::Unreadable)?
+        .ok_or(LoadError::Missing)?;
+    let text_hash = UserDict::hash(&bytes);
+    if let Some(dict) = dir.and_then(|dir| open_in(dir, text_hash, base)) {
+        return Ok(Loaded { dict, mapped: true });
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| LoadError::NotUtf8)?;
+    let (dict, _) = crate::build(text, base).map_err(LoadError::Build)?;
+    Ok(Loaded {
+        dict,
+        mapped: false,
+    })
+}
+
+/// Put `dict`, built on `base` from the text whose hash is its source tag,
+/// in `dir` for every application to map — unless a blob of that text is
+/// there already — and sweep away every other blob. Creates the folder,
+/// readable by sandboxed applications, when need be.
+pub fn write_in(dir: &Path, dict: &UserDict, base: Option<&Dict>) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     // Sandboxed applications read what lies here; a failure costs them the
     // shared copy and nothing else.
     let _ = crate::access::grant_folder(dir);
     let text_hash = dict.source_tag();
-    let path = path_in(dir, text_hash);
-    if open_in(dir, text_hash).is_none() {
+    let path = path_in(dir, text_hash, base);
+    if open_in(dir, text_hash, base).is_none() {
         let mut temp = path.clone().into_os_string();
         temp.push(format!(".{}-{:?}.tmp", std::process::id(), std::thread::current().id()));
         let temp = PathBuf::from(temp);
@@ -133,7 +169,7 @@ pub fn write_in(dir: &Path, dict: &UserDict) -> io::Result<()> {
         }
         match placed {
             // Another application put the same blob there first.
-            Err(error) if open_in(dir, text_hash).is_some() => drop(error),
+            Err(error) if open_in(dir, text_hash, base).is_some() => drop(error),
             other => other?,
         }
     }
@@ -141,25 +177,17 @@ pub fn write_in(dir: &Path, dict: &UserDict) -> io::Result<()> {
     Ok(())
 }
 
-/// Make sure `dir` holds the blob of the phrases file at `phrases`, building
-/// it if need be: what turning the dictionary on does, so applications map
-/// it at once rather than each build its own first.
-pub fn prime(phrases: &Path, dir: &Path) -> io::Result<()> {
-    let Some(bytes) = file::read_bytes(phrases)? else {
-        return Ok(());
-    };
-    let text_hash = UserDict::hash(&bytes);
-    if open_in(dir, text_hash).is_some() {
-        return Ok(());
+/// Make sure `dir` holds the blob of the phrases file at `phrases` on
+/// `base`, building it if need be: what turning a switch on does, so
+/// applications map it at once rather than each build its own first. `Err`
+/// says why there is no dictionary to share; a blob that cannot be written
+/// costs each application a build of its own, and is no error.
+pub fn prime(phrases: &Path, dir: &Path, base: Option<&Dict>) -> Result<(), LoadError> {
+    let loaded = load(phrases, Some(dir), base)?;
+    if !loaded.mapped {
+        let _ = write_in(dir, &loaded.dict, base);
     }
-    let Ok(text) = std::str::from_utf8(&bytes) else {
-        return Ok(());
-    };
-    match UserDict::build(text, text_hash) {
-        Ok((dict, _)) => write_in(dir, &dict),
-        // Over the engine's caps: there is nothing to share.
-        Err(_) => Ok(()),
-    }
+    Ok(())
 }
 
 /// Rename `temp` to `path`, which must not exist: a name, once there, is
@@ -303,7 +331,7 @@ mod tests {
     }
 
     fn built(text: &str) -> UserDict {
-        UserDict::build(text, UserDict::hash(text.as_bytes())).unwrap().0
+        crate::build(text, None).unwrap().0
     }
 
     fn blobs(dir: &Path) -> Vec<String> {
@@ -321,23 +349,52 @@ mod tests {
         let dir = temp.0.join("nested");
         let text = "键道\tzzzzzz\n";
         let hash = UserDict::hash(text.as_bytes());
-        assert!(open_in(&dir, hash).is_none(), "no folder yet");
+        assert!(open_in(&dir, hash, None).is_none(), "no folder yet");
 
         let dict = built(text);
-        write_in(&dir, &dict).unwrap();
-        let mapped = open_in(&dir, hash).expect("mapped");
+        write_in(&dir, &dict, None).unwrap();
+        let mapped = open_in(&dir, hash, None).expect("mapped");
         assert_eq!(mapped.as_bytes(), dict.as_bytes());
         assert_eq!((mapped.entries(), mapped.source_tag()), (1, hash));
-        assert_eq!(blobs(&dir), [format!("{hash:016x}-{:016x}.blob", library())]);
+        assert_eq!(blobs(&dir), [format!("{hash:016x}-{:016x}.blob", library(None))]);
         // Another text's hash finds nothing.
-        assert!(open_in(&dir, hash ^ 1).is_none());
+        assert!(open_in(&dir, hash ^ 1, None).is_none());
         // Sandboxed applications can read the folder and what is in it.
         assert!(crate::access::folder_is_granted(&dir).unwrap());
 
         // Written again: the blob there is kept, mapped as it is.
-        write_in(&dir, &dict).unwrap();
+        write_in(&dir, &dict, None).unwrap();
         assert_eq!(blobs(&dir).len(), 1);
         drop(mapped);
+    }
+
+    #[test]
+    fn each_base_names_and_maps_blobs_of_its_own() {
+        let temp = TempDir::new("bases");
+        let dir = &temp.0;
+        let empty = crate::empty_dict();
+        assert_ne!(library(None), library(Some(empty)));
+        // "不" on b repeats a built-in word: dropped on the built-in
+        // dictionary, a phrase of its own on the empty one.
+        let text = "不\tb\n键道\tzzzzzz\n";
+        let hash = UserDict::hash(text.as_bytes());
+        let on_builtin = built(text);
+        let (on_empty, _) = crate::build(text, Some(empty)).unwrap();
+        assert_eq!((on_builtin.entries(), on_empty.entries()), (1, 2));
+
+        write_in(dir, &on_builtin, None).unwrap();
+        assert!(open_in(dir, hash, Some(empty)).is_none(), "not the other base's");
+        // The other base's write sweeps this one away.
+        write_in(dir, &on_empty, Some(empty)).unwrap();
+        assert!(open_in(dir, hash, None).is_none());
+        let mapped = open_in(dir, hash, Some(empty)).expect("mapped");
+        assert_eq!(blobs(dir).len(), 1);
+
+        // It types the phrases alone.
+        let mut ctx = jd::JdContext::with_dict(empty, Some(mapped.leak())).unwrap();
+        ctx.press_key(b'b');
+        let listed: Vec<&str> = ctx.candidates(0, 9).iter().map(|c| c.value()).collect();
+        assert_eq!(listed, ["不"]);
     }
 
     #[test]
@@ -345,9 +402,9 @@ mod tests {
         let temp = TempDir::new("mapped");
         let dir = &temp.0;
         let first = built("键道\tzzzzzz\n");
-        write_in(dir, &first).unwrap();
-        let mapped = open_in(dir, first.source_tag()).unwrap();
-        let path = path_in(dir, first.source_tag());
+        write_in(dir, &first, None).unwrap();
+        let mapped = open_in(dir, first.source_tag(), None).unwrap();
+        let path = path_in(dir, first.source_tag(), None);
         assert!(
             fs::OpenOptions::new().write(true).open(&path).is_err(),
             "no writer while it is mapped"
@@ -356,9 +413,9 @@ mod tests {
         // A new text: its blob goes in, the mapped one goes away, and what
         // was mapped still reads.
         let second = built("键道\tzzzzzz\n键道输入法\tzzzzza\n");
-        write_in(dir, &second).unwrap();
+        write_in(dir, &second, None).unwrap();
         assert!(!path.exists());
-        let second_name = path_in(dir, second.source_tag()).file_name().unwrap().to_string_lossy().into_owned();
+        let second_name = path_in(dir, second.source_tag(), None).file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(blobs(dir), [second_name]);
         assert_eq!(mapped.as_bytes(), first.as_bytes());
         let mut ctx = jd::JdContext::with_user_dict(mapped.leak()).unwrap();
@@ -373,19 +430,19 @@ mod tests {
         let temp = TempDir::new("damaged");
         let dir = &temp.0;
         let dict = built("键道\tzzzzzz\n");
-        let path = path_in(dir, dict.source_tag());
+        let path = path_in(dir, dict.source_tag(), None);
         fs::create_dir_all(dir).unwrap();
 
         fs::write(&path, &dict.as_bytes()[..dict.as_bytes().len() - 4]).unwrap();
-        assert!(open_in(dir, dict.source_tag()).is_none(), "cut short");
+        assert!(open_in(dir, dict.source_tag(), None).is_none(), "cut short");
         fs::write(&path, b"").unwrap();
-        assert!(open_in(dir, dict.source_tag()).is_none(), "empty");
+        assert!(open_in(dir, dict.source_tag(), None).is_none(), "empty");
         // Another text's blob under this text's name.
         fs::write(&path, built("别的\tzzzzza\n").as_bytes()).unwrap();
-        assert!(open_in(dir, dict.source_tag()).is_none(), "another text's");
+        assert!(open_in(dir, dict.source_tag(), None).is_none(), "another text's");
 
-        write_in(dir, &dict).unwrap();
-        assert_eq!(open_in(dir, dict.source_tag()).unwrap().as_bytes(), dict.as_bytes());
+        write_in(dir, &dict, None).unwrap();
+        assert_eq!(open_in(dir, dict.source_tag(), None).unwrap().as_bytes(), dict.as_bytes());
     }
 
     #[test]
@@ -395,17 +452,36 @@ mod tests {
         fs::create_dir_all(dir).unwrap();
         // Another version's blob of the same text, and a stranger.
         let dict = built("键道\tzzzzzz\n");
-        let other_version = dir.join(format!("{:016x}-{:016x}.blob", dict.source_tag(), library() ^ 1));
+        let other_version = dir.join(format!("{:016x}-{:016x}.blob", dict.source_tag(), library(None) ^ 1));
         fs::write(&other_version, b"x").unwrap();
         fs::write(dir.join("readme.txt"), b"x").unwrap();
         // A write in progress, by another application.
         let in_progress = dir.join("0000000000000000-0000000000000000.blob.1-ThreadId(1).tmp");
         fs::write(&in_progress, b"x").unwrap();
 
-        write_in(dir, &dict).unwrap();
+        write_in(dir, &dict, None).unwrap();
         assert!(!other_version.exists());
         assert!(dir.join("readme.txt").exists());
         assert!(in_progress.exists());
+    }
+
+    #[test]
+    fn a_load_maps_the_cached_blob_or_builds_and_says_why_there_is_none() {
+        let temp = TempDir::new("load");
+        let phrases = temp.0.join(file::FILE_NAME);
+        let dir = temp.0.join(DIR_NAME);
+        assert!(matches!(load(&phrases, Some(&dir), None), Err(LoadError::Missing)));
+
+        fs::create_dir_all(&temp.0).unwrap();
+        fs::write(&phrases, "键道\tzzzzzz\n").unwrap();
+        let loaded = load(&phrases, Some(&dir), None).unwrap();
+        assert!(!loaded.mapped);
+        write_in(&dir, &loaded.dict, None).unwrap();
+        assert!(load(&phrases, Some(&dir), None).unwrap().mapped);
+        assert!(!load(&phrases, None, None).unwrap().mapped, "no cache to look in");
+
+        fs::write(&phrases, [0xC4, 0xE3, 0x09, 0x61, 0x0A]).unwrap();
+        assert!(matches!(load(&phrases, Some(&dir), None), Err(LoadError::NotUtf8)));
     }
 
     #[test]
@@ -413,30 +489,36 @@ mod tests {
         let temp = TempDir::new("prime");
         let phrases = temp.0.join(file::FILE_NAME);
         let dir = temp.0.join(DIR_NAME);
-        prime(&phrases, &dir).unwrap();
+        assert!(matches!(prime(&phrases, &dir, None), Err(LoadError::Missing)));
         assert!(!dir.exists(), "no file, nothing to prime");
 
         // A BOM is no part of the text the blob is named for.
         fs::create_dir_all(&temp.0).unwrap();
         fs::write(&phrases, "\u{feff}键道\tzzzzzz\n").unwrap();
-        prime(&phrases, &dir).unwrap();
+        prime(&phrases, &dir, None).unwrap();
         let hash = UserDict::hash("键道\tzzzzzz\n".as_bytes());
-        assert_eq!(open_in(&dir, hash).unwrap().entries(), 1);
-        let written = fs::metadata(path_in(&dir, hash)).unwrap().modified().unwrap();
-        prime(&phrases, &dir).unwrap();
-        assert_eq!(fs::metadata(path_in(&dir, hash)).unwrap().modified().unwrap(), written);
+        assert_eq!(open_in(&dir, hash, None).unwrap().entries(), 1);
+        let written = fs::metadata(path_in(&dir, hash, None)).unwrap().modified().unwrap();
+        prime(&phrases, &dir, None).unwrap();
+        assert_eq!(fs::metadata(path_in(&dir, hash, None)).unwrap().modified().unwrap(), written);
+
+        // On the empty dictionary: a blob of its own, in place of that one.
+        let empty = Some(crate::empty_dict());
+        prime(&phrases, &dir, empty).unwrap();
+        assert!(open_in(&dir, hash, empty).is_some());
+        assert_eq!(blobs(&dir).len(), 1);
 
         // Not UTF-8: nothing to share.
         fs::write(&phrases, [0xC4, 0xE3, 0x09, 0x61, 0x0A]).unwrap();
-        prime(&phrases, &dir).unwrap();
+        assert!(matches!(prime(&phrases, &dir, None), Err(LoadError::NotUtf8)));
         assert_eq!(blobs(&dir).len(), 1);
     }
 
     #[test]
     fn the_library_is_named_by_its_empty_blob() {
         let (empty, _) = UserDict::build("", 0).unwrap();
-        assert_eq!(library(), UserDict::hash(empty.as_bytes()));
-        assert_ne!(library(), 0);
+        assert_eq!(library(None), UserDict::hash(empty.as_bytes()));
+        assert_ne!(library(None), 0);
         let dir = dir().expect("the shell resolves the local AppData folder");
         assert!(dir.ends_with(Path::new(file::DIR_NAME).join(DIR_NAME)));
     }

@@ -8,7 +8,7 @@
 //!
 //! Each confirmed change — a phrase added or edited in the entry dialog
 //! (entry.rs), rows deleted or moved — rewrites the whole file at once
-//! (table.rs), and the IME, which reads the file and the switch by
+//! (table.rs), and the IME, which reads the file and the switches by
 //! itself in every host process (windows/src/user_dict.rs), adopts it at its
 //! next composition. Nothing here judges a phrase: libjd's notes on the
 //! build of what was written are the status column — red for a row the
@@ -17,6 +17,11 @@
 //! another row: it works, listed first, and the flag is a warning only.
 //! 上移 and 下移 decide the order among phrases on one code; they are off
 //! while a search narrows the list.
+//!
+//! The two check boxes are the switches: 启用用户自造词, and 忽略内置词库,
+//! usable while the first is on. Under the second the rows are judged on
+//! libjd's empty dictionary, as the IME then builds them, and the status
+//! line says the built-in dictionary is out.
 //!
 //! The list also answers the usual way: Enter or a double-click edits a row,
 //! Delete deletes, Ctrl+A selects everything, and the context menu carries
@@ -106,6 +111,7 @@ const IDC_SEARCH_LABEL: i32 = 1002;
 const IDC_SEARCH: i32 = 1003;
 const IDC_LIST: i32 = 1004;
 const IDC_STATUS: i32 = 1005;
+const IDC_USER_ONLY: i32 = 1006;
 const IDC_NEW: i32 = 1010;
 const IDC_EDIT: i32 = 1011;
 const IDC_DELETE: i32 = 1012;
@@ -132,6 +138,8 @@ const WM_APP_FILE_CHANGED: u32 = WM_APP + 1;
 const WM_APP_SWITCH_CHANGED: u32 = WM_APP + 2;
 /// One save is a burst of change events; the list reloads once they settle.
 const TIMER_RELOAD: usize = 1;
+/// A switch set while a dialog of ours was open, waiting for it to close.
+const TIMER_SWITCH: usize = 2;
 const RELOAD_DELAY_MS: u32 = 300;
 
 /// The window's size and position, kept beside the switch.
@@ -313,8 +321,7 @@ impl Window {
                 Some(WPARAM(1)),
                 Some(LPARAM(cue.as_ptr() as isize)),
             );
-            let check = if switch::is_enabled() { BST_CHECKED } else { BST_UNCHECKED };
-            let _ = CheckDlgButton(self.hwnd, IDC_ENABLE, check);
+            self.show_switches();
 
             let mut frame = RECT::default();
             let _ = GetWindowRect(self.hwnd, &mut frame);
@@ -350,7 +357,9 @@ impl Window {
         let (gap_x, gap_y) = self.dlu(6, 4);
         let (_, group_gap) = self.dlu(0, 10);
         let (button_w, button_h) = self.dlu(79, 14);
-        let (check_w, check_h) = self.dlu(120, 12);
+        let (check_w, check_h) = self.dlu(80, 12);
+        let (only_w, _) = self.dlu(74, 0);
+        let (check_gap, _) = self.dlu(4, 0);
         let (label_w, text_h) = self.dlu(38, 10);
         let (search_w, _) = self.dlu(90, 0);
 
@@ -364,6 +373,7 @@ impl Window {
 
         let mut places = vec![
             (IDC_ENABLE, margin_x, margin_y + (button_h - check_h) / 2, check_w, check_h),
+            (IDC_USER_ONLY, margin_x + check_w + check_gap, margin_y + (button_h - check_h) / 2, only_w, check_h),
             (IDC_SEARCH_LABEL, search_x - gap_x - label_w, margin_y + (button_h - text_h) / 2, label_w, text_h),
             (IDC_SEARCH, search_x, margin_y, search_w, button_h),
             (IDC_LIST, margin_x, list_top, list_right - margin_x, (list_bottom - list_top).max(0)),
@@ -870,26 +880,56 @@ impl Window {
         }
     }
 
+    /// Both check boxes as the switches stand, 忽略内置词库 usable only
+    /// while the first is on.
+    fn show_switches(&self) {
+        let state = |on: bool| if on { BST_CHECKED } else { BST_UNCHECKED };
+        let enabled = switch::is_enabled();
+        // SAFETY: plain calls on this dialog's check boxes.
+        unsafe {
+            let _ = CheckDlgButton(self.hwnd, IDC_ENABLE, state(enabled));
+            let _ = CheckDlgButton(self.hwnd, IDC_USER_ONLY, state(switch::is_user_only()));
+            let _ = EnableWindow(self.item(IDC_USER_ONLY), enabled);
+        }
+    }
+
     fn toggle_switch(&self) {
-        let on = self.is_switched_on();
-        if let Err(error) = switch::set_enabled(on) {
-            // SAFETY: a plain call on this dialog's check box.
-            unsafe {
-                let _ = CheckDlgButton(self.hwnd, IDC_ENABLE, if on { BST_UNCHECKED } else { BST_CHECKED });
-            }
+        if let Err(error) = switch::set_enabled(self.is_switched_on()) {
             prompt::tell(self.hwnd, prompt::Icon::Warning, "无法更改设置", &error.message());
         }
+        self.show_switches();
         self.update_status();
+    }
+
+    /// 忽略内置词库, clicked.
+    fn toggle_user_only(&self) {
+        // SAFETY: a plain query of this dialog's check box.
+        let on = unsafe { IsDlgButtonChecked(self.hwnd, IDC_USER_ONLY) == BST_CHECKED.0 };
+        if let Err(error) = switch::set_user_only(on) {
+            self.show_switches();
+            prompt::tell(self.hwnd, prompt::Icon::Warning, "无法更改设置", &error.message());
+            return;
+        }
+        self.judge_on_base(on);
+    }
+
+    /// The rows judged on the dictionary 忽略内置词库 now chooses, as the
+    /// IME builds them.
+    fn judge_on_base(&self, user_only: bool) {
+        let reloaded = self.table.borrow_mut().set_user_only(user_only);
+        if reloaded {
+            self.select_rows(&[]);
+        }
+        self.refresh_list();
     }
 
     /// A switch was set — in the mode icon's menu, from another process.
     fn sync_switch(&self) {
-        let on = switch::is_enabled();
-        if on != self.is_switched_on() {
-            // SAFETY: a plain call on this dialog's check box.
-            unsafe {
-                let _ = CheckDlgButton(self.hwnd, IDC_ENABLE, if on { BST_CHECKED } else { BST_UNCHECKED });
-            }
+        self.show_switches();
+        let user_only = switch::is_user_only();
+        if user_only != self.table.borrow().store().user_only() {
+            self.judge_on_base(user_only);
+        } else {
             self.update_status();
         }
     }
@@ -931,6 +971,7 @@ impl Window {
     fn command(&self, id: i32, code: u32) {
         match (id, code) {
             (IDC_ENABLE, BN_CLICKED) => self.toggle_switch(),
+            (IDC_USER_ONLY, BN_CLICKED) => self.toggle_user_only(),
             (IDC_SEARCH, EN_CHANGE) => self.search_changed(),
             (IDC_NEW, BN_CLICKED) => self.new_entry(),
             (IDC_EDIT, BN_CLICKED) => self.edit_selected(Field::Value),
@@ -1328,6 +1369,7 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 table: RefCell::new(Table::open(
                     launch.path,
                     if launch.own_file { cache::dir() } else { None },
+                    switch::is_user_only(),
                 )),
                 watcher: RefCell::new(None),
                 remember_placement: launch.own_file,
@@ -1377,17 +1419,26 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 SetTimer(Some(hwnd), TIMER_RELOAD, RELOAD_DELAY_MS, None);
                 1
             }
+            // A dialog of ours that is open — 编辑…, a question — disables
+            // this window and acts on rows by index when it closes, so a
+            // reload waits until it has; so does a switch, since 忽略内置词库
+            // reads the file again.
             WM_APP_SWITCH_CHANGED => {
-                window.sync_switch();
+                if IsWindowEnabled(hwnd).as_bool() {
+                    window.sync_switch();
+                } else {
+                    SetTimer(Some(hwnd), TIMER_SWITCH, RELOAD_DELAY_MS, None);
+                }
                 1
             }
-            // A dialog of ours that is open — 编辑…, a question — disables
-            // this window and acts on rows by index when it closes, so the
-            // reload waits until it has.
-            WM_TIMER if wparam.0 == TIMER_RELOAD => {
+            WM_TIMER if wparam.0 == TIMER_RELOAD || wparam.0 == TIMER_SWITCH => {
                 if IsWindowEnabled(hwnd).as_bool() {
-                    let _ = KillTimer(Some(hwnd), TIMER_RELOAD);
-                    window.file_changed();
+                    let _ = KillTimer(Some(hwnd), wparam.0);
+                    if wparam.0 == TIMER_SWITCH {
+                        window.sync_switch();
+                    } else {
+                        window.file_changed();
+                    }
                 }
                 1
             }
@@ -1409,4 +1460,16 @@ pub fn report_startup_failure(message: &str) {
 /// Shown when a switch the mode icon's menu set could not be written.
 pub fn report_setting_failure(message: &str) {
     prompt::tell(HWND::default(), prompt::Icon::Error, "无法更改设置", message);
+}
+
+/// Shown when the mode icon's menu leaves the IME typing from the phrases
+/// alone (忽略内置词库) and there are none to be had, for `reason`: what the
+/// other clients say in a notification.
+pub fn report_phrases_unavailable(reason: &str) {
+    prompt::tell(
+        HWND::default(),
+        prompt::Icon::Warning,
+        "用户自造词未能加载",
+        &format!("{reason}。忽略内置词库时，键道暂时直接输入字母。"),
+    );
 }

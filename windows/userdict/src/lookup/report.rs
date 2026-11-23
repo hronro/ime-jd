@@ -2,7 +2,7 @@
 //! (`jd_lookup_codes`), worded for the user as every client words them. No
 //! window here — the dialog (mod.rs) puts the answer in a task dialog.
 
-use jd::{Code, JdContext, UserDict};
+use jd::{Code, Dict, JdContext, UserDict};
 
 /// Where the answer quotes the query, a longer one is cut to this many
 /// characters.
@@ -24,18 +24,32 @@ pub fn query(input: &str) -> &str {
     input.trim_matches([' ', '\t', '\r', '\n'])
 }
 
-/// The codes `query` is typed with, in libjd's order — shortest first — from
-/// the built-in dictionary and `user_dict`, on a context made for this one
-/// question. A user phrase counts toward the candidate numbers of the
-/// built-in words it leads on a code.
-pub fn codes(query: &str, user_dict: Option<&UserDict>) -> Vec<Code> {
-    let context = match user_dict {
-        // SAFETY: `with_user_dict` asks for `'static` because a context
-        // reads the dictionary in place and its candidates point into it.
-        // This context is gone before the borrow ends — it is dropped below —
-        // and a code is a copy, its keys inline.
-        Some(dict) => JdContext::with_user_dict(unsafe { &*std::ptr::from_ref(dict) }),
-        None => JdContext::new(),
+/// Which dictionaries a lookup searched: what the IME types from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The built-in dictionary alone: the user's phrases are off.
+    BuiltIn,
+    /// The built-in dictionary and the user's phrases.
+    BuiltInAndUser,
+    /// The user's phrases alone: 忽略内置词库.
+    UserOnly,
+}
+
+/// The codes `query` is typed with, in libjd's order — shortest first — on a
+/// context made for this one question: from `base` (jd_userdict::base) —
+/// the built-in dictionary when it is `None` — and `user_dict`, built on
+/// it. A user phrase counts toward the candidate numbers of the words it
+/// leads on a code.
+pub fn codes(query: &str, user_dict: Option<&UserDict>, base: Option<&'static Dict>) -> Vec<Code> {
+    // SAFETY: a context asks for `'static` because it reads the dictionary
+    // in place and its candidates point into it. This context is gone
+    // before the borrow ends — it is dropped below — and a code is a copy,
+    // its keys inline.
+    let user_dict = user_dict.map(|dict| unsafe { &*std::ptr::from_ref(dict) });
+    let context = match (base, user_dict) {
+        (Some(base), user_dict) => JdContext::with_dict(base, user_dict),
+        (None, Some(dict)) => JdContext::with_user_dict(dict),
+        (None, None) => JdContext::new(),
     };
     context
         .map(|context| context.lookup_codes(query))
@@ -47,16 +61,15 @@ impl Report {
     /// first candidate the code stands alone; any other says which candidate
     /// the word is there. Nothing says which key commits it: that is the
     /// engine's business, and it has changed before. A code from the user
-    /// dictionary is marked 自造词. `user_dict_enabled` says whether the
-    /// user's phrases were looked in too, which shows only when nothing was
-    /// found.
-    pub fn new(query: &str, codes: &[Code], user_dict_enabled: bool) -> Self {
+    /// dictionary is marked 自造词. `scope` says which dictionaries were
+    /// looked in, which shows only when nothing was found.
+    pub fn new(query: &str, codes: &[Code], scope: Scope) -> Self {
         let word = quoted(query);
         if codes.is_empty() {
-            let body = if user_dict_enabled {
-                "内置词库和用户自造词中都没有这个词。"
-            } else {
-                "内置词库中没有这个词。用户自造词未启用，不在查询范围内。"
+            let body = match scope {
+                Scope::BuiltIn => "内置词库中没有这个词。用户自造词未启用，不在查询范围内。",
+                Scope::BuiltInAndUser => "内置词库和用户自造词中都没有这个词。",
+                Scope::UserOnly => "用户自造词中没有这个词。内置词库已忽略，不在查询范围内。",
             };
             return Self {
                 title: format!("没有找到「{word}」"),
@@ -85,6 +98,16 @@ impl Report {
             body: lines.join("\n"),
         }
     }
+
+    /// Nothing could be looked up: the user's phrases alone were to be
+    /// searched (忽略内置词库), and they cannot be had, for the reason `why`
+    /// gives. Never the built-in dictionary instead.
+    pub fn unavailable(query: &str, why: &str) -> Self {
+        Self {
+            title: format!("没有找到「{}」", quoted(query)),
+            body: why.to_owned(),
+        }
+    }
 }
 
 /// The query as a title quotes it: a long paste is cut short.
@@ -100,7 +123,8 @@ mod tests {
     use super::*;
 
     fn report(query: &str, user_dict: Option<&UserDict>) -> Report {
-        Report::new(query, &codes(query, user_dict), user_dict.is_some())
+        let scope = if user_dict.is_some() { Scope::BuiltInAndUser } else { Scope::BuiltIn };
+        Report::new(query, &codes(query, user_dict, None), scope)
     }
 
     #[test]
@@ -137,26 +161,55 @@ mod tests {
 
     #[test]
     fn not_found_says_where_it_looked() {
-        let enabled = Report::new("不在词库里的词", &[], true);
+        let enabled = Report::new("不在词库里的词", &[], Scope::BuiltInAndUser);
         assert_eq!(enabled.title, "没有找到「不在词库里的词」");
         assert_eq!(enabled.body, "内置词库和用户自造词中都没有这个词。");
-        let disabled = Report::new("词", &[], false);
+        let disabled = Report::new("词", &[], Scope::BuiltIn);
         assert_eq!(
             disabled.body,
             "内置词库中没有这个词。用户自造词未启用，不在查询范围内。"
         );
-        assert!(codes("不在词库里的词", None).is_empty());
+        let alone = Report::new("词", &[], Scope::UserOnly);
+        assert_eq!(
+            alone.body,
+            "用户自造词中没有这个词。内置词库已忽略，不在查询范围内。"
+        );
+        assert!(codes("不在词库里的词", None, None).is_empty());
+    }
+
+    #[test]
+    fn ignoring_the_built_in_dictionary_looks_in_the_phrases_alone() {
+        let empty = jd_userdict::empty_dict();
+        let (dict, _) = jd_userdict::build("的\tzzzzzz\n测试词\td\n", Some(empty)).unwrap();
+        assert_eq!(
+            Report::new("的", &codes("的", Some(&dict), Some(empty)), Scope::UserOnly).body,
+            "zzzzzz（自造词）"
+        );
+        assert_eq!(
+            Report::new("测试词", &codes("测试词", Some(&dict), Some(empty)), Scope::UserOnly).body,
+            "d（自造词）"
+        );
+        // A built-in word is nowhere to be found.
+        assert!(codes("着", Some(&dict), Some(empty)).is_empty());
+        // Nothing to look in: the answer says why, never the built-in words.
+        let none = Report::unavailable("的", "用户自造词未能加载：没有词条文件");
+        assert_eq!(none.title, "没有找到「的」");
+        assert_eq!(none.body, "用户自造词未能加载：没有词条文件");
     }
 
     #[test]
     fn a_long_query_is_cut_short_in_the_title() {
         let long = "键".repeat(30);
-        let report = Report::new(&long, &[], false);
+        let report = Report::new(&long, &[], Scope::BuiltIn);
         assert_eq!(report.title, format!("没有找到「{}…」", "键".repeat(20)));
         let exact = "键".repeat(20);
         assert_eq!(
-            Report::new(&exact, &[], false).title,
+            Report::new(&exact, &[], Scope::BuiltIn).title,
             format!("没有找到「{exact}」")
+        );
+        assert_eq!(
+            Report::unavailable(&long, "").title,
+            format!("没有找到「{}…」", "键".repeat(20))
         );
     }
 
