@@ -17,15 +17,22 @@
 // out the first time the list asks. Both files are only ever replaced
 // atomically, which is what makes mapping them safe.
 //
+// A second switch, 忽略内置词库, turns the built-in dictionary off while the
+// first is on: the phrases are then built on the empty dictionary — the cached
+// blob too, which a flip of the switch therefore rebuilds — and are all there
+// is to type from. With none to be had the keyboard says so and types plain
+// letters; it never falls back to the built-in dictionary.
+//
 // A context's dictionary is fixed for its lifetime, so the store never touches
 // an engine: it bumps `generation` and tells its listeners, and each session
-// adopts `activeDictionary` at a moment nothing is composing.
+// adopts `selection` at a moment nothing is composing.
 package com.hronro.imejd.userdict
 
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import androidx.core.util.AtomicFile
+import com.hronro.jd.Dict
 import com.hronro.jd.UserDict
 import com.hronro.jd.UserDictException
 import com.hronro.jd.UserDictReport
@@ -97,7 +104,7 @@ class UserDictStore(
     var lastError: LoadError? = null
         private set
 
-    /** Bumped whenever [activeDictionary] may differ from what a session was created with. */
+    /** Bumped whenever [selection] may differ from what a session was created with. */
     var generation = 0
         private set
 
@@ -132,15 +139,42 @@ class UserDictStore(
             changed()
         }
 
-    /** What a session created right now should read. */
-    val activeDictionary: UserDict? get() = if (isEnabled) dictionary else null
+    /**
+     * The second switch, 忽略内置词库: off until the user turns it on, and
+     * heeded only while [isEnabled] is on. Flipping it reloads: the phrases
+     * are built — and cached — on the other base.
+     */
+    var isUserOnly: Boolean
+        get() = prefs.getBoolean(PREF_USER_ONLY, false)
+        set(value) {
+            if (value == isUserOnly) return
+            prefs.edit().putBoolean(PREF_USER_ONLY, value).apply()
+            reload()
+        }
+
+    /** Whether the phrases are all there is to type from right now. */
+    val typesUserDictOnly: Boolean get() = isEnabled && isUserOnly
+
+    /** The dictionary the phrases are built on: the empty one, or the built-in one (null). */
+    private val base: Dict? get() = if (isUserOnly) UserDictSelection.emptyDict else null
+
+    /** What a session created right now types from. */
+    val selection: UserDictSelection
+        get() {
+            if (!isEnabled) return UserDictSelection.BuiltIn(null)
+            if (!isUserOnly) return UserDictSelection.BuiltIn(dictionary)
+            dictionary?.let { return UserDictSelection.UserOnly(it) }
+            return UserDictSelection.Unavailable("用户自造词未能加载：${lastError?.message ?: "没有词条文件"}")
+        }
 
     /** One line for the list's status. */
     val statusText: String
         get() {
             lastError?.let { return "未能加载：${it.message}" }
             val dictionary = dictionary
-            if (dictionary == null || rows.isEmpty()) return "尚无词条"
+            if (dictionary == null || rows.isEmpty()) {
+                return if (typesUserDictOnly) "尚无词条。忽略内置词库时，键盘只能输入字母和标点。" else "尚无词条"
+            }
             return buildString {
                 append("${dictionary.entries} 条生效")
                 report?.let {
@@ -209,7 +243,7 @@ class UserDictStore(
         val bytes = text.toByteArray(Charsets.UTF_8)
         val tag = UserDict.hash(bytes)
         val built = try {
-            UserDict.build(bytes, tag)
+            build(bytes, tag)
         } catch (e: UserDictException) {
             throw LoadError.Build(e)
         }
@@ -290,7 +324,7 @@ class UserDictStore(
     private fun adopt(text: String, bytes: ByteArray?, tag: Long, built: UserDict.Built?) {
         lastError = null
         try {
-            val fresh = built ?: if (bytes != null) UserDict.build(bytes, tag) else UserDict.build(text, tag)
+            val fresh = built ?: build(bytes ?: text.toByteArray(Charsets.UTF_8), tag)
             dictionary = fresh.dict
             source = Source.BUILT
             contents = Contents({ text }) { fresh.report }
@@ -315,7 +349,7 @@ class UserDictStore(
             return null
         }
         val dict = try {
-            UserDict.fromBuffer(mapped)
+            UserDict.fromBuffer(base, mapped)
         } catch (_: UserDictException) {
             return null
         }
@@ -343,9 +377,16 @@ class UserDictStore(
 
     /** The notes the list shows, for a text whose dictionary came from the cache. */
     private fun notesOf(text: String): UserDictReport? = try {
-        UserDict.build(text).report
+        build(text.toByteArray(Charsets.UTF_8), 0).report
     } catch (_: UserDictException) {
         null
+    }
+
+    /** A build of [utf8] on [base]. */
+    @Throws(UserDictException::class)
+    private fun build(utf8: ByteArray, tag: Long): UserDict.Built {
+        val base = base
+        return if (base != null) UserDict.build(base, utf8, tag) else UserDict.build(utf8, tag)
     }
 
     private fun fail(error: LoadError) {
@@ -366,6 +407,7 @@ class UserDictStore(
         /** The keyboard's preferences file, shared with KeyFeedback's switches. */
         const val PREFS = "keyboard_settings"
         const val PREF_ENABLED = "user_dict_enabled"
+        const val PREF_USER_ONLY = "user_dict_only"
         const val BLOB_FILE_NAME = "用户自造词.blob"
 
         private var shared: UserDictStore? = null

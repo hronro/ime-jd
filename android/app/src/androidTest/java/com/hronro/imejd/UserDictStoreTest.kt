@@ -10,6 +10,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.hronro.imejd.userdict.UserDictEntry
 import com.hronro.imejd.userdict.UserDictFile
 import com.hronro.imejd.userdict.UserDictProblem
+import com.hronro.imejd.userdict.UserDictSelection
 import com.hronro.imejd.userdict.UserDictStore
 import com.hronro.jd.UserDict
 import com.hronro.jd.UserDictException
@@ -81,7 +82,7 @@ class UserDictStoreTest {
         val shared = store.problems[4] as UserDictProblem.SharedCode
         assertTrue(shared.builtIn >= 1)
         assertNull(shared.otherRow)
-        assertEquals("编码无效（1 到 6 个 a-z），不生效", store.problems[1]?.text)
+        assertEquals("编码无效（1 到 6 个 a-z，开头可以有 ;），不生效", store.problems[1]?.text)
         assertEquals("与第 1 条重复，不生效", store.problems[2]?.text)
         assertEquals("与内置词重复，不生效", store.problems[3]?.text)
         assertEquals("与 ${shared.builtIn} 个内置词同码", shared.text)
@@ -140,7 +141,7 @@ class UserDictStoreTest {
     fun aFileTheEngineRefusesIsKeptAndRunsOnNothing() {
         store.isEnabled = true
         store.save(listOf(UserDictEntry("键道", "zzzzzz")))
-        assertNotNull(store.activeDictionary)
+        assertNotNull((store.selection as UserDictSelection.BuiltIn).dict)
 
         // One phrase past the cap: the engine refuses the file as a whole.
         val tooMany = (0..UserDict.MAX_ENTRIES).map { UserDictEntry("词$it", "zzzzzz") }
@@ -150,7 +151,7 @@ class UserDictStoreTest {
         assertEquals(UserDict.MAX_ENTRIES + 2, error.error.line)
         assertEquals("the rows are the user's: still written", UserDict.MAX_ENTRIES + 1, store.rows.size)
         assertNull(store.dictionary)
-        assertNull("every session runs on the built-in dictionary", store.activeDictionary)
+        assertEquals("every session runs on the built-in dictionary", UserDictSelection.BuiltIn(null), store.selection)
         assertTrue(store.problems.all { it == null })
         assertEquals("未能加载：第 ${UserDict.MAX_ENTRIES + 2} 行起超过 ${UserDict.MAX_ENTRIES} 条上限", store.statusText)
         assertFalse("no blob for a file that cannot be built", blob.exists())
@@ -165,7 +166,7 @@ class UserDictStoreTest {
     fun theSwitchLivesInThePreferencesAndEveryChangeIsAnnounced() {
         assertFalse(store.isEnabled)
         store.save(listOf(UserDictEntry("键道", "zzzzzz")))
-        assertNull("off: sessions run on the built-in dictionary", store.activeDictionary)
+        assertEquals("off: sessions run on the built-in dictionary", UserDictSelection.BuiltIn(null), store.selection)
 
         var notified = 0
         val listener: () -> Unit = { notified++ }
@@ -176,7 +177,7 @@ class UserDictStoreTest {
         store.isEnabled = true
         assertEquals("no change, no notice", 1, notified)
         assertTrue(store.generation > before)
-        assertNotNull(store.activeDictionary)
+        assertNotNull((store.selection as UserDictSelection.BuiltIn).dict)
         assertTrue(newStore().isEnabled)
 
         store.save(listOf(UserDictEntry("键道输入法", "zzzzzz")))
@@ -277,5 +278,45 @@ class UserDictStoreTest {
         assertEquals("未能加载：文件不是 UTF-8 编码", broken.statusText)
         assertEquals(emptyList<Any>(), broken.rows)
         assertNull(broken.dictionary)
+    }
+
+    // ---- Only the user's phrases ----
+
+    @Test
+    fun userOnlyBuildsOnTheEmptyDictionaryAndCachesForIt() {
+        store.isEnabled = true
+        store.save(listOf(UserDictEntry("不", "b"), UserDictEntry("测试", "b")))
+        assertEquals("on the built-in dictionary, 不/b repeats a word of it", 1, store.report?.dropped)
+
+        store.isUserOnly = true
+        assertEquals(0, store.report?.dropped)
+        val dict = (store.selection as UserDictSelection.UserOnly).dict
+        assertEquals(2, dict.entries)
+        val engine = requireNotNull(store.selection.makeEngine())
+        engine.use {
+            it.pressKey('b'.code.toByte())
+            assertEquals(listOf("不", "测试"), it.readRange(0, 3).map { c -> c.value() })
+        }
+        // The cache is the empty dictionary's now: a fresh store takes it as it is.
+        val fresh = newStore()
+        assertEquals(UserDictStore.Source.BLOB, fresh.source)
+        assertTrue(fresh.selection is UserDictSelection.UserOnly)
+
+        store.isUserOnly = false
+        assertEquals("back on the built-in dictionary", 1, store.report?.dropped)
+        assertEquals(UserDictStore.Source.BLOB, newStore().source)
+    }
+
+    @Test
+    fun userOnlyWithNothingToLoadIsUnavailableNeverTheBuiltInDictionary() {
+        store.isEnabled = true
+        store.isUserOnly = true
+        assertEquals(UserDictSelection.Unavailable("用户自造词未能加载：没有词条文件"), store.selection)
+        assertNull(store.selection.makeEngine())
+        assertEquals("尚无词条。忽略内置词库时，键盘只能输入字母和标点。", store.statusText)
+
+        // The second switch means nothing while the first is off.
+        store.isEnabled = false
+        assertEquals(UserDictSelection.BuiltIn(null), store.selection)
     }
 }

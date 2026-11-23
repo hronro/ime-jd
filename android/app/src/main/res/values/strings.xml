@@ -23,6 +23,7 @@
 
     <!-- The user dictionary's screen (UserDictActivity). -->
     <string name="user_dict_enabled">启用用户自造词</string>
+    <string name="user_dict_only">忽略内置词库</string>
     <string name="user_dict_search">搜索词或编码</string>
     <string name="user_dict_add">添加词条</string>
     <string name="user_dict_edit">编辑词条</string>
@@ -33,8 +34,10 @@
     <string name="user_dict_export">导出到文件…</string>
     <string name="user_dict_remove_duplicates">移除重复词条</string>
     <string name="user_dict_actions_footer">「从文件导入」读取其他设备上的键道导出的用户自造词（.txt），或任何同样格式的 UTF-8 文本文件：每行一条，词和编码之间用制表符分隔；导入的词条追加在列表末尾。「导出到文件」把这里的词条存成同样格式的文本文件。与前面的词条或内置词相同的词条算重复，不生效，「移除重复词条」会把它们一并删除。</string>
+    <string name="user_dict_actions_footer_user_only">「从文件导入」读取其他设备上的键道导出的用户自造词（.txt），或任何同样格式的 UTF-8 文本文件：每行一条，词和编码之间用制表符分隔；导入的词条追加在列表末尾。「导出到文件」把这里的词条存成同样格式的文本文件。与前面的词条相同的词条算重复，不生效，「移除重复词条」会把它们一并删除。</string>
     <string name="user_dict_phrases_header">词条</string>
     <string name="user_dict_empty_footer">尚无词条。点右下角的 + 添加：一个词和它的编码。与内置词同码时，自造词排在内置词之前。</string>
+    <string name="user_dict_empty_footer_user_only">尚无词条。点右下角的 + 添加：一个词和它的编码。忽略内置词库时，键盘只打这里的词。</string>
     <string name="user_dict_list_footer">左右滑动删除。同一编码下的词按此处的顺序排列，拖动右侧的手柄可调整。</string>
     <string name="user_dict_search_footer">搜索时不能拖动排序。</string>
     <string name="user_dict_no_match">没有匹配的词条。</string>

@@ -103,6 +103,8 @@ class UserDictActivity : AppCompatActivity() {
     /** What the list shows, top to bottom. */
     private sealed interface Item {
         data object Enable : Item
+        /** 忽略内置词库: usable only while the user dictionary is on. */
+        data object UserOnly : Item
         data class Text(val text: String, val style: TextStyle) : Item
         data class Command(val action: Action, val enabled: Boolean) : Item
         /** A phrase, by its index into the store's rows. */
@@ -257,19 +259,26 @@ class UserDictActivity : AppCompatActivity() {
         items = ArrayList<Item>(shown.size + 9).apply {
             if (!searching) {
                 add(Item.Enable)
+                add(Item.UserOnly)
                 add(Item.Text(store.statusText, TextStyle.STATUS))
                 add(Item.Command(Action.IMPORT, enabled = true))
                 add(Item.Command(Action.EXPORT, enabled = rows.isNotEmpty()))
                 // Greyed out while the engine flags none — or has no notes, the
                 // file having failed to build at all.
                 add(Item.Command(Action.REMOVE_DUPLICATES, enabled = store.duplicateRows.isNotEmpty()))
-                add(Item.Text(getString(R.string.user_dict_actions_footer), TextStyle.FOOTER))
+                val actionsFooter = if (store.isUserOnly) {
+                    R.string.user_dict_actions_footer_user_only
+                } else {
+                    R.string.user_dict_actions_footer
+                }
+                add(Item.Text(getString(actionsFooter), TextStyle.FOOTER))
                 add(Item.Text(getString(R.string.user_dict_phrases_header), TextStyle.HEADER))
             }
             shown.forEach { add(Item.Phrase(it)) }
             val footer = when {
                 searching && shown.isEmpty() && filter.isNotEmpty() -> R.string.user_dict_no_match
                 searching -> R.string.user_dict_search_footer
+                rows.isEmpty() && store.isUserOnly -> R.string.user_dict_empty_footer_user_only
                 rows.isEmpty() -> R.string.user_dict_empty_footer
                 else -> R.string.user_dict_list_footer
             }
@@ -487,10 +496,12 @@ class UserDictActivity : AppCompatActivity() {
             is Item.Text -> 1
             is Item.Command -> 2
             is Item.Phrase -> 3
+            Item.UserOnly -> 4
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder = when (viewType) {
-            0 -> EnableHolder()
+            0 -> EnableHolder(userOnly = false)
+            4 -> EnableHolder(userOnly = true)
             1 -> TextHolder()
             2 -> CommandHolder()
             else -> PhraseHolder()
@@ -498,7 +509,7 @@ class UserDictActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
             when (val item = items[position]) {
-                Item.Enable -> (holder as EnableHolder).bind()
+                Item.Enable, Item.UserOnly -> (holder as EnableHolder).bind()
                 is Item.Text -> (holder as TextHolder).bind(item)
                 is Item.Command -> (holder as CommandHolder).bind(item)
                 is Item.Phrase -> (holder as PhraseHolder).bind(item.row)
@@ -506,19 +517,25 @@ class UserDictActivity : AppCompatActivity() {
         }
     }
 
-    private inner class EnableHolder : RecyclerView.ViewHolder(MaterialSwitch(this@UserDictActivity)) {
+    /** 启用用户自造词, or — [userOnly] — 忽略内置词库, which works only while the first is on. */
+    private inner class EnableHolder(private val userOnly: Boolean) :
+        RecyclerView.ViewHolder(MaterialSwitch(this@UserDictActivity)) {
         private val switch = itemView as MaterialSwitch
 
         init {
             switch.layoutParams = fullWidth()
-            switch.text = getString(R.string.user_dict_enabled)
+            switch.text = getString(if (userOnly) R.string.user_dict_only else R.string.user_dict_enabled)
             switch.textSize = 16f
             switch.setPadding(dp(24), dp(8), dp(24), 0)
-            switch.setOnCheckedChangeListener { _, on -> store.isEnabled = on }
+            switch.setOnCheckedChangeListener { _, on ->
+                if (userOnly) store.isUserOnly = on else store.isEnabled = on
+            }
         }
 
         fun bind() {
-            if (switch.isChecked != store.isEnabled) switch.isChecked = store.isEnabled
+            val on = if (userOnly) store.isUserOnly else store.isEnabled
+            if (switch.isChecked != on) switch.isChecked = on
+            if (userOnly) switch.isEnabled = store.isEnabled
         }
     }
 

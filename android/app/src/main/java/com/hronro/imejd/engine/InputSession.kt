@@ -7,6 +7,7 @@
 // tests with a mock host.
 package com.hronro.imejd.engine
 
+import com.hronro.imejd.userdict.UserDictSelection
 import com.hronro.jd.Candidate
 import com.hronro.jd.Engine
 import com.hronro.jd.UserDict
@@ -29,6 +30,11 @@ data class SessionSnapshot(
     val candidates: List<Candidate> = emptyList(),
     val optionsCount: Int = 0,
     val rawBuffer: String = "",
+    /**
+     * Why there is no dictionary — the user's phrases were to be typed alone
+     * and cannot be had — for the bar to show while keys type plain letters.
+     */
+    val notice: String? = null,
 ) {
     val isComposing: Boolean get() = rawBuffer.isNotEmpty()
 
@@ -46,19 +52,32 @@ data class SessionSnapshot(
 }
 
 /**
- * [userDict] is merged into every candidate list (see [Engine]); null for the
- * built-in dictionary alone.
+ * Types from [selection]: the built-in dictionary, with a user dictionary
+ * merged into every candidate list (see [Engine]), or the user's phrases
+ * alone. When that cannot be had the session runs on an engine on the empty
+ * dictionary, which commits every letter as it is, and says why in
+ * [SessionSnapshot.notice].
  */
-class InputSession(userDict: UserDict? = null) {
-    private var engine = Engine(userDict)
+class InputSession(selection: UserDictSelection = UserDictSelection.BuiltIn(null)) {
+    /** The built-in dictionary, with [userDict] merged in. */
+    constructor(userDict: UserDict?) : this(UserDictSelection.BuiltIn(userDict))
+
+    private var engine: Engine
+    private var notice: String?
     var host: KeyboardHost? = null
+
+    init {
+        val (made, why) = engineFor(selection)
+        engine = made
+        notice = why
+    }
 
     /** The in-flight raw code (e.g. "js"), shown in the keyboard's candidate bar. */
     var rawBuffer: String = ""
         private set
 
     /** Candidates loaded so far, plus the totals the UI needs. */
-    var snapshot: SessionSnapshot = SessionSnapshot.EMPTY
+    var snapshot: SessionSnapshot = SessionSnapshot(notice = notice)
         private set
 
     /** Fired after every state change. UI re-renders the composing label + candidates. */
@@ -72,13 +91,27 @@ class InputSession(userDict: UserDict? = null) {
      * the JNI layer copied, so nothing outlives the old engine, which is
      * closed once the new one exists.
      */
-    fun replaceDictionary(userDict: UserDict?) {
+    fun replaceDictionary(userDict: UserDict?) = replaceSelection(UserDictSelection.BuiltIn(userDict))
+
+    /** [replaceDictionary], for any choice of dictionary. */
+    fun replaceSelection(selection: UserDictSelection) {
         val old = engine
-        engine = Engine(userDict)
+        val (made, why) = engineFor(selection)
+        engine = made
+        notice = why
         old.close()
         rawBuffer = ""
-        snapshot = SessionSnapshot.EMPTY
+        snapshot = SessionSnapshot(notice = notice)
         onChange?.invoke(snapshot)
+    }
+
+    /** The engine for [selection], and the notice when it is a stand-in. */
+    private fun engineFor(selection: UserDictSelection): Pair<Engine, String?> {
+        selection.makeEngine()?.let { return it to null }
+        val why = (selection as? UserDictSelection.Unavailable)?.why ?: "用户自造词未能加载"
+        // No dictionary at all: the engine's own fallback commits each key
+        // as it is.
+        return Engine(UserDictSelection.emptyDict, null) to why
     }
 
     // MARK: - Single entry point
@@ -243,6 +276,7 @@ class InputSession(userDict: UserDict? = null) {
             },
             optionsCount = state.optionsCount,
             rawBuffer = rawBuffer,
+            notice = notice,
         )
         onChange?.invoke(snapshot)
     }

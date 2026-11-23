@@ -37,6 +37,7 @@ import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import com.hronro.imejd.R
 import com.hronro.imejd.lookup.CodeLookupReport
+import com.hronro.imejd.userdict.UserDictSelection
 import com.hronro.imejd.userdict.UserDictStore
 import com.hronro.jd.Engine
 
@@ -192,14 +193,24 @@ class CodeLookupActivity : AppCompatActivity() {
 
     /**
      * A fresh engine over what the keyboard types with right now: the user
-     * dictionary only while it is switched on. Cheap — one allocation and a
-     * copy of the user's blob — and closed before this returns; the codes
-     * are plain values.
+     * dictionary only while it is switched on, and alone when the built-in
+     * one is off. Cheap — one allocation and a copy of the user's blob — and
+     * closed before this returns; the codes are plain values.
      */
     @SuppressLint("NotifyDataSetChanged") // a new report replaces every row
     private fun show(query: String) {
-        val codes = Engine(store.activeDictionary).use { it.lookupCodes(query) }
-        report = CodeLookupReport(query, codes, store.isEnabled)
+        val selection = store.selection
+        val engine = selection.makeEngine()
+        report = if (engine != null) {
+            val scope = when {
+                !store.isEnabled -> CodeLookupReport.Scope.BUILT_IN
+                store.isUserOnly -> CodeLookupReport.Scope.USER_ONLY
+                else -> CodeLookupReport.Scope.BUILT_IN_AND_USER
+            }
+            CodeLookupReport(query, engine.use { it.lookupCodes(query) }, scope)
+        } else {
+            CodeLookupReport(query, (selection as? UserDictSelection.Unavailable)?.why ?: "用户自造词未能加载")
+        }
         shownQuery = query
         adapter.notifyDataSetChanged()
     }

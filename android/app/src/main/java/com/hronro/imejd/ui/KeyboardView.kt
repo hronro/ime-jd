@@ -80,6 +80,9 @@ class KeyboardView(
         candidateBar.onExpand = { expandGrid() }
         candidateBar.onNeedMore = { loadMore() }
         session.onChange = { snap -> renderCandidates(snap) }
+        // A notice — the chosen dictionary cannot be had — is there from the
+        // start, before any change.
+        if (session.snapshot.notice != null) renderCandidates(session.snapshot)
 
         container.addView(
             candidateBar,
@@ -209,7 +212,9 @@ class KeyboardView(
 
     private fun renderCandidates(snap: SessionSnapshot) {
         items = snap.candidates
-        candidateBar.reset(snap.rawBuffer, items, canExpand = snap.canExpand)
+        // The bar's leading label: the code being typed, or — when the chosen
+        // dictionary cannot be had and keys type plain letters — why.
+        candidateBar.reset(snap.rawBuffer.ifEmpty { snap.notice.orEmpty() }, items, canExpand = snap.canExpand)
         gridOverlay?.let { grid ->
             if (snap.rawBuffer.isEmpty()) collapseGrid() else grid.setItems(items)
         }

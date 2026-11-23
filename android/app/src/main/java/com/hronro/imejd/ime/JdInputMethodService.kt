@@ -27,7 +27,7 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
     // macOS's 1-9 digit labels cap them; bigger pages = fewer grid-fill round trips.
     private val session: InputSession by lazy {
         userDictGeneration = userDict.generation
-        InputSession(userDict.activeDictionary).also { it.host = this }
+        InputSession(userDict.selection).also { it.host = this }
     }
     private var keyboard: KeyboardView? = null
 
@@ -60,7 +60,7 @@ class JdInputMethodService : InputMethodService(), KeyboardHost {
     private fun syncUserDict() {
         if (userDict.generation == userDictGeneration) return
         userDictGeneration = userDict.generation
-        session.replaceDictionary(userDict.activeDictionary)
+        session.replaceSelection(userDict.selection)
     }
 
     override fun onCreateInputView(): View {

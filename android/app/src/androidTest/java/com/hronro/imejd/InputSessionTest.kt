@@ -8,6 +8,7 @@ import com.hronro.imejd.engine.InputSession
 import com.hronro.imejd.engine.KeyAction
 import com.hronro.imejd.engine.KeyboardHost
 import com.hronro.imejd.engine.SessionSnapshot
+import com.hronro.imejd.userdict.UserDictSelection
 import com.hronro.jd.UserDict
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -320,6 +321,37 @@ class InputSessionTest {
         s.replaceDictionary(UserDict.build("键道输入法\tzzzzzz\n").dict)
         repeat(5) { s.handle(KeyAction.EngineKey(ascii('z'))) }
         assertEquals(listOf("键道输入法"), s.snapshot.candidates.map { it.value })
+        s.close()
+    }
+
+    // ---- No dictionary to type from ----
+
+    @Test
+    fun anUnavailableDictionaryTypesPlainLettersAndSaysWhy() {
+        val s = InputSession(UserDictSelection.Unavailable("用户自造词未能加载：没有词条文件"))
+        val h = MockHost()
+        s.host = h
+        assertEquals("用户自造词未能加载：没有词条文件", s.snapshot.notice)
+        for (b in "nk".toByteArray()) s.handle(KeyAction.EngineKey(b))
+        assertEquals("nk", h.joined)
+        assertFalse(s.isComposing)
+        assertEquals("the notice stays while keys type", "用户自造词未能加载：没有词条文件", s.snapshot.notice)
+
+        s.replaceSelection(UserDictSelection.BuiltIn(null))
+        assertNull(s.snapshot.notice)
+        s.close()
+    }
+
+    @Test
+    fun userOnlyTypesTheUsersPhrasesAndNothingBuiltIn() {
+        val dict = UserDict.build(UserDictSelection.emptyDict, "测试\tb\n", 0).dict()
+        val s = InputSession(UserDictSelection.UserOnly(dict))
+        val h = MockHost()
+        s.host = h
+        s.handle(KeyAction.EngineKey('b'.code.toByte()))
+        assertEquals(listOf("测试"), s.snapshot.candidates.map { it.value() })
+        s.handle(KeyAction.EngineKey(' '.code.toByte()))
+        assertEquals("测试", h.joined)
         s.close()
     }
 }

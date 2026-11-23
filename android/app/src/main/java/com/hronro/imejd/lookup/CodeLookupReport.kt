@@ -6,7 +6,25 @@ package com.hronro.imejd.lookup
 
 import com.hronro.jd.Code
 
-class CodeLookupReport(query: String, codes: List<Code>, userDictEnabled: Boolean) {
+class CodeLookupReport private constructor(query: String, codes: List<Code>, scope: Scope?, unavailable: String?) {
+    /** Which dictionaries a lookup searched — what the keyboard types from. */
+    enum class Scope {
+        /** The built-in dictionary alone: the user's phrases are off. */
+        BUILT_IN,
+
+        /** The built-in dictionary and the user's phrases. */
+        BUILT_IN_AND_USER,
+
+        /** The user's phrases alone: the built-in dictionary is off. */
+        USER_ONLY,
+    }
+
+    /** libjd's [codes] for [query], from the dictionaries [scope] names. */
+    constructor(query: String, codes: List<Code>, scope: Scope) : this(query, codes, scope, null)
+
+    /** Nothing could be looked up: the user's phrases alone were to be searched, and cannot be had, for the reason [why]. */
+    constructor(query: String, why: String) : this(query, emptyList(), null, why)
+
     /** One code: the keys, and what sets it apart, if anything. */
     data class Line(
         val keys: String,
@@ -38,10 +56,10 @@ class CodeLookupReport(query: String, codes: List<Code>, userDictEnabled: Boolea
         if (codes.isEmpty()) {
             title = "没有找到「$word」"
             lines = emptyList()
-            message = if (userDictEnabled) {
-                "内置词库和用户自造词中都没有这个词。"
-            } else {
-                "内置词库中没有这个词。用户自造词未启用，不在查询范围内。"
+            message = unavailable ?: when (scope) {
+                Scope.BUILT_IN_AND_USER -> "内置词库和用户自造词中都没有这个词。"
+                Scope.USER_ONLY -> "用户自造词中没有这个词。内置词库已忽略，不在查询范围内。"
+                Scope.BUILT_IN, null -> "内置词库中没有这个词。用户自造词未启用，不在查询范围内。"
             }
         } else {
             title = "「$word」的编码"

@@ -63,8 +63,8 @@ class KeyboardPreviewActivity : AppCompatActivity() {
     // Mirrors JdInputMethodService, user dictionary included: phrases edited
     // in the app reach the preview the way they reach the IME.
     private val userDict by lazy { UserDictStore.get(this) }
-    private val session by lazy { InputSession(userDict.activeDictionary) }
-    private val userDictListener: () -> Unit = { session.replaceDictionary(userDict.activeDictionary) }
+    private val session by lazy { InputSession(userDict.selection) }
+    private val userDictListener: () -> Unit = { session.replaceSelection(userDict.selection) }
     private val host = FieldHost()
 
     override fun onCreate(savedInstanceState: Bundle?) {
