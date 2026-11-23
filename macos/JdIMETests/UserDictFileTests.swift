@@ -82,11 +82,13 @@ final class UserDictFileTests: XCTestCase {
 
     func testTheEngineOwnsTheFieldRules() throws {
         // The GUI mirrors none of libjd's rules: the boundary cases are the
-        // engine's to judge, and a bad line costs only itself.
-        let (_, ok) = try UserDict.build("\(String(repeating: "字", count: 85))\tzzzzzz\n")
+        // engine's to judge, and a bad line costs only itself. 字 is 3 bytes
+        // of UTF-8, so `fits` of them is the longest value that fits.
+        let fits = UserDict.maxValueBytes / 3
+        let (_, ok) = try UserDict.build("\(String(repeating: "字", count: fits))\tzzzzzz\n")
         XCTAssertEqual(ok.invalid, 0)
         let (_, bad) = try UserDict.build(
-            "\(String(repeating: "字", count: 86))\tzzzzzz\n好\tabcdefg\n键道\tzzzzza\n"
+            "\(String(repeating: "字", count: fits + 1))\tzzzzzz\n好\tabcdefg\n键道\tzzzzza\n"
         )
         XCTAssertEqual(bad.entries, 1)
         XCTAssertEqual(bad.invalidLines, [1, 2])
