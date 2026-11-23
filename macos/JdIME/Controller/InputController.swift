@@ -9,8 +9,16 @@ final class InputController: IMKInputController {
     /// panel's 1-9 number labels (see Candidates.swift).
     private static let pageSize: UInt32 = 9
 
-    /// Re-created when the user dictionary changes; see syncEngine().
-    private var engine = Engine(userDict: UserDictStore.shared.activeDictionary)
+    /// Re-created when the user dictionary changes; see syncEngine(). Nil
+    /// while the dictionary the user chose cannot be had (忽略内置词库 with
+    /// no phrases to load): every key then goes to the app as it is, and the
+    /// store has told the user why.
+    private var madeEngine = Engine.make(UserDictStore.shared.selection)
+    /// The engine keys go to — an inert one on the empty dictionary while
+    /// there is none, which nothing consults: `handle` passes every key
+    /// through then.
+    private var engine: Engine { madeEngine ?? Self.inertEngine }
+    private static let inertEngine = try! Engine(dict: .empty, userDict: nil)
     private var engineGeneration = UserDictStore.shared.generation
     private let composition = Composition()
     /// The process-wide panel. Never one per controller: IMKServer keeps an
@@ -34,6 +42,8 @@ final class InputController: IMKInputController {
         guard let client = sender as? IMKTextInput else { return false }
 
         syncEngine()
+        // No dictionary to type from: the key is the app's, a plain letter.
+        guard madeEngine != nil else { return false }
         let action = keyAction(event: event, isComposing: composition.isActive)
         return dispatch(action: action, client: client)
     }
@@ -118,6 +128,10 @@ final class InputController: IMKInputController {
         let userDict = menuItem("启用用户自造词", #selector(toggleUserDict(_:)))
         userDict.state = store.isEnabled ? .on : .off
         menu.addItem(userDict)
+        // Greyed out (no action) while the user dictionary is off.
+        let userOnly = menuItem("忽略内置词库", store.isEnabled ? #selector(toggleUserOnly(_:)) : nil)
+        userOnly.state = store.isUserOnly ? .on : .off
+        menu.addItem(userOnly)
         menu.addItem(menuItem(store.statusText, nil))
         return menu
     }
@@ -149,6 +163,10 @@ final class InputController: IMKInputController {
         UserDictStore.shared.isEnabled.toggle()
     }
 
+    @objc private func toggleUserOnly(_ sender: Any?) {
+        UserDictStore.shared.isUserOnly.toggle()
+    }
+
     @objc private func openUserDictWindow(_ sender: Any?) {
         UserDictWindowController.shared.show()
     }
@@ -170,7 +188,7 @@ final class InputController: IMKInputController {
         guard engineGeneration != store.generation,
               !composition.isActive, visible.isEmpty
         else { return }
-        engine = Engine(userDict: store.activeDictionary)
+        madeEngine = Engine.make(store.selection)
         engineGeneration = store.generation
     }
 

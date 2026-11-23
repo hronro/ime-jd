@@ -74,6 +74,8 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         trackingMode: .momentary, target: nil, action: nil
     )
     private let enableCheckbox = NSButton(checkboxWithTitle: "启用用户自造词", target: nil, action: nil)
+    /// 忽略内置词库: usable only while `enableCheckbox` is on.
+    private let userOnlyCheckbox = NSButton(checkboxWithTitle: "忽略内置词库", target: nil, action: nil)
     private let searchField = NSSearchField()
     private let statusLabel = NSTextField(labelWithString: "")
     private var storeObserver: NSObjectProtocol?
@@ -112,6 +114,9 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
 
         enableCheckbox.target = self
         enableCheckbox.action = #selector(toggleEnabled(_:))
+        userOnlyCheckbox.target = self
+        userOnlyCheckbox.action = #selector(toggleUserOnly(_:))
+        userOnlyCheckbox.toolTip = "只用这里的词条打字"
 
         searchField.placeholderString = "搜索词或编码"
         searchField.target = self
@@ -123,7 +128,8 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         enableCheckbox.setContentHuggingPriority(.required, for: .horizontal)
-        let top = NSStackView(views: [enableCheckbox, spacer, searchField])
+        userOnlyCheckbox.setContentHuggingPriority(.required, for: .horizontal)
+        let top = NSStackView(views: [enableCheckbox, userOnlyCheckbox, spacer, searchField])
         top.orientation = .horizontal
         top.alignment = .centerY
         top.distribution = .fill
@@ -219,7 +225,7 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         if window?.isVisible != true {
             loadRows(from: currentFileText())
         }
-        enableCheckbox.state = store.isEnabled ? .on : .off
+        syncCheckboxes()
         updateStatus()
         // We are an accessory app; without this the window opens behind the
         // frontmost app's windows.
@@ -328,7 +334,11 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
         let shared = rows.filter { $0.problem?.isSharedCode == true }.count
         if shared > 0 { parts.append("\(shared) 条同码") }
         if let error = store.lastError { parts.append(error.message) }
-        if !store.isEnabled { parts.append("已停用") }
+        if !store.isEnabled {
+            parts.append("已停用")
+        } else if store.typesUserDictOnly {
+            parts.append(rows.isEmpty ? "已忽略内置词库，但尚无词条：键道只能输入字母和标点" : "已忽略内置词库")
+        }
         statusLabel.stringValue = parts.joined(separator: "，")
         statusLabel.toolTip = statusLabel.stringValue
     }
@@ -351,7 +361,7 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
     private func storeDidChange() {
         // Our own save: the caller redraws once it is done.
         guard !isSaving else { return }
-        enableCheckbox.state = store.isEnabled ? .on : .off
+        syncCheckboxes()
         guard window?.isVisible == true else { return }
         let text = currentFileText()
         if text != lastKnownText {
@@ -381,7 +391,19 @@ final class UserDictWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func toggleEnabled(_ sender: NSButton) {
         store.isEnabled = sender.state == .on
+        syncCheckboxes()
         updateStatus()
+    }
+
+    @objc private func toggleUserOnly(_ sender: NSButton) {
+        store.isUserOnly = sender.state == .on
+        updateStatus()
+    }
+
+    private func syncCheckboxes() {
+        enableCheckbox.state = store.isEnabled ? .on : .off
+        userOnlyCheckbox.state = store.isUserOnly ? .on : .off
+        userOnlyCheckbox.isEnabled = store.isEnabled
     }
 
     @objc private func filterChanged(_ sender: NSSearchField) {

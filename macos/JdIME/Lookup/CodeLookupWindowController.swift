@@ -112,12 +112,19 @@ final class CodeLookupWindowController: NSWindowController, NSWindowDelegate, NS
         guard !query.isEmpty else { return }
 
         // A fresh engine over what the IME types with right now: the user
-        // dictionary only while it is switched on. Cheap — one allocation
-        // and a validation pass over the user's phrases — and it is gone
-        // when this returns; the codes are plain strings.
+        // dictionary only while it is switched on, and alone when the
+        // built-in one is off. Cheap — one allocation and a validation pass
+        // over the user's phrases — and it is gone when this returns; the
+        // codes are plain strings.
         let store = UserDictStore.shared
-        let codes = Engine(userDict: store.activeDictionary).lookupCodes(query)
-        let report = CodeLookupReport(query: query, codes: codes, userDictEnabled: store.isEnabled)
+        let report: CodeLookupReport
+        if let engine = Engine.make(store.selection) {
+            report = CodeLookupReport(query: query, codes: engine.lookupCodes(query), scope: store.lookupScope)
+        } else if case .unavailable(let why) = store.selection {
+            report = CodeLookupReport(query: query, unavailable: why)
+        } else {
+            report = CodeLookupReport(query: query, unavailable: "用户自造词未能加载")
+        }
 
         let alert = NSAlert()
         alert.messageText = report.title

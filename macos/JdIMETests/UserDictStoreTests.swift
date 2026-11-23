@@ -25,10 +25,19 @@ final class UserDictStoreTests: XCTestCase {
         UserDictStore(fileURL: fileURL, defaults: defaults)
     }
 
+    /// The user dictionary `selection` hands an engine, if any.
+    private func active(_ store: UserDictStore) -> UserDict? {
+        switch store.selection {
+        case .builtIn(let dict): return dict
+        case .userOnly(let dict): return dict
+        case .unavailable: return nil
+        }
+    }
+
     func testNoFileMeansNoDictionary() {
         let store = makeStore()
         XCTAssertNil(store.dictionary)
-        XCTAssertNil(store.activeDictionary)
+        XCTAssertNil(active(store))
         XCTAssertNil(store.lastError)
         XCTAssertEqual(store.generation, 0)
         XCTAssertFalse(store.isEnabled, "off until the user turns it on")
@@ -106,19 +115,19 @@ final class UserDictStoreTests: XCTestCase {
         // Off by default: the file is loaded for the window, but engines get nothing.
         XCTAssertFalse(store.isEnabled)
         XCTAssertNotNil(store.dictionary, "loaded for the window")
-        XCTAssertNil(store.activeDictionary)
+        XCTAssertNil(active(store))
         XCTAssertEqual(store.generation, 1)
         store.isEnabled = false
         XCTAssertEqual(store.generation, 1, "no change, no bump")
 
         store.isEnabled = true
         XCTAssertTrue(store.isEnabled)
-        XCTAssertNotNil(store.activeDictionary)
+        XCTAssertNotNil(active(store))
         XCTAssertEqual(store.generation, 2)
         XCTAssertEqual(defaults.object(forKey: "JdUserDictEnabled") as? Bool, true)
 
         store.isEnabled = false
-        XCTAssertNil(store.activeDictionary)
+        XCTAssertNil(active(store))
         XCTAssertNotNil(store.dictionary, "still loaded for the window")
         XCTAssertEqual(store.generation, 3)
         XCTAssertEqual(defaults.object(forKey: "JdUserDictEnabled") as? Bool, false)
@@ -155,5 +164,49 @@ final class UserDictStoreTests: XCTestCase {
         try handle.close()
         wait(for: [changedAgain], timeout: 5)
         XCTAssertEqual(store.dictionary?.entries, 2)
+    }
+
+    // MARK: - Only the user's phrases
+
+    func testUserOnlyBuildsOnTheEmptyDictionaryAndTypesNothingBuiltIn() throws {
+        try UserDictFile.write("不\tb\n测试\tb\n", to: fileURL)
+        let store = makeStore()
+        store.isEnabled = true
+        XCTAssertEqual(store.report?.dropped, 1, "on the built-in dictionary, 不/b repeats a word of it")
+        guard case .builtIn(.some) = store.selection else { return XCTFail("\(store.selection)") }
+        let before = store.generation
+
+        store.isUserOnly = true
+        XCTAssertEqual(defaults.object(forKey: "JdUserDictOnly") as? Bool, true)
+        XCTAssertGreaterThan(store.generation, before, "engines must adopt the rebuilt dictionary")
+        XCTAssertEqual(store.report?.dropped, 0, "nothing to repeat on the empty dictionary")
+        guard case .userOnly(let dict) = store.selection else { return XCTFail("\(store.selection)") }
+        let engine = try XCTUnwrap(Engine.make(.userOnly(dict)))
+        engine.pressKey(UInt8(ascii: "b"))
+        XCTAssertEqual(engine.readRange(from: 0, count: 3).map(\.value), ["不", "测试"])
+        XCTAssertEqual(store.lookupScope, .userOnly)
+
+        store.isUserOnly = false
+        XCTAssertEqual(store.report?.dropped, 1, "back on the built-in dictionary")
+        XCTAssertEqual(store.lookupScope, .builtInAndUser)
+    }
+
+    func testUserOnlyWithNothingToLoadIsUnavailableNeverTheBuiltInDictionary() throws {
+        let store = makeStore()
+        store.isEnabled = true
+        store.isUserOnly = true
+        guard case .unavailable(let why) = store.selection else { return XCTFail("\(store.selection)") }
+        XCTAssertEqual(why, "用户自造词未能加载：没有词条文件")
+        XCTAssertNil(Engine.make(store.selection), "keys type themselves")
+        XCTAssertEqual(store.statusText, "用户自造词未能加载：没有词条文件，暂时直接输入字母")
+
+        // A file that loads makes it available; one that never built does not.
+        try store.save([UserDictEntry(value: "测试", keys: "b")])
+        guard case .userOnly = store.selection else { return XCTFail("\(store.selection)") }
+
+        // The second switch means nothing while the first is off.
+        store.isEnabled = false
+        guard case .builtIn(nil) = store.selection else { return XCTFail("\(store.selection)") }
+        XCTAssertEqual(store.lookupScope, .builtIn)
     }
 }

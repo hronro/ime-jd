@@ -15,9 +15,15 @@ import UserNotifications
 /// stays in use; the failure is kept in `lastError`, shown in the Input
 /// menu, and posted as a notification.
 ///
+/// A second switch, 忽略内置词库, turns the built-in dictionary off while
+/// the first is on: the phrases are then built on the empty dictionary and
+/// are all there is to type from. If there are none to be had — no file, or
+/// one that never built — the IME says so and lets keys through as plain
+/// letters; it never falls back to the built-in dictionary.
+///
 /// A context's dictionary is fixed for its lifetime, so the store never
 /// touches an engine. It bumps `generation`, and each controller re-creates
-/// its engine with `activeDictionary` at the next moment nothing is composing
+/// its engine from `selection` at the next moment nothing is composing
 /// (`InputController.syncEngine`). Everything runs on the main thread.
 final class UserDictStore {
     static let shared: UserDictStore = {
@@ -67,12 +73,13 @@ final class UserDictStore {
 
     private enum Key {
         static let enabled = "JdUserDictEnabled"
+        static let userOnly = "JdUserDictOnly"
     }
 
     let fileURL: URL
     private let defaults: UserDefaults
 
-    /// Bumped whenever `activeDictionary` may differ from what an existing
+    /// Bumped whenever `selection` may differ from what an existing
     /// engine was created with.
     private(set) var generation: UInt64 = 0
     /// The last successfully built dictionary — kept while disabled, and
@@ -120,16 +127,58 @@ final class UserDictStore {
             defaults.set(newValue, forKey: Key.enabled)
             generation += 1
             NotificationCenter.default.post(name: Self.didChange, object: self)
+            notifyIfUnavailable()
         }
     }
 
-    /// What an engine created right now should read.
-    var activeDictionary: UserDict? {
-        isEnabled ? dictionary : nil
+    /// The second switch, 忽略内置词库: off until the user turns it on,
+    /// and heeded only while `isEnabled` is on. Flipping it rebuilds the
+    /// dictionary on the other base — the built-in dictionary or the empty
+    /// one — since what a phrase repeats or shares depends on it.
+    var isUserOnly: Bool {
+        get { defaults.object(forKey: Key.userOnly) as? Bool ?? false }
+        set {
+            guard newValue != isUserOnly else { return }
+            defaults.set(newValue, forKey: Key.userOnly)
+            builtHash = nil
+            failedHash = nil
+            if !reload() {
+                generation += 1
+                NotificationCenter.default.post(name: Self.didChange, object: self)
+            }
+            notifyIfUnavailable()
+        }
+    }
+
+    /// Whether the phrases are all there is to type from right now.
+    var typesUserDictOnly: Bool {
+        isEnabled && isUserOnly
+    }
+
+    /// The dictionary the phrases are built on.
+    private var base: Dict? {
+        isUserOnly ? .empty : nil
+    }
+
+    /// What an engine created right now types from.
+    var selection: UserDictSelection {
+        guard isEnabled else { return .builtIn(nil) }
+        guard isUserOnly else { return .builtIn(dictionary) }
+        if let dictionary { return .userOnly(dictionary) }
+        return .unavailable("用户自造词未能加载：\(lastError?.message ?? "没有词条文件")")
+    }
+
+    /// Which dictionaries `selection` types from, for 编码反查's wording.
+    var lookupScope: CodeLookupReport.Scope {
+        guard isEnabled else { return .builtIn }
+        return isUserOnly ? .userOnly : .builtInAndUser
     }
 
     /// One line for the Input menu.
     var statusText: String {
+        if case .unavailable(let why) = selection {
+            return "\(why)，暂时直接输入字母"
+        }
         if let error = lastError {
             return "用户自造词：\(error.message)"
         }
@@ -149,7 +198,7 @@ final class UserDictStore {
     // MARK: - Loading
 
     /// Re-read the file and rebuild when its content changed. Returns whether
-    /// `activeDictionary` may now differ from before.
+    /// `selection` may now differ from before.
     @discardableResult
     func reload() -> Bool {
         let text: String?
@@ -160,6 +209,7 @@ final class UserDictStore {
         } catch {
             return fail(.unreadable(error), hash: nil)
         }
+        defer { notifyIfUnavailable() }
 
         // nil: no file.
         let hash = text.map { UserDict.hash($0) }
@@ -169,6 +219,8 @@ final class UserDictStore {
         if let failedHash, hash == failedHash {
             return false
         }
+        // A dictionary built on the other base, from the last time the
+        // second switch flipped, never stays: `isUserOnly` clears the hashes.
 
         guard let text, let hash else {
             // The file is gone: so is the dictionary.
@@ -181,7 +233,7 @@ final class UserDictStore {
         }
 
         do {
-            let (dict, report) = try UserDict.build(text, sourceTag: hash)
+            let (dict, report) = try UserDict.build(text, on: base, sourceTag: hash)
             dictionary = dict
             self.report = report
             lastError = nil
@@ -219,6 +271,23 @@ final class UserDictStore {
         notifyFailure(error)
         NotificationCenter.default.post(name: Self.didChange, object: self)
         return false
+    }
+
+    /// The unavailable reason last notified, so one state is told once.
+    private var notifiedUnavailable: String?
+
+    /// Tell the user, once per reason, that the phrases they chose to type
+    /// from alone cannot be had — no file, or none that ever built — and
+    /// that keys type themselves meanwhile. (A file that fails to build is
+    /// told by `notifyFailure` already.)
+    private func notifyIfUnavailable() {
+        guard case .unavailable(let why) = selection else {
+            notifiedUnavailable = nil
+            return
+        }
+        guard why != notifiedUnavailable, lastError == nil else { return }
+        notifiedUnavailable = why
+        post(title: "用户自造词未能加载", body: "\(why)。忽略内置词库时，键道暂时直接输入字母。")
     }
 
     // MARK: - Watching
@@ -271,16 +340,27 @@ final class UserDictStore {
     /// A failed rebuild after a text-editor save would otherwise go unseen
     /// until the user wonders why a phrase does not come up.
     private func notifyFailure(_ error: LoadError) {
+        let fallback: String
+        if dictionary != nil {
+            fallback = "已沿用上一次成功加载的词库。"
+        } else if typesUserDictOnly {
+            fallback = "忽略内置词库时，键道暂时直接输入字母。"
+        } else {
+            fallback = "当前没有加载用户自造词。"
+        }
+        post(title: "用户自造词未能加载", body: "\(error.message)。\(fallback)")
+    }
+
+    private func post(title: String, body: String) {
         // Not under XCTest: the test host has no Launch Services record, and
         // UNUserNotificationCenter aborts the process without one.
         guard !UpdateManager.isUnderXCTest else { return }
-        let fallback = dictionary == nil ? "当前没有加载用户自造词。" : "已沿用上一次成功加载的词库。"
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard granted else { return }
             let content = UNMutableNotificationContent()
-            content.title = "用户自造词未能加载"
-            content.body = "\(error.message)。\(fallback)"
+            content.title = title
+            content.body = body
             content.sound = .default
             center.add(UNNotificationRequest(identifier: "user-dict-error", content: content, trigger: nil))
         }

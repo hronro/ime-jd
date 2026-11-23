@@ -180,10 +180,10 @@ final class UserDictTests: XCTestCase {
 
     func testLimitsMatchTheHeader() {
         XCTAssertEqual(UserDict.maxEntries, 500_000)
-        XCTAssertEqual(UserDict.maxValueBytes, 255)
+        XCTAssertEqual(UserDict.maxValueBytes, 1023)
         XCTAssertEqual(UserDict.maxTextBytes, 16 * 1024 * 1024)
         XCTAssertEqual(UserDict.maxKeyLength, 6)
-        XCTAssertEqual(UserDict.keyAlphabet.count, 26)
+        XCTAssertEqual(UserDict.keyAlphabet.count, 27, "a-z, and ';' before the first letter")
     }
 
     func testHashIsLibjdsPinnedWyhash() {
