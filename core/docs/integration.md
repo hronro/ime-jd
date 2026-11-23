@@ -473,6 +473,16 @@ The table below is the recommended dispatch policy across all platforms. Followi
 
 - **Why arrow / nav keys are always consumed while composing**: the engine has no "cursor inside the composition" model — corrections are via `jd_backspace` only. If the IME let arrow keys reach the host, the host would move its caret out of the in-flight composition range, breaking the visual link between what the user is typing and where the text lands. Either bind arrows to page navigation (most natural — users expect ← to move "back" through pages) or no-op them, but never pass them through.
 
+### Optional temporary ASCII composition
+
+An IME can opt into temporarily composing an English token in Chinese input mode. After filtering host shortcuts and translating the key to its actual character, call `jd_press_inline_ascii(ctx, key, shift)` before dispatching the keystroke to `jd_press_key`. Set `shift` only when Shift is held. The first character must be `A`–`Z` with Shift held and the engine must have no Chinese composition. Once active, the ASCII preedit accepts letters, digits, and `-_+.'`, including after Shift is released.
+
+- `JD_INLINE_ASCII_ACCEPTED` means the key was consumed. Render `jd_inline_ascii_ptr(ctx)` as the preedit. Its borrowed text is valid until the next mutating call.
+- `JD_INLINE_ASCII_FULL` leaves the 256-byte preedit intact. Keep it on screen so the user can edit or confirm it before typing more.
+- `JD_INLINE_ASCII_UNHANDLED` means the optional path did not consume the key. When an ASCII preedit is active, finish or cancel it as appropriate before delivering a key through the normal path.
+
+During ASCII composition, use `jd_backspace` to delete the last character and `jd_reset` to cancel. When the user confirms with Enter or a host binding such as Space, commit the current preedit once in the host, then call `jd_reset`. The ASCII text uses a separate buffer from `jd_state` and the dictionary. Clients that use only `jd_press_key` keep the existing literal fallback for uppercase input.
+
 ### Punctuation handling
 
 The engine ships a build-time-generated punctuation table that maps selected ASCII bytes to Chinese equivalents. When `jd_press_key(byte)` finds a match, the engine handles it without any IME involvement:

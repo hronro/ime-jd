@@ -331,6 +331,14 @@ export fn jd_press_key(handle: *JdContext, key: u8) void {
     ctxOf(handle).pressKey(key);
 }
 
+export fn jd_press_inline_ascii(handle: *JdContext, key: u8, shift: c_uint) query.InlineAsciiResult {
+    return ctxOf(handle).pressInlineAscii(key, shift != 0);
+}
+
+export fn jd_inline_ascii_ptr(handle: *JdContext) ?[*:0]const u8 {
+    return ctxOf(handle).inlineAscii();
+}
+
 export fn jd_backspace(handle: *JdContext) void {
     ctxOf(handle).backspace();
 }
@@ -1167,6 +1175,61 @@ fn firstCandidate(handle: *JdContext, keys: []const u8) ?[]const u8 {
     var one: [1]QueryOption = undefined;
     if (jd_read_range(handle, 0, 1, &one, 1) != 1) return null;
     return std.mem.sliceTo(one[0].value, 0);
+}
+
+test "inline ASCII is opt-in and separates shifted input from the trie" {
+    var d = try HostDict.build("你\tn\n");
+    defer d.deinit();
+    const context = jd_init(d.buf.ptr, d.len, null, 0) orelse return error.InitFailed;
+    defer jd_deinit(context);
+    const other = jd_init(d.buf.ptr, d.len, null, 0) orelse return error.InitFailed;
+    defer jd_deinit(other);
+
+    try std.testing.expectEqual(.unhandled, jd_press_inline_ascii(context, 'A', 0));
+    try std.testing.expect(jd_inline_ascii_ptr(context) == null);
+    jd_press_key(context, 'A');
+    try std.testing.expectEqual(@as(u8, 'A'), jd_state_ptr(context).commit_lit);
+
+    try std.testing.expectEqual(.accepted, jd_press_inline_ascii(context, 'A', 1));
+    try std.testing.expectEqual(@as(u8, 0), jd_state_ptr(context).commit_lit);
+    try std.testing.expectEqualStrings("A", std.mem.span(jd_inline_ascii_ptr(context).?));
+    for ("bc-1_+'.") |key| {
+        try std.testing.expectEqual(.accepted, jd_press_inline_ascii(context, key, 0));
+    }
+    try std.testing.expectEqual(.unhandled, jd_press_inline_ascii(context, ' ', 0));
+    try std.testing.expect(jd_inline_ascii_ptr(other) == null);
+    try std.testing.expectEqualStrings("Abc-1_+'.", std.mem.span(jd_inline_ascii_ptr(context).?));
+    jd_press_key(context, 'n');
+    try std.testing.expectEqual(@as(u32, 0), jd_state_ptr(context).options_count);
+    jd_backspace(context);
+    try std.testing.expectEqualStrings("Abc-1_+'", std.mem.span(jd_inline_ascii_ptr(context).?));
+    jd_reset(context);
+    try std.testing.expect(jd_inline_ascii_ptr(context) == null);
+
+    try std.testing.expectEqualStrings("你", firstCandidate(context, "n").?);
+    try std.testing.expectEqual(.unhandled, jd_press_inline_ascii(context, 'A', 1));
+    try std.testing.expectEqual(@as(u32, 1), jd_state_ptr(context).options_count);
+    try std.testing.expect(jd_inline_ascii_ptr(context) == null);
+}
+
+test "inline ASCII keeps all bytes when it reaches capacity" {
+    var d = try HostDict.build("你\tn\n");
+    defer d.deinit();
+    const context = jd_init(d.buf.ptr, d.len, null, 0) orelse return error.InitFailed;
+    defer jd_deinit(context);
+
+    try std.testing.expectEqual(.accepted, jd_press_inline_ascii(context, 'A', 1));
+    var expected: [256]u8 = @splat('b');
+    expected[0] = 'A';
+    for (expected[1..]) |key| {
+        try std.testing.expectEqual(.accepted, jd_press_inline_ascii(context, key, 0));
+    }
+    try std.testing.expectEqual(.full, jd_press_inline_ascii(context, 'c', 0));
+    try std.testing.expectEqualStrings(&expected, std.mem.span(jd_inline_ascii_ptr(context).?));
+    jd_backspace(context);
+    try std.testing.expectEqual(.accepted, jd_press_inline_ascii(context, 'c', 0));
+    expected[expected.len - 1] = 'c';
+    try std.testing.expectEqualStrings(&expected, std.mem.span(jd_inline_ascii_ptr(context).?));
 }
 
 test "a host's dictionary replaces the embedded one" {

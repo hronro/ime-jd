@@ -467,15 +467,47 @@ void jd_free(void *ptr, size_t size);
  *      to a code with a single candidate: the next key commits it.
  *   4. Fallback — commit the anchor candidate with the key byte appended.
  *
- * Read the outcome with jd_state_ptr.
+ * Read the outcome with jd_state_ptr. While optional inline ASCII preedit is
+ * active, this function does nothing until the host confirms or cancels it.
  */
 void jd_press_key(jd_context *ctx, char key);
 
+typedef unsigned int jd_inline_ascii_result;
+enum {
+  JD_INLINE_ASCII_UNHANDLED = 0,
+  JD_INLINE_ASCII_ACCEPTED = 1,
+  JD_INLINE_ASCII_FULL = 2
+};
+
 /**
- * Undo the most recent trie descent, re-deriving the candidate list, and
+ * Optional inline ASCII composer. Pass the translated ASCII byte and set
+ * shift only for a Shift-modified key press. An uppercase A–Z starts a
+ * preedit when Shift is down and there is no candidate composition. While
+ * active, letters, digits and -_+.' append regardless of Shift. Filter
+ * shortcuts and key releases in the host.
+ *
+ * ACCEPTED updates the preedit without producing a commit. FULL means the
+ * 256-byte limit was reached and the previous preedit is intact. UNHANDLED
+ * leaves the context unchanged. For Return or Space the host can submit the
+ * current text via jd_inline_ascii_ptr and then clear it with jd_reset;
+ * callers can cancel with jd_reset or edit with jd_backspace.
+ */
+jd_inline_ascii_result jd_press_inline_ascii(jd_context *ctx, char key,
+                                            unsigned int shift);
+
+/**
+ * NUL-terminated inline ASCII preedit, or NULL when inactive. The borrowed
+ * pointer is valid until the next mutation or jd_deinit. Copy the text
+ * before keeping it across calls. This text is separate from jd_state.
+ */
+const char *jd_inline_ascii_ptr(jd_context *ctx);
+
+/**
+ * Remove one byte from active inline ASCII preedit, or undo the most recent
+ * trie descent, re-deriving the candidate list, and
  * park the anchor back at the start of the shorter code. Closes a
- * punctuation candidate window without committing. Does nothing when there
- * is no descent to undo. Never produces a commit.
+ * punctuation candidate window without committing. Does nothing without
+ * an active composition and never produces a commit.
  */
 void jd_backspace(jd_context *ctx);
 
@@ -497,9 +529,9 @@ void jd_set_anchor(jd_context *ctx, unsigned int index);
 /**
  * Address of the context's state block. Stable for the context's whole
  * lifetime: read it once after jd_init and keep it. The contents are
- * replaced by the next jd_press_key / jd_backspace / jd_reset /
- * jd_set_anchor on the same context, but the pointer itself never dangles
- * and nothing reachable through it does either.
+ * replaced by the next operation that updates the state on the same context,
+ * but the pointer itself never dangles and nothing reachable through it
+ * does either.
  */
 const jd_state *jd_state_ptr(jd_context *ctx);
 

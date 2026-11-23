@@ -128,8 +128,12 @@ pub const InitOptions = struct {
     user_dict: ?UserDict = null,
 };
 
+pub const InlineAsciiResult = enum(c_uint) { unhandled, accepted, full };
+
 pub const Context = struct {
     const Self = @This();
+
+    const inline_ascii_limit = 256;
 
     /// Pre-allocated buffers borrowed from the caller. In production these
     /// come from `jd_init`'s carved tail; in tests, separately allocated.
@@ -148,6 +152,9 @@ pub const Context = struct {
     /// dictionary is queried with.
     pressed_keys: [MAX_PRESSED_KEYS]u8,
     pressed_keys_len: u8,
+
+    inline_ascii: [inline_ascii_limit + 1]u8 = undefined,
+    inline_ascii_len: usize = 0,
 
     /// Persistent paired-punctuation toggle state. Bit `k` tracks whether
     /// the next paired-press of ASCII byte `k` should emit the close half.
@@ -327,6 +334,7 @@ pub const Context = struct {
 
     /// Public reset: drop both the composition and any recorded commit.
     pub fn reset(self: *Self) void {
+        self.inline_ascii_len = 0;
         self.clearCommit();
         self.endComposition();
     }
@@ -377,7 +385,29 @@ pub const Context = struct {
     // Key dispatch
     // ---------------------------------------------------------------
 
+    pub fn pressInlineAscii(self: *Self, key: u8, shift: bool) InlineAsciiResult {
+        if (self.inline_ascii_len == 0) {
+            if (!shift or !std.ascii.isUpper(key) or self.pager != null) return .unhandled;
+            self.clearCommit();
+        } else if (!std.ascii.isAlphanumeric(key) and
+            std.mem.indexOfScalar(u8, "-_+.'", key) == null)
+        {
+            return .unhandled;
+        }
+        if (self.inline_ascii_len == inline_ascii_limit) return .full;
+        self.inline_ascii[self.inline_ascii_len] = key;
+        self.inline_ascii_len += 1;
+        self.inline_ascii[self.inline_ascii_len] = 0;
+        return .accepted;
+    }
+
+    pub fn inlineAscii(self: *const Self) ?[*:0]const u8 {
+        if (self.inline_ascii_len == 0) return null;
+        return self.inline_ascii[0..self.inline_ascii_len :0].ptr;
+    }
+
     pub fn pressKey(self: *Self, key: u8) void {
+        if (self.inline_ascii_len != 0) return;
         self.clearCommit();
 
         // ============================================================
@@ -530,6 +560,11 @@ pub const Context = struct {
     /// window. Never produces a commit.
     pub fn backspace(self: *Self) void {
         self.clearCommit();
+        if (self.inline_ascii_len != 0) {
+            self.inline_ascii_len -= 1;
+            self.inline_ascii[self.inline_ascii_len] = 0;
+            return;
+        }
 
         // In a punc candidate window, backspace just closes it.
         if (self.pager) |*p| {
