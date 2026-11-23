@@ -8,3 +8,10 @@ edition = "2024"
 # link the native `jd` library, and its build script gets to publish
 # `DEP_JD_*` metadata (libdir, linkage) to direct dependents' build scripts.
 links = "jd"
+
+[features]
+default = ["builtin-dict"]
+# libjd with its embedded 键道 dictionary. Without it — default-features =
+# false — the crate builds and links libjd-engine, which has none: every
+# context then types from a `Dict` the host passes (`JdContext::with_dict`).
+builtin-dict = []

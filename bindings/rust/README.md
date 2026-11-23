@@ -110,6 +110,24 @@ Map the text file too when rebuilding — `build` only reads it, and `std::str::
 
 To change dictionaries, build the new one and create a new context with it; the old context goes away with the old dictionary.
 
+### Your own dictionary
+
+The context types from libjd's embedded 键道 dictionary unless you give it your own: a `Dict`, built from text of the same `value<TAB>keys` format by the same code that builds the embedded one, so it types the same way and as fast, at up to 16 777 215 entries. A user dictionary then sits on top of it — build it, wrap it and check it with the `_on` functions:
+
+```rust
+use jd::{Dict, JdContext, UserDict};
+
+let (dict, report) = Dict::build(&std::fs::read_to_string("my-tables.txt")?, tables_hash)?;
+std::fs::write(dict_cache, dict.as_bytes())?; // a build is about 0.3 s per million entries: cache it
+let dict = dict.leak();
+let (phrases, _) = UserDict::build_on(dict, "键道输入法\tjdefi\n", phrases_hash)?;
+let mut ctx = JdContext::with_dict(dict, Some(phrases.leak()))?;
+```
+
+Wrap a cached dictionary with `Dict::from_mapped_blob` (or `from_blob` / `from_static_blob`): a large one is many megabytes, read in place. `Dict::empty()` has no codes at all, for typing from a user dictionary alone. A user dictionary built on one dictionary is `Stale` on any other, embedded one included, and `JdContext::with_dict` refuses the pair (`InitError::StaleUserDict`).
+
+**libjd-engine.** `default-features = false` drops the `builtin-dict` feature, and the crate builds and links libjd without its embedded dictionary — over 95% smaller. Every context then needs a `Dict`: `JdContext::new()` fails with `InitError::NoBuiltinDict`, and `Dict::builtin_entries()` is 0. With `LIBJD_PATH`, it is whichever library that folder holds.
+
 ### Reverse lookup
 
 `lookup_codes` goes the other way — the codes a value is typed with, from the built-in tables and the context's user dictionary, and where the value sits on each:
@@ -134,7 +152,7 @@ ctx.extend_candidates(strip.len() as u32, PAGE, &mut strip);
 ## Design
 
 - **Nothing is copied defensively, because nothing can dangle.** A candidate's `value` and a commit's segments point into a dictionary blob that lives for the rest of the process — libjd's embedded dictionary, or the `&'static UserDict` the context was created with — and a candidate's `hint` is inline bytes. That makes `Candidate` `Copy`, `Send`, and its text `&'static str`, so candidate lists can be kept, moved between threads, and rendered lazily with no allocation.
-- **A user dictionary is built once and cached as bytes.** `UserDict::build` runs the engine's builder (validation, sorting, deduplication against the built-in tables) into aligned storage and returns the engine's notes — which lines were skipped because they do not parse (one typo never fails the build), which were dropped and what they repeat, and which kept phrases sit on a code a built-in word or another phrase already uses (重码); `from_blob` copies cached bytes into aligned storage and `from_static_blob` takes process-lifetime memory such as a leaked memory map as is. Both validate exactly as `jd_init` would, reporting `Stale` after a library update so the host rebuilds from its persisted phrases; `check` reads a blob's `source_tag` and phrase count first so the host can tell whether the phrases changed before committing to it. `UserDict::hash` is libjd's content hash (`jd_user_dict_hash`), for a `source_tag` that follows the text: the same bytes hash the same on every platform and in every release.
+- **A user dictionary is built once and cached as bytes.** `UserDict::build` runs the engine's builder (validation, sorting, deduplication against the dictionary beneath) into aligned storage and returns the engine's notes — which lines were skipped because they do not parse (one typo never fails the build), which were dropped and what they repeat, and which kept phrases sit on a code a built-in word or another phrase already uses (重码); `from_blob` copies cached bytes into aligned storage and `from_static_blob` takes process-lifetime memory such as a leaked memory map as is. Both validate exactly as `jd_init` would, reporting `Stale` after a library update so the host rebuilds from its persisted phrases; `check` reads a blob's `source_tag` and phrase count first so the host can tell whether the phrases changed before committing to it. `UserDict::hash` is libjd's content hash (`jd_user_dict_hash`), for a `source_tag` that follows the text: the same bytes hash the same on every platform and in every release.
 - **Candidates are addressed by flat index.** `read_range` fills your own buffer and `extend_candidates` appends onto a `Vec` — the natural shape for a candidate strip. Reads are pure: they never change what the engine's automatic commits resolve to, so prefetch freely, and call `set_anchor` when the user's view moves.
 - **`&mut self` statically enforces the single-thread contract.** A single `JdContext` must not be called concurrently; distinct contexts are fully independent.
 - **`check_abi` runs once per process**, comparing this crate's hand-written `#[repr(C)]` declarations against `jd_abi_layout`. A silent drift would corrupt memory.
@@ -144,6 +162,7 @@ ctx.extend_candidates(strip.len() as u32, PAGE, &mut strip);
 
 ```sh
 cargo test
+cargo test --no-default-features   # libjd-engine: tests/dict.rs alone
 ```
 
 The integration tests link the real dictionary and cover the FFI smoke contract, context independence, candidate retention across later engine calls, `Send`-ness, window clipping, the anchor's independence from reads, reverse lookup (order, indices, short buffers, user phrases), and the user dictionary (merge order, user-only codes, build errors, cached-blob round trips).

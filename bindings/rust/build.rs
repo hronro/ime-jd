@@ -10,6 +10,11 @@
 //! The only thing that can't propagate from here is a linker arg on the
 //! final binary, so a dependent that needs an rpath (the CLI's dynamic dev
 //! builds) emits it itself from those two values.
+//!
+//! The `builtin-dict` feature (on by default) builds libjd with its embedded
+//! dictionary; without it, this builds libjd-engine, which has none and is
+//! over 95% smaller, for a host that passes its own dictionary
+//! (`Dict`). With LIBJD_PATH, it is whichever library that folder holds.
 
 use std::env;
 use std::fs;
@@ -61,20 +66,29 @@ fn main() {
         };
         let mut zig = Command::new("zig");
         zig.args(["build", optimize_flag]).current_dir(&core_dir);
+        let builtin_dict = env::var_os("CARGO_FEATURE_BUILTIN_DICT").is_some();
+        if !builtin_dict {
+            zig.arg("-Dbuiltin_dict=false");
+        }
         // A cross build (`--target`, as for the Windows IME's 32-bit DLL)
         // needs the core built for that target, and installed apart from the
-        // native build's core/zig-out.
+        // native build's core/zig-out — as does libjd-engine, which must not
+        // replace the full library other builds link from there.
         let target = env::var("TARGET").unwrap();
-        let install_dir = if target == env::var("HOST").unwrap() {
+        let native = target == env::var("HOST").unwrap();
+        let install_dir = if native && builtin_dict {
             core_dir.join("zig-out")
         } else {
-            let zig_target = zig_target(&target).unwrap_or_else(|| {
-                panic!("Can't build core for {target}; point LIBJD_PATH at a libjd built for it.")
-            });
             let prefix = PathBuf::from(env::var("OUT_DIR").unwrap()).join("zig-out");
-            zig.arg(format!("-Dtarget={zig_target}"))
-                .arg("--prefix")
-                .arg(&prefix);
+            if !native {
+                let zig_target = zig_target(&target).unwrap_or_else(|| {
+                    panic!(
+                        "Can't build core for {target}; point LIBJD_PATH at a libjd built for it."
+                    )
+                });
+                zig.arg(format!("-Dtarget={zig_target}"));
+            }
+            zig.arg("--prefix").arg(&prefix);
             prefix
         };
         if !zig.status().unwrap().success() {

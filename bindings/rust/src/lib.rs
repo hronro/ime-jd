@@ -21,6 +21,16 @@
 //! its phrases into every candidate list, user phrases first on a shared
 //! code.
 //!
+//! The dictionary a context types from is libjd's embedded one unless you
+//! give it your own: a [`Dict`], built from text of the same format with no
+//! cap short of millions of entries, and passed to [`JdContext::with_dict`].
+//! A user dictionary then sits on top of it — build and check it against
+//! that dictionary with the `_on` functions ([`UserDict::build_on`] and
+//! friends). libjd-engine, the library built without an embedded
+//! dictionary, types from nothing else ([`Dict::builtin_entries`] is 0
+//! there). To type from a user dictionary alone, put it on
+//! [`Dict::empty`].
+//!
 //! Candidates are addressed by flat index, not by page. Read a window with
 //! [`JdContext::read_range`] (into your own buffer) or
 //! [`JdContext::extend_candidates`] (appending onto a `Vec`, the natural shape
@@ -222,38 +232,59 @@ pub struct State {
 }
 
 /// `jd_init` failed — the engine couldn't allocate its per-context buffer.
-/// (A [`UserDict`] is validated when it is constructed, so a rejected blob
-/// never gets this far.)
+/// (A [`Dict`] and a [`UserDict`] are validated when they are constructed,
+/// so a corrupt blob never gets this far.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InitError;
+#[non_exhaustive]
+pub enum InitError {
+    /// No dictionary was given, and this libjd has none of its own
+    /// (libjd-engine): use [`JdContext::with_dict`].
+    NoBuiltinDict,
+    /// The user dictionary was built on another dictionary than the one the
+    /// context types from: rebuild it on this one.
+    StaleUserDict,
+    /// The context could not be allocated.
+    OutOfMemory,
+}
 
 impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("jd_init failed (allocation failure)")
+        f.write_str(match self {
+            Self::NoBuiltinDict => "this libjd has no built-in dictionary; pass one of your own",
+            Self::StaleUserDict => {
+                "the user dictionary was built on another dictionary (rebuild it)"
+            }
+            Self::OutOfMemory => "jd_init failed (allocation failure)",
+        })
     }
 }
 
 impl std::error::Error for InitError {}
 
-/// Why a user dictionary could not be built or accepted. Mirrors the
-/// `JD_USER_DICT_*` codes in `core/include/jd.h`. These are failures of a
-/// call as a whole; a line that does not parse is not one — the build skips
-/// it and says so in a [`UserDictNote`].
+/// Why a dictionary or user dictionary could not be built or accepted.
+/// Mirrors the `JD_USER_DICT_*` codes in `core/include/jd.h`. These are
+/// failures of a call as a whole; a line that does not parse is not one —
+/// the build skips it and says so in a [`UserDictNote`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserDictStatus {
     /// The output buffer was smaller than the bound (a bug in this crate).
     BufferTooSmall,
-    /// More than [`UserDict::MAX_ENTRIES`] phrases.
+    /// More entries than the cap: [`UserDict::MAX_ENTRIES`] phrases, or
+    /// [`Dict::MAX_ENTRIES`] in a dictionary.
     TooManyEntries,
-    /// The blob was built by another libjd (format or built-in dictionary
-    /// differ): rebuild it from the phrases.
+    /// The blob was built by another libjd (format or byte order differ),
+    /// or — a user dictionary — on another dictionary: rebuild it.
     Stale,
     /// The blob is structurally invalid: rebuild it from the phrases.
     Corrupt,
     /// The blob pointer was not 4-byte aligned (a bug in this crate).
     Misaligned,
-    /// The text exceeds [`UserDict::MAX_TEXT_BYTES`].
+    /// The text exceeds the cap: [`UserDict::MAX_TEXT_BYTES`], or
+    /// [`Dict::MAX_TEXT_BYTES`] for a dictionary.
     TextTooLong,
+    /// No dictionary was given for the user dictionary to sit on, and this
+    /// libjd has none of its own (libjd-engine).
+    NoBuiltinDict,
     /// A status this crate does not know (a newer library).
     Unknown(u32),
 }
@@ -267,6 +298,7 @@ impl UserDictStatus {
             4 => Self::Corrupt,
             5 => Self::Misaligned,
             6 => Self::TextTooLong,
+            7 => Self::NoBuiltinDict,
             other => Self::Unknown(other),
         }
     }
@@ -283,13 +315,14 @@ impl fmt::Display for UserDictStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BufferTooSmall => f.write_str("output buffer too small"),
-            Self::TooManyEntries => write!(f, "more than {} phrases", UserDict::MAX_ENTRIES),
+            Self::TooManyEntries => f.write_str("too many entries"),
             Self::Stale => {
                 f.write_str("blob was built against a different dictionary (rebuild it)")
             }
             Self::Corrupt => f.write_str("blob is corrupt (rebuild it)"),
             Self::Misaligned => f.write_str("blob is not 4-byte aligned"),
             Self::TextTooLong => f.write_str("text is too long"),
+            Self::NoBuiltinDict => f.write_str("this libjd has no built-in dictionary"),
             Self::Unknown(code) => write!(f, "unknown status {code}"),
         }
     }
@@ -355,16 +388,18 @@ pub struct UserDictNote {
 impl UserDictNote {
     /// Dropped: same keys and value as the kept line `other`.
     pub const REPEATS_LINE: u32 = 0x1;
-    /// Dropped: same keys and value as a built-in word.
+    /// Dropped: same keys and value as a word of the dictionary beneath —
+    /// the built-in one, or the [`Dict`] it was built on.
     pub const REPEATS_BUILTIN: u32 = 0x2;
-    /// Kept: a built-in word sits on exactly this code (`builtin` says how many).
+    /// Kept: a word of the dictionary beneath sits on exactly this code
+    /// (`builtin` says how many).
     pub const CODE_IN_BUILTIN: u32 = 0x4;
     /// Kept: kept line `other` sits on this code too (`peers` says how many do).
     pub const CODE_IN_LINE: u32 = 0x8;
     /// Skipped: neither blank nor a comment, and no TAB.
     pub const MALFORMED: u32 = 0x10;
-    /// Skipped: keys empty, longer than [`UserDict::MAX_KEY_LENGTH`], or not
-    /// all `a`-`z`.
+    /// Skipped: keys empty, longer than [`UserDict::MAX_KEY_LENGTH`], not
+    /// all `a`-`z` and `;`, or a `;` after a letter.
     pub const BAD_KEYS: u32 = 0x20;
     /// Skipped: value empty, longer than [`UserDict::VALUE_MAX`] bytes, not
     /// UTF-8, or containing control characters.
@@ -394,7 +429,9 @@ impl fmt::Display for UserDictNote {
             return f.write_str("skipped, expected `value<TAB>keys`");
         }
         if self.flags & Self::BAD_KEYS != 0 {
-            return f.write_str("skipped, keys must be 1 to 6 letters a-z");
+            return f.write_str(
+                "skipped, keys must be 1 to 6 of a-z and `;`, with no `;` after a letter",
+            );
         }
         if self.flags & Self::BAD_VALUE != 0 {
             return write!(
@@ -407,11 +444,16 @@ impl fmt::Display for UserDictNote {
             return write!(f, "dropped, repeats line {}", self.other);
         }
         if self.flags & Self::REPEATS_BUILTIN != 0 {
-            return f.write_str("dropped, repeats a built-in word");
+            return f.write_str("dropped, repeats a dictionary word");
         }
         f.write_str("shares its code with")?;
         if self.flags & Self::CODE_IN_BUILTIN != 0 {
-            write!(f, " {} built-in word{}", self.builtin, plural(self.builtin))?;
+            write!(
+                f,
+                " {} dictionary word{}",
+                self.builtin,
+                plural(self.builtin)
+            )?;
             if self.flags & Self::CODE_IN_LINE != 0 {
                 f.write_str(" and")?;
             }
@@ -545,12 +587,33 @@ fn aligned_copy(bytes: &[u8]) -> Vec<u32> {
     storage
 }
 
-/// `jd_user_dict_check` on `bytes` exactly where they are.
-fn check_in_place(bytes: &[u8]) -> Result<UserDictInfo, UserDictError> {
+/// The `(dict, dict_len)` pair the C calls take: the dictionary's blob, or
+/// NULL for the embedded one.
+fn dict_arg(dict: Option<&Dict>) -> (*const c_void, usize) {
+    match dict {
+        Some(d) => {
+            let bytes = d.blob.bytes();
+            (bytes.as_ptr().cast(), bytes.len())
+        }
+        None => (ptr::null(), 0),
+    }
+}
+
+/// `jd_user_dict_check` on `bytes` exactly where they are, on `dict`.
+fn check_in_place(dict: Option<&Dict>, bytes: &[u8]) -> Result<UserDictInfo, UserDictError> {
     check_abi();
+    let (dict_ptr, dict_len) = dict_arg(dict);
     let mut info = ffi::JdUserDictInfo::default();
-    // SAFETY: the pointer and length describe live memory.
-    let status = unsafe { ffi::jd_user_dict_check(bytes.as_ptr().cast(), bytes.len(), &mut info) };
+    // SAFETY: the pointers and lengths describe live memory.
+    let status = unsafe {
+        ffi::jd_user_dict_check(
+            dict_ptr,
+            dict_len,
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            &mut info,
+        )
+    };
     if status != 0 {
         return Err(UserDictError {
             status: UserDictStatus::from_code(status),
@@ -566,104 +629,82 @@ fn check_in_place(bytes: &[u8]) -> Result<UserDictInfo, UserDictError> {
 impl UserDict {
     /// Most phrases one dictionary may hold (`JD_USER_DICT_MAX_ENTRIES`).
     pub const MAX_ENTRIES: u32 = 500_000;
-    /// Longest phrase value in bytes (`JD_USER_DICT_VALUE_MAX`).
-    pub const VALUE_MAX: u32 = 255;
+    /// Longest phrase value in bytes (`JD_USER_DICT_VALUE_MAX`), the same
+    /// as a dictionary's.
+    pub const VALUE_MAX: u32 = 1023;
     /// Most text one build reads, in bytes (`JD_USER_DICT_TEXT_MAX`); more
     /// fails with [`UserDictStatus::TextTooLong`].
     pub const MAX_TEXT_BYTES: u32 = 16 * 1024 * 1024;
-    /// Longest code. `jd.h` states it in prose — keys are 1 to 6 letters
-    /// `a`-`z` — rather than as a macro; the builder skips a longer code
+    /// Longest code. `jd.h` states it in prose — keys are 1 to 6 of `a`-`z`
+    /// and `;` — rather than as a macro; the builder skips a longer code
     /// with a [`UserDictNote::BAD_KEYS`] note.
     pub const MAX_KEY_LENGTH: u32 = 6;
 
     /// Build from lines of `value<TAB>keys` — the format of libjd's own
     /// table files. `#` starts a comment line, blank lines are skipped,
     /// spaces around either field are trimmed, CRLF is accepted. Keys are
-    /// one to six letters `a`-`z`; values are UTF-8 without control
-    /// characters. Exact duplicates, of an earlier line or of a built-in
-    /// word on the same code, are dropped and counted; the report's notes
-    /// say which lines, and which kept phrases sit on a code that a
-    /// built-in word or another phrase already uses.
+    /// one to six of `a`-`z` and `;`, with no `;` after a letter; values are
+    /// UTF-8 without control characters. Exact duplicates, of an earlier
+    /// line or of a built-in word on the same code, are dropped and
+    /// counted; the report's notes say which lines, and which kept phrases
+    /// sit on a code that a built-in word or another phrase already uses.
     ///
     /// `source_tag` is stored in the blob, uninterpreted: a modification
     /// time, a content hash, a revision — whatever identifies the phrases
     /// this dictionary was built from.
+    ///
+    /// The phrases sit on libjd's embedded dictionary; [`Self::build_on`]
+    /// puts them on another.
     pub fn build(phrases: &str, source_tag: u64) -> Result<(Self, UserDictReport), UserDictError> {
+        Self::build_with(None, phrases, source_tag)
+    }
+
+    /// [`Self::build`] on `dict` instead of the embedded dictionary: the
+    /// phrases that repeat its words are dropped, the notes name its words
+    /// on a shared code, and the result works only on a context typing from
+    /// `dict` ([`JdContext::with_dict`]).
+    pub fn build_on(
+        dict: &Dict,
+        phrases: &str,
+        source_tag: u64,
+    ) -> Result<(Self, UserDictReport), UserDictError> {
+        Self::build_with(Some(dict), phrases, source_tag)
+    }
+
+    fn build_with(
+        dict: Option<&Dict>,
+        phrases: &str,
+        source_tag: u64,
+    ) -> Result<(Self, UserDictReport), UserDictError> {
         check_abi();
         let text = phrases.as_bytes();
         let bound = unsafe { ffi::jd_user_dict_blob_bound(text.as_ptr().cast(), text.len()) };
-        let mut storage = vec![0u32; bound.div_ceil(4)];
-        let mut len: usize = 0;
-        let mut report = ffi::JdUserDictReport::default();
-        // SAFETY: every pointer is to live memory of the stated length, and
-        // the output buffer is 4-byte aligned (a Vec<u32>) and at least the
-        // bound long.
-        let status = unsafe {
-            ffi::jd_user_dict_build(
-                text.as_ptr().cast(),
-                text.len(),
-                source_tag,
-                storage.as_mut_ptr().cast(),
-                storage.len() * 4,
-                &mut len,
-                &mut report,
-            )
-        };
-        if status != 0 {
-            return Err(UserDictError {
-                status: UserDictStatus::from_code(status),
-                line: report.line,
-            });
-        }
-        // The notes sit past the blob in the same buffer; copy them out
-        // before it is trimmed to the blob.
-        let notes = {
-            let start = report.notes_offset as usize;
-            let count = report.notes as usize;
-            let end = start + count * size_of::<ffi::JdUserDictNote>();
-            assert!(
-                start.is_multiple_of(4) && end <= storage.len() * 4,
-                "libjd placed the notes outside the buffer it was given"
-            );
-            // SAFETY: the library wrote `count` notes at a 4-aligned offset
-            // inside the buffer, which the assertion above re-checks.
-            let raw = unsafe {
-                std::slice::from_raw_parts(
-                    storage
-                        .as_ptr()
-                        .cast::<u8>()
-                        .add(start)
-                        .cast::<ffi::JdUserDictNote>(),
-                    count,
+        let (dict_ptr, dict_len) = dict_arg(dict);
+        let built = build_blob(bound, |buf, cap, len, report| {
+            // SAFETY: every pointer is to live memory of the stated length,
+            // and the output buffer is 4-byte aligned and at least the bound
+            // long.
+            unsafe {
+                ffi::jd_user_dict_build(
+                    dict_ptr,
+                    dict_len,
+                    text.as_ptr().cast(),
+                    text.len(),
+                    source_tag,
+                    buf,
+                    cap,
+                    len,
+                    report,
                 )
-            };
-            raw.iter()
-                .map(|n| UserDictNote {
-                    line: n.line,
-                    flags: n.flags,
-                    other: n.other,
-                    builtin: n.builtin,
-                    peers: n.peers,
-                })
-                .collect()
-        };
-        // The bound leaves room for every line's note and the whole text,
-        // about twice the blob: keep only the blob.
-        storage.truncate(len.div_ceil(4));
-        storage.shrink_to_fit();
+            }
+        })?;
         Ok((
             Self {
-                blob: Blob::Owned { storage, len },
-                entries: report.entries,
+                entries: built.report.entries,
+                blob: built.blob,
                 source_tag,
             },
-            UserDictReport {
-                entries: report.entries,
-                dropped: report.dropped,
-                shared: report.shared,
-                invalid: report.invalid,
-                notes,
-            },
+            built.report,
         ))
     }
 
@@ -672,12 +713,21 @@ impl UserDict {
     /// a [`UserDictStatus::Stale`] or [`UserDictStatus::Corrupt`] result
     /// means "rebuild from the phrases".
     pub fn from_blob(bytes: &[u8]) -> Result<Self, UserDictError> {
+        Self::from_blob_with(None, bytes)
+    }
+
+    /// [`Self::from_blob`] for a blob built on `dict` ([`Self::build_on`]).
+    pub fn from_blob_on(dict: &Dict, bytes: &[u8]) -> Result<Self, UserDictError> {
+        Self::from_blob_with(Some(dict), bytes)
+    }
+
+    fn from_blob_with(dict: Option<&Dict>, bytes: &[u8]) -> Result<Self, UserDictError> {
         let storage = aligned_copy(bytes);
         let blob = Blob::Owned {
             storage,
             len: bytes.len(),
         };
-        let info = check_in_place(blob.bytes())?;
+        let info = check_in_place(dict, blob.bytes())?;
         Ok(Self {
             blob,
             entries: info.entries,
@@ -693,7 +743,20 @@ impl UserDict {
     /// slice fails with [`UserDictStatus::Misaligned`]. Validated exactly as
     /// `jd_init` would.
     pub fn from_static_blob(bytes: &'static [u8]) -> Result<Self, UserDictError> {
-        let info = check_in_place(bytes)?;
+        Self::from_static_blob_with(None, bytes)
+    }
+
+    /// [`Self::from_static_blob`] for a blob built on `dict`
+    /// ([`Self::build_on`]).
+    pub fn from_static_blob_on(dict: &Dict, bytes: &'static [u8]) -> Result<Self, UserDictError> {
+        Self::from_static_blob_with(Some(dict), bytes)
+    }
+
+    fn from_static_blob_with(
+        dict: Option<&Dict>,
+        bytes: &'static [u8],
+    ) -> Result<Self, UserDictError> {
+        let info = check_in_place(dict, bytes)?;
         Ok(Self {
             blob: Blob::Static(bytes),
             entries: info.entries,
@@ -719,8 +782,30 @@ impl UserDict {
     pub unsafe fn from_mapped_blob(
         map: impl AsRef<[u8]> + Send + Sync + 'static,
     ) -> Result<Self, UserDictError> {
+        // SAFETY: the caller's promise, passed on.
+        unsafe { Self::from_mapped_blob_with(None, map) }
+    }
+
+    /// [`Self::from_mapped_blob`] for a blob built on `dict`
+    /// ([`Self::build_on`]).
+    ///
+    /// # Safety
+    ///
+    /// As for [`Self::from_mapped_blob`].
+    pub unsafe fn from_mapped_blob_on(
+        dict: &Dict,
+        map: impl AsRef<[u8]> + Send + Sync + 'static,
+    ) -> Result<Self, UserDictError> {
+        // SAFETY: the caller's promise, passed on.
+        unsafe { Self::from_mapped_blob_with(Some(dict), map) }
+    }
+
+    unsafe fn from_mapped_blob_with(
+        dict: Option<&Dict>,
+        map: impl AsRef<[u8]> + Send + Sync + 'static,
+    ) -> Result<Self, UserDictError> {
         let blob = Blob::Mapped(Box::new(map));
-        let info = check_in_place(blob.bytes())?;
+        let info = check_in_place(dict, blob.bytes())?;
         Ok(Self {
             blob,
             entries: info.entries,
@@ -733,16 +818,12 @@ impl UserDict {
     /// and a rebuild before committing to a memory map. Works on any slice;
     /// a misaligned one is checked through a temporary aligned copy.
     pub fn check(bytes: &[u8]) -> Result<UserDictInfo, UserDictError> {
-        if bytes.as_ptr().addr().is_multiple_of(4) {
-            check_in_place(bytes)
-        } else {
-            let storage = aligned_copy(bytes);
-            let blob = Blob::Owned {
-                storage,
-                len: bytes.len(),
-            };
-            check_in_place(blob.bytes())
-        }
+        check_anywhere(bytes, |b| check_in_place(None, b))
+    }
+
+    /// [`Self::check`] for a blob built on `dict` ([`Self::build_on`]).
+    pub fn check_on(dict: &Dict, bytes: &[u8]) -> Result<UserDictInfo, UserDictError> {
+        check_anywhere(bytes, |b| check_in_place(Some(dict), b))
     }
 
     /// libjd's hash of `bytes` (`jd_user_dict_hash`), for the `source_tag`
@@ -788,6 +869,277 @@ impl fmt::Debug for UserDict {
             .field("len", &self.blob.bytes().len())
             .finish()
     }
+}
+
+/// Run `check` on `bytes` where they are when they are 4-byte aligned,
+/// otherwise on a temporary aligned copy.
+fn check_anywhere(
+    bytes: &[u8],
+    check: impl FnOnce(&[u8]) -> Result<UserDictInfo, UserDictError>,
+) -> Result<UserDictInfo, UserDictError> {
+    if bytes.as_ptr().addr().is_multiple_of(4) {
+        check(bytes)
+    } else {
+        let storage = aligned_copy(bytes);
+        let blob = Blob::Owned {
+            storage,
+            len: bytes.len(),
+        };
+        check(blob.bytes())
+    }
+}
+
+/// A blob a build call left in a buffer of ours, trimmed to the blob, and
+/// what the call reported.
+struct Built {
+    blob: Blob,
+    report: UserDictReport,
+}
+
+/// Run a `jd_*_build` call — `build(buf, cap, &mut len, &mut report)` —
+/// into a 4-byte-aligned buffer of `bound` bytes, then copy the notes out
+/// and keep only the blob.
+fn build_blob(
+    bound: usize,
+    build: impl FnOnce(*mut c_void, usize, &mut usize, &mut ffi::JdUserDictReport) -> u32,
+) -> Result<Built, UserDictError> {
+    let mut storage = vec![0u32; bound.div_ceil(4)];
+    let mut len: usize = 0;
+    let mut report = ffi::JdUserDictReport::default();
+    let cap = storage.len() * 4;
+    let status = build(storage.as_mut_ptr().cast(), cap, &mut len, &mut report);
+    if status != 0 {
+        return Err(UserDictError {
+            status: UserDictStatus::from_code(status),
+            line: report.line,
+        });
+    }
+    // The notes sit past the blob in the same buffer; copy them out
+    // before it is trimmed to the blob.
+    let notes = {
+        let start = report.notes_offset as usize;
+        let count = report.notes as usize;
+        let end = start + count * size_of::<ffi::JdUserDictNote>();
+        assert!(
+            start.is_multiple_of(4) && end <= cap,
+            "libjd placed the notes outside the buffer it was given"
+        );
+        // SAFETY: the library wrote `count` notes at a 4-aligned offset
+        // inside the buffer, which the assertion above re-checks.
+        let raw = unsafe {
+            std::slice::from_raw_parts(
+                storage
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(start)
+                    .cast::<ffi::JdUserDictNote>(),
+                count,
+            )
+        };
+        raw.iter()
+            .map(|n| UserDictNote {
+                line: n.line,
+                flags: n.flags,
+                other: n.other,
+                builtin: n.builtin,
+                peers: n.peers,
+            })
+            .collect()
+    };
+    // The bound leaves room for the build's working space and every line's
+    // note, a few times the blob: keep only the blob.
+    storage.truncate(len.div_ceil(4));
+    storage.shrink_to_fit();
+    Ok(Built {
+        blob: Blob::Owned { storage, len },
+        report: UserDictReport {
+            entries: report.entries,
+            dropped: report.dropped,
+            shared: report.shared,
+            invalid: report.invalid,
+            notes,
+        },
+    })
+}
+
+/// A dictionary to type from in place of libjd's embedded one: every code
+/// and the words on it, built from `value<TAB>keys` text by the same code
+/// that builds the embedded dictionary, so it types the same way and as
+/// fast, at any size up to [`Self::MAX_ENTRIES`].
+///
+/// Like a [`UserDict`], build it once, cache [`Self::as_bytes`], and wrap
+/// the cached bytes on later launches — a memory map of the cache file is
+/// best ([`Self::from_mapped_blob`]), since the engine reads the blob in
+/// place and a large one is many megabytes. A build is the slow part,
+/// about 0.3 s per million entries on a laptop; checking a blob, which
+/// every constructor does exactly as `jd_init` would, a few tens of
+/// milliseconds per million.
+///
+/// Hand it to [`JdContext::with_dict`], which takes `&'static Dict` for the
+/// same reason [`JdContext::with_user_dict`] takes a `'static` user
+/// dictionary. A user dictionary for it is built and checked with
+/// [`UserDict::build_on`] and friends.
+pub struct Dict {
+    blob: Blob,
+    entries: u32,
+    source_tag: u64,
+}
+
+impl Dict {
+    /// Most entries one dictionary may hold (`JD_DICT_MAX_ENTRIES`).
+    pub const MAX_ENTRIES: u32 = 16_777_215;
+    /// Longest value in bytes (`JD_DICT_VALUE_MAX`).
+    pub const VALUE_MAX: u32 = 1023;
+    /// Most text one build reads, in bytes (`JD_DICT_TEXT_MAX`).
+    pub const MAX_TEXT_BYTES: u32 = u32::MAX;
+
+    /// Build from lines of `value<TAB>keys`, by the rules of
+    /// [`UserDict::build`]: lines that do not parse are skipped and exact
+    /// repeats dropped, each with a note in the report (whose `shared` is
+    /// always 0). The words on one code are its candidates in the order of
+    /// their lines. `source_tag` is stored in the blob, uninterpreted.
+    pub fn build(text: &str, source_tag: u64) -> Result<(Self, UserDictReport), UserDictError> {
+        check_abi();
+        let bytes = text.as_bytes();
+        // SAFETY: the library reads exactly `len` bytes.
+        let bound = unsafe { ffi::jd_dict_blob_bound(bytes.as_ptr().cast(), bytes.len()) };
+        let built = build_blob(bound, |buf, cap, len, report| {
+            // SAFETY: every pointer is to live memory of the stated length,
+            // and the output buffer is 4-byte aligned and at least the bound
+            // long.
+            unsafe {
+                ffi::jd_dict_build(
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    source_tag,
+                    buf,
+                    cap,
+                    len,
+                    report,
+                )
+            }
+        })?;
+        Ok((
+            Self {
+                entries: built.report.entries,
+                blob: built.blob,
+                source_tag,
+            },
+            built.report,
+        ))
+    }
+
+    /// The empty dictionary: no codes at all. A context on it types from
+    /// its user dictionary alone — build that with [`UserDict::build_on`]
+    /// on the same empty dictionary. Every empty dictionary is the same
+    /// dictionary, so a user dictionary built on one works on any.
+    pub fn empty() -> Self {
+        Self::build("", 0)
+            .expect("libjd builds an empty dictionary")
+            .0
+    }
+
+    /// How many entries libjd's embedded dictionary holds: 0 in
+    /// libjd-engine, which has none.
+    pub fn builtin_entries() -> u32 {
+        // SAFETY: a pure query of a constant.
+        unsafe { ffi::jd_abi_layout(JD_ABI_BUILTIN_DICT_ENTRIES) }
+    }
+
+    /// Wrap a blob cached from an earlier [`Self::as_bytes`], copied into
+    /// aligned storage and validated exactly as `jd_init` would.
+    pub fn from_blob(bytes: &[u8]) -> Result<Self, UserDictError> {
+        let blob = Blob::Owned {
+            storage: aligned_copy(bytes),
+            len: bytes.len(),
+        };
+        Self::wrap(blob)
+    }
+
+    /// Wrap a cached blob without copying it: memory you keep alive for the
+    /// rest of the process, 4-byte aligned, never moved or changed. See
+    /// [`UserDict::from_static_blob`].
+    pub fn from_static_blob(bytes: &'static [u8]) -> Result<Self, UserDictError> {
+        Self::wrap(Blob::Static(bytes))
+    }
+
+    /// Wrap a cached blob in memory that `map` owns — a memory map of the
+    /// cache file, typically — without copying it. See
+    /// [`UserDict::from_mapped_blob`].
+    ///
+    /// # Safety
+    ///
+    /// As for [`UserDict::from_mapped_blob`].
+    pub unsafe fn from_mapped_blob(
+        map: impl AsRef<[u8]> + Send + Sync + 'static,
+    ) -> Result<Self, UserDictError> {
+        Self::wrap(Blob::Mapped(Box::new(map)))
+    }
+
+    fn wrap(blob: Blob) -> Result<Self, UserDictError> {
+        let info = dict_check_in_place(blob.bytes())?;
+        Ok(Self {
+            blob,
+            entries: info.entries,
+            source_tag: info.source_tag,
+        })
+    }
+
+    /// Validate a cached blob and read its tag and entry count without
+    /// taking it over. Works on any slice; a misaligned one is checked
+    /// through a temporary aligned copy.
+    pub fn check(bytes: &[u8]) -> Result<UserDictInfo, UserDictError> {
+        check_anywhere(bytes, dict_check_in_place)
+    }
+
+    /// How many entries the dictionary holds.
+    pub fn entries(&self) -> u32 {
+        self.entries
+    }
+
+    /// The tag [`Self::build`] was given, read back from the blob.
+    pub fn source_tag(&self) -> u64 {
+        self.source_tag
+    }
+
+    /// The blob — exactly the bytes to cache.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.blob.bytes()
+    }
+
+    /// Give the dictionary the `'static` lifetime [`JdContext::with_dict`]
+    /// needs, at the cost of never freeing it.
+    pub fn leak(self) -> &'static Dict {
+        Box::leak(Box::new(self))
+    }
+}
+
+impl fmt::Debug for Dict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Dict")
+            .field("entries", &self.entries)
+            .field("source_tag", &self.source_tag)
+            .field("len", &self.blob.bytes().len())
+            .finish()
+    }
+}
+
+/// `jd_dict_check` on `bytes` exactly where they are.
+fn dict_check_in_place(bytes: &[u8]) -> Result<UserDictInfo, UserDictError> {
+    check_abi();
+    let mut info = ffi::JdUserDictInfo::default();
+    // SAFETY: the pointer and length describe live memory.
+    let status = unsafe { ffi::jd_dict_check(bytes.as_ptr().cast(), bytes.len(), &mut info) };
+    if status != 0 {
+        return Err(UserDictError {
+            status: UserDictStatus::from_code(status),
+            line: 0,
+        });
+    }
+    Ok(UserDictInfo {
+        source_tag: info.source_tag,
+        entries: info.entries,
+    })
 }
 
 mod ffi {
@@ -839,7 +1191,12 @@ mod ffi {
     }
 
     unsafe extern "C" {
-        pub fn jd_init(user_dict: *const c_void, user_dict_len: usize) -> *mut JdContext;
+        pub fn jd_init(
+            dict: *const c_void,
+            dict_len: usize,
+            user_dict: *const c_void,
+            user_dict_len: usize,
+        ) -> *mut JdContext;
         pub fn jd_deinit(ctx: *mut JdContext);
         pub fn jd_press_key(ctx: *mut JdContext, key: u8);
         pub fn jd_backspace(ctx: *mut JdContext);
@@ -862,7 +1219,24 @@ mod ffi {
         ) -> u32;
         pub fn jd_abi_layout(what: u32) -> u32;
         pub fn jd_user_dict_blob_bound(phrases: *const c_char, phrases_len: usize) -> usize;
+        pub fn jd_dict_blob_bound(text: *const c_char, text_len: usize) -> usize;
+        pub fn jd_dict_build(
+            text: *const c_char,
+            text_len: usize,
+            source_tag: u64,
+            buf: *mut c_void,
+            buf_cap: usize,
+            blob_len: *mut usize,
+            report: *mut JdUserDictReport,
+        ) -> u32;
+        pub fn jd_dict_check(
+            blob: *const c_void,
+            blob_len: usize,
+            info: *mut JdUserDictInfo,
+        ) -> u32;
         pub fn jd_user_dict_build(
+            dict: *const c_void,
+            dict_len: usize,
             phrases: *const c_char,
             phrases_len: usize,
             source_tag: u64,
@@ -872,6 +1246,8 @@ mod ffi {
             report: *mut JdUserDictReport,
         ) -> u32;
         pub fn jd_user_dict_check(
+            dict: *const c_void,
+            dict_len: usize,
             blob: *const c_void,
             blob_len: usize,
             info: *mut JdUserDictInfo,
@@ -891,6 +1267,10 @@ const JD_ABI_SIZEOF_USER_DICT_NOTE: u32 = 9;
 const JD_ABI_SIZEOF_CODE: u32 = 10;
 const JD_ABI_CODE_CAP: u32 = 11;
 const JD_ABI_USER_DICT_TEXT_MAX: u32 = 12;
+const JD_ABI_DICT_MAX_ENTRIES: u32 = 13;
+const JD_ABI_DICT_VALUE_MAX: u32 = 14;
+const JD_ABI_DICT_TEXT_MAX: u32 = 15;
+const JD_ABI_BUILTIN_DICT_ENTRIES: u32 = 16;
 
 static ABI_CHECK: Once = Once::new();
 
@@ -913,8 +1293,20 @@ fn check_abi() {
                 ffi::jd_abi_layout(JD_ABI_CODE_CAP) as usize,
             )
         };
-        // SAFETY: a pure query of a constant.
-        let text_max = unsafe { ffi::jd_abi_layout(JD_ABI_USER_DICT_TEXT_MAX) };
+        // SAFETY: pure queries of constants.
+        let (text_max, dict_entries, dict_value, dict_text) = unsafe {
+            (
+                ffi::jd_abi_layout(JD_ABI_USER_DICT_TEXT_MAX),
+                ffi::jd_abi_layout(JD_ABI_DICT_MAX_ENTRIES),
+                ffi::jd_abi_layout(JD_ABI_DICT_VALUE_MAX),
+                ffi::jd_abi_layout(JD_ABI_DICT_TEXT_MAX),
+            )
+        };
+        assert_eq!(
+            (dict_entries, dict_value, dict_text),
+            (Dict::MAX_ENTRIES, Dict::VALUE_MAX, Dict::MAX_TEXT_BYTES),
+            "libjd dictionary caps mismatch — bindings/rust is out of sync with core"
+        );
         assert_eq!(
             text_max,
             UserDict::MAX_TEXT_BYTES,
@@ -980,32 +1372,63 @@ pub struct JdContext {
 }
 
 impl JdContext {
-    /// A context over the built-in dictionary alone.
+    /// A context over the built-in dictionary alone. Fails with
+    /// [`InitError::NoBuiltinDict`] in libjd-engine.
     pub fn new() -> Result<Self, InitError> {
-        Self::init(None)
+        Self::init(None, None)
     }
 
     /// A context over the built-in dictionary plus `dict`. The engine reads
     /// the dictionary in place for the context's lifetime and candidates
     /// keep pointing into it, hence `'static` — see [`UserDict::leak`].
     pub fn with_user_dict(dict: &'static UserDict) -> Result<Self, InitError> {
-        Self::init(Some(dict))
+        Self::init(None, Some(dict))
     }
 
-    fn init(dict: Option<&'static UserDict>) -> Result<Self, InitError> {
+    /// A context typing from `dict` instead of the built-in dictionary,
+    /// plus `user_dict` on top of it — which must have been built on this
+    /// same `dict` ([`UserDict::build_on`]), or the context fails with
+    /// [`InitError::StaleUserDict`]. Both are read in place for the
+    /// context's lifetime, hence `'static` — see [`Dict::leak`].
+    pub fn with_dict(
+        dict: &'static Dict,
+        user_dict: Option<&'static UserDict>,
+    ) -> Result<Self, InitError> {
+        Self::init(Some(dict), user_dict)
+    }
+
+    fn init(
+        dict: Option<&'static Dict>,
+        user_dict: Option<&'static UserDict>,
+    ) -> Result<Self, InitError> {
         check_abi();
-        let (blob, len) = match dict {
+        let (dict_ptr, dict_len) = dict_arg(dict);
+        let (user_ptr, user_len) = match user_dict {
             Some(d) => {
                 let bytes = d.blob.bytes();
                 (bytes.as_ptr().cast::<c_void>(), bytes.len())
             }
             None => (ptr::null(), 0),
         };
-        // SAFETY: the blob, if any, is aligned, validated at construction,
-        // and lives for the rest of the process.
-        let raw = unsafe { ffi::jd_init(blob, len) };
-        let handle = NonNull::new(raw).ok_or(InitError)?;
-        let state = NonNull::new(unsafe { ffi::jd_state_ptr(raw) }.cast_mut()).ok_or(InitError)?;
+        // SAFETY: the blobs, if any, are aligned, validated at construction,
+        // and live for the rest of the process.
+        let raw = unsafe { ffi::jd_init(dict_ptr, dict_len, user_ptr, user_len) };
+        let Some(handle) = NonNull::new(raw) else {
+            // Both blobs passed their checks when they were wrapped, so the
+            // failure is one of these — worked out only now, to spare a
+            // launch that succeeds a second pass over them.
+            if dict.is_none() && Dict::builtin_entries() == 0 {
+                return Err(InitError::NoBuiltinDict);
+            }
+            if let Some(u) = user_dict
+                && check_in_place(dict, u.blob.bytes()).is_err()
+            {
+                return Err(InitError::StaleUserDict);
+            }
+            return Err(InitError::OutOfMemory);
+        };
+        let state = NonNull::new(unsafe { ffi::jd_state_ptr(raw) }.cast_mut())
+            .ok_or(InitError::OutOfMemory)?;
         Ok(Self { handle, state })
     }
 

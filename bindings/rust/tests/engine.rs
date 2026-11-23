@@ -3,6 +3,10 @@
 //! layout matches, the trie blob loads, contexts are independent, and reads
 //! never disturb the commit anchor.
 
+// They type on the embedded dictionary, which libjd-engine does not have:
+// `cargo test --no-default-features` runs tests/dict.rs alone.
+#![cfg(feature = "builtin-dict")]
+
 use jd::{Candidate, Code, JdContext, UserDict, UserDictNote, UserDictStatus};
 
 #[test]
@@ -335,11 +339,11 @@ fn bad_lines_are_skipped_and_noted_never_fatal() {
     );
     assert_eq!(
         report.notes[1].to_string(),
-        "line 3: skipped, keys must be 1 to 6 letters a-z"
+        "line 3: skipped, keys must be 1 to 6 of a-z and `;`, with no `;` after a letter"
     );
     assert_eq!(
         report.notes[2].to_string(),
-        "line 4: skipped, value must be 1 to 255 bytes of text without control characters"
+        "line 4: skipped, value must be 1 to 1023 bytes of text without control characters"
     );
 
     // MAX_KEY_LENGTH is stated in prose in jd.h, so pin it here: a code that
@@ -365,16 +369,15 @@ fn bad_lines_are_skipped_and_noted_never_fatal() {
     assert_eq!(err.line, UserDict::MAX_ENTRIES + 1);
     assert_eq!(
         err.to_string(),
-        format!(
-            "line {}: more than {} phrases",
-            UserDict::MAX_ENTRIES + 1,
-            UserDict::MAX_ENTRIES
-        )
+        format!("line {}: too many entries", UserDict::MAX_ENTRIES + 1)
     );
 
     // Or too much text: the cap is the last byte that builds.
     let cap = UserDict::MAX_TEXT_BYTES as usize;
-    let at_cap = format!("键道\tzzzzzz\n#{}", "x".repeat(cap - "键道\tzzzzzz\n#".len()));
+    let at_cap = format!(
+        "键道\tzzzzzz\n#{}",
+        "x".repeat(cap - "键道\tzzzzzz\n#".len())
+    );
     assert_eq!(at_cap.len(), cap);
     assert_eq!(UserDict::build(&at_cap, 0).expect("build").1.entries, 1);
     let err = UserDict::build(&format!("{at_cap}x"), 0).unwrap_err();
@@ -447,7 +450,7 @@ fn notes_say_what_a_line_repeats_and_which_codes_are_shared() {
     );
     assert_eq!(
         report.notes[3].to_string(),
-        "line 5: dropped, repeats a built-in word"
+        "line 5: dropped, repeats a dictionary word"
     );
 
     // Nothing to say about a clean file.
@@ -561,7 +564,12 @@ fn a_mapped_blob_is_read_in_place_and_dropped_with_the_dictionary() {
     impl AsRef<[u8]> for Map {
         fn as_ref(&self) -> &[u8] {
             // SAFETY: the storage holds `len + skip` bytes.
-            unsafe { std::slice::from_raw_parts(self.storage.as_ptr().cast::<u8>().add(self.skip), self.len) }
+            unsafe {
+                std::slice::from_raw_parts(
+                    self.storage.as_ptr().cast::<u8>().add(self.skip),
+                    self.len,
+                )
+            }
         }
     }
     impl Drop for Map {
@@ -573,9 +581,18 @@ fn a_mapped_blob_is_read_in_place_and_dropped_with_the_dictionary() {
         let mut storage = vec![0u32; (blob.len() + skip).div_ceil(4)];
         // SAFETY: the storage holds at least `skip + blob.len()` bytes.
         unsafe {
-            std::ptr::copy_nonoverlapping(blob.as_ptr(), storage.as_mut_ptr().cast::<u8>().add(skip), blob.len());
+            std::ptr::copy_nonoverlapping(
+                blob.as_ptr(),
+                storage.as_mut_ptr().cast::<u8>().add(skip),
+                blob.len(),
+            );
         }
-        Map { storage, len: blob.len(), skip, drops: drops.clone() }
+        Map {
+            storage,
+            len: blob.len(),
+            skip,
+            drops: drops.clone(),
+        }
     };
 
     let (built, _) = UserDict::build("键道\tzzzzzz\n", 7).expect("build");
@@ -588,7 +605,11 @@ fn a_mapped_blob_is_read_in_place_and_dropped_with_the_dictionary() {
     assert_eq!((dict.source_tag(), dict.entries()), (7, 1));
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     drop(dict);
-    assert_eq!(drops.load(Ordering::SeqCst), 1, "unmapped with the dictionary");
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        1,
+        "unmapped with the dictionary"
+    );
 
     // The engine reads it there.
     // SAFETY: as above.
@@ -604,7 +625,8 @@ fn a_mapped_blob_is_read_in_place_and_dropped_with_the_dictionary() {
     // SAFETY: as above.
     let err = unsafe { UserDict::from_mapped_blob(map(built.as_bytes(), 1, &drops)) }.unwrap_err();
     assert_eq!(err.status, UserDictStatus::Misaligned);
-    let err = unsafe { UserDict::from_mapped_blob(map(&built.as_bytes()[..40], 0, &drops)) }.unwrap_err();
+    let err =
+        unsafe { UserDict::from_mapped_blob(map(&built.as_bytes()[..40], 0, &drops)) }.unwrap_err();
     assert_eq!(err.status, UserDictStatus::Corrupt);
     assert_eq!(drops.load(Ordering::SeqCst), 2);
 }
