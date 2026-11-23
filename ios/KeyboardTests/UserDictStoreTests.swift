@@ -49,7 +49,7 @@ final class UserDictStoreTests: XCTestCase {
             return XCTFail("expected a shared-code verdict, got \(String(describing: store.problems[4]))")
         }
         XCTAssertGreaterThanOrEqual(builtIn, 1)
-        XCTAssertEqual(store.problems[1]?.text, "编码无效（1 到 6 个 a-z），不生效")
+        XCTAssertEqual(store.problems[1]?.text, "编码无效（1 到 6 个 a-z，开头可以有 ;），不生效")
         XCTAssertEqual(store.problems[2]?.text, "与第 1 条重复，不生效")
         XCTAssertEqual(store.problems[3]?.text, "与内置词重复，不生效")
         XCTAssertEqual(store.problems[4]?.text, "与 \(builtIn) 个内置词同码")
@@ -86,9 +86,11 @@ final class UserDictStoreTests: XCTestCase {
 
     func testTheSwitchLivesInTheSharedDefaults() throws {
         XCTAssertFalse(store.isEnabled)
-        XCTAssertNil(store.activeDictionary)
+        guard case .builtIn(nil) = store.selection else { return XCTFail("\(store.selection)") }
         try store.save([UserDictEntry(value: "键道", keys: "zzzzzz")])
-        XCTAssertNil(store.activeDictionary, "off: the preview runs on the built-in dictionary")
+        guard case .builtIn(nil) = store.selection else {
+            return XCTFail("off: the preview runs on the built-in dictionary")
+        }
 
         var notified = 0
         let observer = NotificationCenter.default.addObserver(
@@ -101,7 +103,7 @@ final class UserDictStoreTests: XCTestCase {
         XCTAssertEqual(notified, 1, "no change, no notice")
         XCTAssertTrue(defaults.bool(forKey: UserDictContainer.enabledKey))
         XCTAssertTrue(container.isEnabled)
-        XCTAssertNotNil(store.activeDictionary)
+        guard case .builtIn(.some) = store.selection else { return XCTFail("\(store.selection)") }
     }
 
     // MARK: - Importing

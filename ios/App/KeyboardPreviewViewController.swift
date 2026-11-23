@@ -4,7 +4,7 @@ import UIKit
 /// extension in Settings. It drives the SAME `KeyboardView` + `InputSession`, with
 /// committed text routed into a real text view (which conforms to `UIKeyInput`).
 final class KeyboardPreviewViewController: UIViewController {
-    private let session = InputSession(userDict: UserDictStore.shared.activeDictionary)   // mirrors the extension
+    private let session = InputSession(selection: UserDictStore.shared.selection)   // mirrors the extension
     private var userDictObserver: NSObjectProtocol?
     private let host = FieldHost()
     private let textView = UITextView()
@@ -36,7 +36,7 @@ final class KeyboardPreviewViewController: UIViewController {
         userDictObserver = NotificationCenter.default.addObserver(
             forName: UserDictStore.didChange, object: UserDictStore.shared, queue: .main
         ) { [weak self] _ in
-            self?.session.replaceDictionary(UserDictStore.shared.activeDictionary)
+            self?.session.replaceSelection(UserDictStore.shared.selection)
         }
 
         textView.font = .systemFont(ofSize: 22)

@@ -23,7 +23,7 @@ final class KeyboardViewController: UIInputViewController {
             // The stamp first: a file that changes in between is then
             // reloaded at the next presentation instead of missed.
             userDictStamp = UserDictContainer.shared.stamp()
-            session = InputSession(userDict: UserDictContainer.shared.load()?.dict)
+            session = InputSession(selection: UserDictContainer.shared.selection())
             keyboard = KeyboardView(session: session, theme: theme)
             keyboard.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -98,7 +98,7 @@ final class KeyboardViewController: UIInputViewController {
         let stamp = UserDictContainer.shared.stamp()
         guard stamp != shared.userDictStamp, !session.isComposing else { return }
         shared.userDictStamp = stamp
-        session.replaceDictionary(UserDictContainer.shared.load()?.dict)
+        session.replaceSelection(UserDictContainer.shared.selection())
     }
 
     override func viewWillAppear(_ animated: Bool) {

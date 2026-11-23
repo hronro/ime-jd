@@ -7,7 +7,7 @@ final class CodeLookupReportTests: XCTestCase {
     private typealias Line = CodeLookupReport.Line
 
     func testEveryCodeIsAListedLineAndALaterCandidateSaysWhichItIs() {
-        let report = CodeLookupReport(query: "着", codes: Engine().lookupCodes("着"), userDictEnabled: false)
+        let report = CodeLookupReport(query: "着", codes: Engine().lookupCodes("着"), scope: .builtIn)
         XCTAssertTrue(report.found)
         XCTAssertNil(report.message)
         XCTAssertEqual(report.title, "「着」的编码")
@@ -19,7 +19,7 @@ final class CodeLookupReportTests: XCTestCase {
     func testUserPhrasesAreMarkedAndCountTowardTheCandidateNumber() throws {
         let (dict, _) = try UserDict.build("的\tzzzzzz\n测试词\td\n", sourceTag: 0)
         let engine = Engine(userDict: dict)
-        XCTAssertEqual(CodeLookupReport(query: "的", codes: engine.lookupCodes("的"), userDictEnabled: true).lines, [
+        XCTAssertEqual(CodeLookupReport(query: "的", codes: engine.lookupCodes("的"), scope: .builtInAndUser).lines, [
             Line(keys: "d", note: "第 2 个候选"),
             Line(keys: "deuiua", note: nil),
             Line(keys: "dkuiua", note: nil),
@@ -27,21 +27,28 @@ final class CodeLookupReportTests: XCTestCase {
         ])
         // A user phrase leads the built-in words on a code it shares, so it
         // is the first candidate there: only 自造词.
-        XCTAssertEqual(CodeLookupReport(query: "测试词", codes: engine.lookupCodes("测试词"), userDictEnabled: true).lines, [
+        XCTAssertEqual(CodeLookupReport(query: "测试词", codes: engine.lookupCodes("测试词"), scope: .builtInAndUser).lines, [
             Line(keys: "d", note: "自造词"),
         ])
     }
 
     func testNotFoundHasAMessageAndNoLines() {
-        let enabled = CodeLookupReport(query: "不在词库里的词", codes: [], userDictEnabled: true)
+        let enabled = CodeLookupReport(query: "不在词库里的词", codes: [], scope: .builtInAndUser)
         XCTAssertFalse(enabled.found)
         XCTAssertEqual(enabled.lines, [])
         XCTAssertEqual(enabled.title, "没有找到「不在词库里的词」")
         XCTAssertEqual(enabled.message, "内置词库和用户自造词中都没有这个词。")
         XCTAssertEqual(
-            CodeLookupReport(query: "词", codes: [], userDictEnabled: false).message,
+            CodeLookupReport(query: "词", codes: [], scope: .builtIn).message,
             "内置词库中没有这个词。用户自造词未启用，不在查询范围内。"
         )
+        XCTAssertEqual(
+            CodeLookupReport(query: "词", codes: [], scope: .userOnly).message,
+            "用户自造词中没有这个词。内置词库已忽略，不在查询范围内。"
+        )
+        let unavailable = CodeLookupReport(query: "词", unavailable: "用户自造词未能加载：没有词条文件")
+        XCTAssertFalse(unavailable.found)
+        XCTAssertEqual(unavailable.message, "用户自造词未能加载：没有词条文件")
     }
 
     func testThePastedQueryLosesOnlyLineBreaksSpacesAndTabsAtItsEnds() {

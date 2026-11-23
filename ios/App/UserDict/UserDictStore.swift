@@ -4,9 +4,11 @@ import Foundation
 /// App Group container is the single source of truth; the app rewrites it
 /// on every change and, beside it, the blob it compiled from that text, so
 /// the keyboard — which only reads (`UserDictContainer`) — loads a
-/// dictionary without parsing anything. The user's switch is in the group's
-/// shared defaults. No UIKit, so the hostless tests cover it; everything
-/// runs on the main thread.
+/// dictionary without parsing anything. The user's switches are in the
+/// group's shared defaults. The blob is built on the dictionary the phrases
+/// sit on — the built-in one, or the empty one when they are to be typed
+/// alone — so it is rebuilt when that second switch flips. No UIKit, so the
+/// hostless tests cover it; everything runs on the main thread.
 final class UserDictStore {
     static let shared = UserDictStore(container: .shared)
 
@@ -89,9 +91,43 @@ final class UserDictStore {
         }
     }
 
-    /// What the preview's engine should read right now.
-    var activeDictionary: UserDict? {
-        isEnabled ? dictionary : nil
+    /// The second switch: type from the phrases alone, without the
+    /// built-in dictionary. Heeded only while `isEnabled` is on. Flipping it
+    /// rebuilds the dictionary on the other base and rewrites the blob.
+    var isUserOnly: Bool {
+        get { container.isUserOnly }
+        set {
+            guard newValue != isUserOnly else { return }
+            container.defaults?.set(newValue, forKey: UserDictContainer.userOnlyKey)
+            reload()
+            writeBlob()
+        }
+    }
+
+    /// Whether the phrases are all there is to type from right now.
+    var typesUserDictOnly: Bool {
+        isEnabled && isUserOnly
+    }
+
+    /// What the preview, the lookup page and the keyboard type from right
+    /// now — the keyboard's own `UserDictContainer.selection()`, from the
+    /// dictionary this store already holds.
+    var selection: UserDictContainer.Selection {
+        guard isEnabled else { return .builtIn(nil) }
+        guard isUserOnly else { return .builtIn(dictionary) }
+        if let dictionary { return .userOnly(dictionary) }
+        return .unavailable("用户自造词未能加载：\(lastError?.message ?? "没有词条文件")")
+    }
+
+    /// An engine on `selection`; nil when it is `unavailable`.
+    func makeEngine() -> Engine? {
+        Engine.make(selection)
+    }
+
+    /// Which dictionaries `selection` types from, for 编码反查's wording.
+    var lookupScope: CodeLookupReport.Scope {
+        guard isEnabled else { return .builtIn }
+        return isUserOnly ? .userOnly : .builtInAndUser
     }
 
     /// One line for the list's footer.
@@ -100,7 +136,7 @@ final class UserDictStore {
             return "未能加载：\(lastError.message)"
         }
         guard let dictionary, !rows.isEmpty else {
-            return "尚无词条"
+            return typesUserDictOnly ? "尚无词条。忽略内置词库时，键盘只能输入字母和标点。" : "尚无词条"
         }
         var text = "\(dictionary.entries) 条生效"
         if let report {
@@ -137,18 +173,25 @@ final class UserDictStore {
     /// whole is still written — the rows are the user's — and the blob is
     /// removed, so the keyboard runs on the built-in dictionary alone.
     func save(_ entries: [UserDictEntry]) throws {
-        guard let textURL = container.textURL, let blobURL = container.blobURL else {
+        guard let textURL = container.textURL, container.blobURL != nil else {
             throw LoadError.noContainer
         }
         let text = UserDictFile.serialize(entries)
         try UserDictFile.write(text, to: textURL)
         adopt(text)
+        writeBlob()
+        NotificationCenter.default.post(name: Self.didChange, object: self)
+    }
+
+    /// The blob of `dictionary` beside the text, for the keyboard; removed
+    /// when there is none, so the keyboard builds from the text itself.
+    private func writeBlob() {
+        guard let blobURL = container.blobURL else { return }
         if let dictionary {
             try? dictionary.blob.write(to: blobURL, options: .atomic)
         } else {
             try? FileManager.default.removeItem(at: blobURL)
         }
-        NotificationCenter.default.post(name: Self.didChange, object: self)
     }
 
     // MARK: - Importing
@@ -183,7 +226,7 @@ final class UserDictStore {
     func saveIfBuildable(_ entries: [UserDictEntry]) throws {
         let text = UserDictFile.serialize(entries)
         do {
-            _ = try UserDict.build(text)
+            _ = try UserDict.build(text, on: container.base)
         } catch let error as UserDictError {
             throw LoadError.build(error)
         }
@@ -243,7 +286,7 @@ final class UserDictStore {
         }
         rows = UserDictFile.parse(text)
         do {
-            let built = try UserDict.build(text, sourceTag: UserDict.hash(text))
+            let built = try UserDict.build(text, on: container.base, sourceTag: UserDict.hash(text))
             dictionary = built.dict
             report = built.report
             lastError = nil

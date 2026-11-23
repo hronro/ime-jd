@@ -118,10 +118,10 @@ final class UserDictContainerTests: XCTestCase {
 
     func testTheStampTracksTheSwitchAndBothFiles() throws {
         let off = container.stamp()
-        XCTAssertEqual(off, UserDictContainer.Stamp(enabled: false, text: nil, blob: nil))
+        XCTAssertEqual(off, UserDictContainer.Stamp(enabled: false, userOnly: false, text: nil, blob: nil))
         store.isEnabled = true
         let on = container.stamp()
-        XCTAssertEqual(on, UserDictContainer.Stamp(enabled: true, text: nil, blob: nil))
+        XCTAssertEqual(on, UserDictContainer.Stamp(enabled: true, userOnly: false, text: nil, blob: nil))
 
         try store.save([UserDictEntry(value: "键道", keys: "zzzzzz")])
         let saved = container.stamp()
@@ -131,5 +131,73 @@ final class UserDictContainerTests: XCTestCase {
 
         try store.save([UserDictEntry(value: "键道", keys: "zzzzzz"), UserDictEntry(value: "键道输入法", keys: "zzzzza")])
         XCTAssertNotEqual(container.stamp(), saved)
+    }
+
+    // MARK: - Only the user's phrases
+
+    func testUserOnlyBuildsOnTheEmptyDictionaryAndKeepsWhatTheBuiltInWouldDrop() throws {
+        store.isEnabled = true
+        store.isUserOnly = true
+        XCTAssertTrue(defaults.bool(forKey: UserDictContainer.userOnlyKey))
+        let entries = [UserDictEntry(value: "键道", keys: "zzzzzz"), UserDictEntry(value: "不", keys: "b")]
+        try store.save(entries)
+        XCTAssertEqual(store.report?.dropped, 0, "nothing to repeat: the built-in dictionary is off")
+
+        let blob = try Data(contentsOf: blobURL)
+        XCTAssertNoThrow(try UserDict.check(blob, on: .empty), "the blob is built on the empty dictionary")
+        XCTAssertThrowsError(try UserDict.check(blob))
+
+        guard case .userOnly(let dict) = container.selection() else { return XCTFail("\(container.selection())") }
+        XCTAssertEqual(dict.entries, 2)
+        let engine = try Engine(dict: .empty, userDict: dict)
+        _ = engine.pressKey(UInt8(ascii: "b"))
+        XCTAssertEqual(engine.readRange(from: 0, count: 2).map(\.value), ["不"], "the user's phrase, and nothing built in")
+    }
+
+    func testFlippingUserOnlyRewritesTheBlobForTheOtherBase() throws {
+        store.isEnabled = true
+        try store.save([UserDictEntry(value: "键道", keys: "zzzzzz")])
+        XCTAssertNoThrow(try UserDict.check(Data(contentsOf: blobURL)))
+        store.isUserOnly = true
+        XCTAssertNoThrow(try UserDict.check(Data(contentsOf: blobURL), on: .empty))
+        XCTAssertEqual(container.load()?.source, .blob)
+        store.isUserOnly = false
+        XCTAssertNoThrow(try UserDict.check(Data(contentsOf: blobURL)))
+        XCTAssertEqual(container.load()?.source, .blob)
+    }
+
+    func testAKeyboardOnAnotherBaseRebuildsRatherThanUsingTheBlob() throws {
+        store.isEnabled = true
+        try store.save([UserDictEntry(value: "键道", keys: "zzzzzz")])
+        // The switch flips behind the app's back (another process): the blob
+        // is for the built-in dictionary, the keyboard rebuilds on the empty one.
+        defaults.set(true, forKey: UserDictContainer.userOnlyKey)
+        XCTAssertEqual(container.load()?.source, .rebuilt)
+        guard case .userOnly = container.selection() else { return XCTFail("\(container.selection())") }
+    }
+
+    func testUserOnlyWithoutPhrasesIsUnavailableNeverTheBuiltInDictionary() throws {
+        store.isEnabled = true
+        store.isUserOnly = true
+        guard case .unavailable(let why) = container.selection() else { return XCTFail("\(container.selection())") }
+        XCTAssertEqual(why, "用户自造词未能加载：没有词条文件")
+        guard case .unavailable = store.selection else { return XCTFail("\(store.selection)") }
+        XCTAssertNil(store.makeEngine())
+
+        // Too many phrases: unavailable too, saying why.
+        let tooMany = String(repeating: "x\ta\n", count: UserDict.maxEntries + 1)
+        try UserDictFile.write(tooMany, to: textURL)
+        guard case .unavailable(let over) = container.selection() else { return XCTFail("\(container.selection())") }
+        XCTAssertEqual(over, "用户自造词未能加载：超过 \(UserDict.maxEntries) 条上限")
+
+        // The second switch means nothing while the first is off.
+        store.isEnabled = false
+        guard case .builtIn(nil) = container.selection() else { return XCTFail("\(container.selection())") }
+    }
+
+    func testTheStampSeesTheSecondSwitch() {
+        let before = container.stamp()
+        store.isUserOnly = true
+        XCTAssertNotEqual(container.stamp(), before)
     }
 }

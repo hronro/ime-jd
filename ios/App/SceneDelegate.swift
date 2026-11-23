@@ -25,6 +25,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             try? UserDictStore.shared.save(entries)
             UserDictStore.shared.isEnabled = true
         }
+        // `-userdictonly 1|0` QA launch arg: set 忽略内置词库 (and switch the
+        // user dictionary on), so the built-in-off path is driven with no taps.
+        if let i = CommandLine.arguments.firstIndex(of: "-userdictonly"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            UserDictStore.shared.isEnabled = true
+            UserDictStore.shared.isUserOnly = CommandLine.arguments[i + 1] == "1"
+        }
+        // `-userdictlist` QA launch arg: open the phrase list on top.
+        let showsList = CommandLine.arguments.contains("-userdictlist")
         // `-preview` launch arg jumps straight to the in-app keyboard preview
         // (used for screenshots / QA); normal launches land on the guide.
         let root: UIViewController = CommandLine.arguments.contains("-preview")
@@ -38,6 +47,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             navigation.pushViewController(
                 CodeLookupViewController(query: CommandLine.arguments[i + 1]), animated: false
             )
+        }
+        if showsList {
+            navigation.pushViewController(UserDictListViewController(), animated: false)
         }
         let window = UIWindow(windowScene: windowScene)
         window.rootViewController = navigation

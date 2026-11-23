@@ -137,11 +137,15 @@ final class CodeLookupViewController: UIViewController, UITableViewDataSource, U
         // The keyboard would cover the codes.
         field.resignFirstResponder()
         // A fresh engine over what the keyboard types with right now: the
-        // user dictionary only while it is switched on. Cheap — one
-        // allocation and a validation pass over the user's phrases — and it
-        // is gone when this returns; the codes are plain strings.
-        let codes = Engine(userDict: store.activeDictionary).lookupCodes(query)
-        report = CodeLookupReport(query: query, codes: codes, userDictEnabled: store.isEnabled)
+        // user dictionary only while it is switched on, and alone when the
+        // built-in one is off. Cheap — one allocation and a validation pass
+        // over the user's phrases — and it is gone when this returns; the
+        // codes are plain strings.
+        if let engine = store.makeEngine() {
+            report = CodeLookupReport(query: query, codes: engine.lookupCodes(query), scope: store.lookupScope)
+        } else if case .unavailable(let why) = store.selection {
+            report = CodeLookupReport(query: query, unavailable: why)
+        }
         showReport()
     }
 

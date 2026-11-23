@@ -22,6 +22,9 @@ struct SessionSnapshot: Equatable {
     var candidates: [Candidate] = []
     var optionsCount: UInt32 = 0
     var rawBuffer: String = ""
+    /// Why there is no engine — the user's phrases were to be typed alone and
+    /// cannot be had — for the bar to show while keys type plain letters.
+    var notice: String?
 
     static let empty = SessionSnapshot()
 
@@ -37,7 +40,10 @@ final class InputSession {
     /// asks for more as it scrolls.
     private static let windowSize = 16
 
-    private var engine: Engine
+    /// Nil when the dictionary the user chose cannot be had: every key then
+    /// types itself, and `snapshot.notice` says why.
+    private var engine: Engine?
+    private var notice: String?
     weak var host: KeyboardHost?
 
     /// The in-flight raw code (e.g. "js"), shown in the keyboard's candidate bar.
@@ -50,10 +56,16 @@ final class InputSession {
 
     var isComposing: Bool { !rawBuffer.isEmpty }
 
-    /// `userDict` is merged into every candidate list (see `Engine`); nil
-    /// for the built-in dictionary alone.
-    init(userDict: UserDict? = nil) {
-        engine = Engine(userDict: userDict)
+    /// The built-in dictionary, with `userDict` merged into every candidate
+    /// list (see `Engine`); nil for the built-in dictionary alone.
+    convenience init(userDict: UserDict? = nil) {
+        self.init(selection: .builtIn(userDict))
+    }
+
+    /// What the user chose to type from (see `UserDictContainer.Selection`).
+    init(selection: UserDictContainer.Selection) {
+        (engine, notice) = Self.engine(for: selection)
+        snapshot.notice = notice
     }
 
     /// Adopt another dictionary: a fresh engine, so whatever was composing
@@ -61,10 +73,23 @@ final class InputSession {
     /// blob, so they are cleared — and the UI told so — before the old
     /// engine, and with it the blob, goes away (see `Candidate`).
     func replaceDictionary(_ userDict: UserDict?) {
+        replaceSelection(.builtIn(userDict))
+    }
+
+    /// `replaceDictionary`, for any choice of dictionary.
+    func replaceSelection(_ selection: UserDictContainer.Selection) {
         rawBuffer = ""
         snapshot = .empty
         onChange?(snapshot)
-        engine = Engine(userDict: userDict)
+        (engine, notice) = Self.engine(for: selection)
+        snapshot.notice = notice
+        onChange?(snapshot)
+    }
+
+    private static func engine(for selection: UserDictContainer.Selection) -> (Engine?, String?) {
+        if let engine = Engine.make(selection) { return (engine, nil) }
+        if case .unavailable(let why) = selection { return (nil, why) }
+        return (nil, "用户自造词未能加载")
     }
 
     // MARK: - Single entry point
@@ -88,6 +113,13 @@ final class InputSession {
     // MARK: - Engine key
 
     private func engineKey(_ byte: UInt8) {
+        guard let engine else {
+            // No dictionary: the key types itself.
+            if let scalar = Unicode.Scalar(UInt32(byte)) {
+                host?.insertText(String(Character(scalar)))
+            }
+            return
+        }
         let state = engine.pressKey(byte)
 
         if let commit = state.commit {
@@ -132,10 +164,10 @@ final class InputSession {
             host?.deleteBackward()
             return
         }
-        engine.backspace()
+        engine?.backspace()
         rawBuffer.removeLast()
         if rawBuffer.isEmpty {
-            engine.reset()
+            engine?.reset()
         }
         reload()
     }
@@ -152,7 +184,7 @@ final class InputSession {
     func commitCandidate(_ value: String) {
         host?.insertText(value)
         rawBuffer = ""
-        engine.reset()
+        engine?.reset()
         reload()
     }
 
@@ -161,7 +193,7 @@ final class InputSession {
     /// candidate exactly as the engine's space does, then append the literal;
     /// otherwise insert it directly.
     func insertLiteral(_ s: String) {
-        if isComposing {
+        if isComposing, let engine {
             let state = engine.pressKey(0x20)   // space: commit the anchor, append nothing
             if let commit = state.commit { host?.insertText(commit) }
             rawBuffer = ""
@@ -177,14 +209,14 @@ final class InputSession {
             host?.insertText(rawBuffer)
             rawBuffer = ""
         }
-        engine.reset()
+        engine?.reset()
         reload()
     }
 
     /// Drop the in-flight composition without committing (focus change / dismiss).
     func cancelAndReset() {
         rawBuffer = ""
-        engine.reset()
+        engine?.reset()
         reload()
     }
 
@@ -200,7 +232,7 @@ final class InputSession {
     /// user wasn't looking at.)
     func loadMoreCandidates() -> [Candidate]? {
         let loaded = UInt32(snapshot.candidates.count)
-        guard loaded < snapshot.optionsCount else { return nil }
+        guard let engine, loaded < snapshot.optionsCount else { return nil }
         let more = engine.readRange(from: loaded, count: Self.windowSize)
         guard !more.isEmpty else { return nil }
         snapshot.candidates.append(contentsOf: more)
@@ -216,6 +248,11 @@ final class InputSession {
 
     /// Re-read the leading window from the engine and publish it.
     private func reload() {
+        guard let engine else {
+            snapshot = SessionSnapshot(notice: notice)
+            onChange?(snapshot)
+            return
+        }
         let state = engine.state
         snapshot = SessionSnapshot(
             candidates: state.optionsCount > 0

@@ -35,6 +35,8 @@ final class UserDictListViewController: UITableViewController, UISearchResultsUp
     private var search: UserDictSearch?
     private var storeObserver: NSObjectProtocol?
     private let enableSwitch = UISwitch()
+    /// 忽略内置词库: usable only while `enableSwitch` is on.
+    private let userOnlySwitch = UISwitch()
 
     init(store: UserDictStore = .shared) {
         self.store = store
@@ -70,6 +72,10 @@ final class UserDictListViewController: UITableViewController, UISearchResultsUp
             guard let self else { return }
             self.store.isEnabled = self.enableSwitch.isOn
         }, for: .valueChanged)
+        userOnlySwitch.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.store.isUserOnly = self.userOnlySwitch.isOn
+        }, for: .valueChanged)
         tableView.register(PhraseCell.self, forCellReuseIdentifier: PhraseCell.reuseID)
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "switch")
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "action")
@@ -85,6 +91,8 @@ final class UserDictListViewController: UITableViewController, UISearchResultsUp
 
     private func refresh() {
         enableSwitch.isOn = store.isEnabled
+        userOnlySwitch.isOn = store.isUserOnly
+        userOnlySwitch.isEnabled = store.isEnabled
         search = nil
         refreshShown()
         tableView.reloadData()
@@ -258,7 +266,7 @@ final class UserDictListViewController: UITableViewController, UISearchResultsUp
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch Section(rawValue: section) {
-        case .settings: return 1
+        case .settings: return 2
         case .actions: return Action.allCases.count
         case .phrases: return shown.count
         case nil: return 0
@@ -273,10 +281,14 @@ final class UserDictListViewController: UITableViewController, UISearchResultsUp
             return "导入其他设备上的键道导出的用户自造词（.txt），或任何同样格式的 UTF-8 文本文件：每行一条，词和编码之间用制表符分隔；"
                 + "文件需先存入「文件」或 iCloud 云盘。导入的词条追加在列表末尾。"
                 + "「导出」把这里的词条作为同样格式的文本文件分享出去：隔空投送、存储到「文件」或发给其他应用。"
-                + "与前面的词条或内置词相同的词条算重复，不生效，「移除重复词条」会把它们一并删除。"
+                + (store.isUserOnly
+                    ? "与前面的词条相同的词条算重复，不生效，「移除重复词条」会把它们一并删除。"
+                    : "与前面的词条或内置词相同的词条算重复，不生效，「移除重复词条」会把它们一并删除。")
         case .phrases:
             if store.rows.isEmpty {
-                return "尚无词条。轻点右上角的 + 添加：一个词和它的编码。与内置词同码时，自造词排在内置词之前。"
+                return store.isUserOnly
+                    ? "尚无词条。轻点右上角的 + 添加：一个词和它的编码。忽略内置词库时，键盘只打这里的词。"
+                    : "尚无词条。轻点右上角的 + 添加：一个词和它的编码。与内置词同码时，自造词排在内置词之前。"
             }
             return filter.isEmpty
                 ? "左滑删除。同一编码下的词按此处的顺序排列，编辑模式下拖动可调整。"
@@ -323,9 +335,19 @@ final class UserDictListViewController: UITableViewController, UISearchResultsUp
         case .settings, nil:
             let cell = tableView.dequeueReusableCell(withIdentifier: "switch", for: indexPath)
             var content = cell.defaultContentConfiguration()
-            content.text = "启用用户自造词"
+            if indexPath.row == 0 {
+                content.text = "启用用户自造词"
+                cell.accessoryView = enableSwitch
+            } else {
+                content.text = "忽略内置词库"
+                content.secondaryText = "只用这里的词条打字"
+                if !store.isEnabled {
+                    content.textProperties.color = .tertiaryLabel
+                    content.secondaryTextProperties.color = .tertiaryLabel
+                }
+                cell.accessoryView = userOnlySwitch
+            }
             cell.contentConfiguration = content
-            cell.accessoryView = enableSwitch
             cell.selectionStyle = .none
             return cell
         }

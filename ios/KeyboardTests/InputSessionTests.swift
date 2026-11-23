@@ -271,4 +271,39 @@ final class InputSessionTests: XCTestCase {
         XCTAssertLessThan(s.snapshot.candidates.count, grown)
         XCTAssertEqual(s.rawBuffer, "ba")
     }
+
+    // MARK: - No dictionary to type from
+
+    func testAnUnavailableDictionaryTypesPlainLettersAndSaysWhy() {
+        let host = MockHost()
+        let s = InputSession(selection: .unavailable("用户自造词未能加载：没有词条文件"))
+        s.host = host
+        var seen: [SessionSnapshot] = []
+        s.onChange = { seen.append($0) }
+        XCTAssertEqual(s.snapshot.notice, "用户自造词未能加载：没有词条文件")
+        for b in "nk".utf8 { s.handle(.engineKey(b)) }
+        XCTAssertEqual(host.joined, "nk", "each key types itself")
+        XCTAssertFalse(s.isComposing)
+        s.handle(.backspace)
+        XCTAssertEqual(host.deletes, 1)
+        s.insertLiteral("，")
+        XCTAssertEqual(host.joined, "nk，")
+        XCTAssertNil(s.loadMoreCandidates())
+
+        // Adopting a dictionary that loads clears the notice.
+        s.replaceSelection(.builtIn(nil))
+        XCTAssertNil(s.snapshot.notice)
+        XCTAssertEqual(seen.last?.notice, nil)
+    }
+
+    func testUserOnlyTypesTheUsersPhrasesAndNothingBuiltIn() throws {
+        let host = MockHost()
+        let dict = try UserDict.build("测试\tb\n", on: .empty).dict
+        let s = InputSession(selection: .userOnly(dict))
+        s.host = host
+        s.handle(.engineKey(UInt8(ascii: "b")))
+        XCTAssertEqual(s.snapshot.candidates.map(\.value), ["测试"])
+        s.handle(.engineKey(UInt8(ascii: " ")))
+        XCTAssertEqual(host.joined, "测试")
+    }
 }

@@ -122,6 +122,11 @@ final class KeyboardView: UIView {
         candidateBar.onNeedMore = { [weak self] in self?.loadMore() }
 
         session.onChange = { [weak self] snap in self?.renderCandidates(snap) }
+        // What the session already holds: a notice — the chosen dictionary
+        // cannot be had — is there from the start, before any change.
+        if session.snapshot.notice != nil {
+            candidateBar.reset(composing: session.snapshot.notice ?? "", items: [], canExpand: false)
+        }
 
         candidateBar.translatesAutoresizingMaskIntoConstraints = false
         keyGrid.translatesAutoresizingMaskIntoConstraints = false
@@ -343,7 +348,10 @@ final class KeyboardView: UIView {
         items = snap.candidates
         keyGrid.composing = !snap.rawBuffer.isEmpty
         candidateBar.reset(
-            composing: snap.rawBuffer,
+            // The bar's leading label: the code being typed, or — when the
+            // chosen dictionary cannot be had and keys type plain letters —
+            // why.
+            composing: snap.rawBuffer.isEmpty ? snap.notice ?? "" : snap.rawBuffer,
             items: items,
             canExpand: snap.canExpand
         )
