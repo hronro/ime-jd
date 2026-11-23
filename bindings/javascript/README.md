@@ -98,6 +98,19 @@ The blob is one block of the module's linear memory that the `UserDict` owns (`j
 
 For a tag that follows the text itself, `jd.hashUserDictText(text)` is libjd's content hash (`jd_user_dict_hash`), a `bigint` that is the same on every platform and in every release; `buildUserDict` and `hashUserDictText` take the text's UTF-8 bytes as well as a string. `jd.userDictLimits` has the library's caps (`maxEntries`, `valueMax`, `textMax`) for messages and checks of your own.
 
+## Your own dictionary
+
+An engine types from the module's embedded 键道 dictionary unless it is given a `Dict` of its own — built from text of the same format by the same code that builds the embedded one, so it types the same way and as fast. A user dictionary then sits on top of it: pass the same `dict` when building or loading the user dictionary.
+
+```js
+const { dict } = jd.buildDict(tablesText, { sourceTag: tablesRevision }); // cache dict.bytes(): building is the slow part
+const { dict: phrases } = jd.buildUserDict(text, { dict, sourceTag: phrasesRevision });
+const engine = jd.createEngine({ dict, userDict: phrases });
+// later launches: jd.loadDict(bytes), jd.loadUserDict(bytes, { dict })
+```
+
+`jd.emptyDict()` has no codes at all, for typing from a user dictionary alone. A user dictionary built on one dictionary is `stale` on any other, the embedded one included, and `createEngine` refuses the pair. `jd.dictLimits` has the caps (`maxEntries`, `valueMax`, `textMax`) and `builtinEntries`, which is 0 for the `jd.wasm` of libjd-engine — the library built without an embedded dictionary, 116 KB against 5.5 MB — where every engine needs a `dict`.
+
 ## Getting the `jd.wasm`
 
 The wrapper does not embed the module — you provide it, exactly like `bindings/rust` links a prebuilt-or-zig-built libjd. Build it with

@@ -57,6 +57,9 @@ const REQUIRED_EXPORTS = [
   "jd_read_range",
   "jd_lookup_codes",
   "jd_abi_layout",
+  "jd_dict_blob_bound",
+  "jd_dict_build",
+  "jd_dict_check",
   "jd_user_dict_blob_bound",
   "jd_user_dict_build",
   "jd_user_dict_check",
@@ -78,6 +81,10 @@ const ABI_SIZEOF_USER_DICT_NOTE = 9;
 const ABI_SIZEOF_CODE = 10;
 const ABI_CODE_CAP = 11;
 const ABI_USER_DICT_TEXT_MAX = 12;
+const ABI_DICT_MAX_ENTRIES = 13;
+const ABI_DICT_VALUE_MAX = 14;
+const ABI_DICT_TEXT_MAX = 15;
+const ABI_BUILTIN_DICT_ENTRIES = 16;
 
 // wasm32 layout of `jd_state`: two 4-byte pointers, a byte, 3 bytes of
 // padding, then two u32s. Checked against jd_abi_layout at instantiation.
@@ -134,6 +141,7 @@ const USER_DICT_STATUS = [
   "corrupt",
   "misaligned",
   "textTooLong",
+  "noBuiltinDict",
 ];
 const USER_DICT_STATUS_CORRUPT = 4;
 /** Statuses that refer to a line of the input text. */
@@ -151,15 +159,15 @@ export const UserDictNoteFlags = Object.freeze({
   CODE_IN_LINE: 8,
   /** Skipped: neither blank nor a comment, and no TAB. */
   MALFORMED: 16,
-  /** Skipped: keys empty, longer than 6, or not all a-z. */
+  /** Skipped: keys empty, longer than 6, not all a-z and `;`, or a `;` after a letter. */
   BAD_KEYS: 32,
   /** Skipped: value empty, too long, not UTF-8, or containing control characters. */
   BAD_VALUE: 64,
 });
 
 /**
- * A user dictionary could not be built or accepted: a problem with the call
- * as a whole, never with one line. `status` names the `JD_USER_DICT_*` code
+ * A dictionary or user dictionary could not be built or accepted: a problem
+ * with the call as a whole, never with one line. `status` names the `JD_USER_DICT_*` code
  * (`"tooManyEntries"`, `"stale"`, …) and `line` is the 1-based input line for
  * the statuses that refer to one, else 0.
  */
@@ -167,18 +175,18 @@ export class UserDictError extends Error {
   /**
    * @param {number} code
    * @param {number} line
-   * @param {{maxEntries: number, valueMax: number, textMax: number}} limits
    */
-  constructor(code, line, limits) {
+  constructor(code, line) {
     const status = USER_DICT_STATUS[code] ?? `unknown(${code})`;
     const detail =
       {
         bufferTooSmall: "output buffer too small",
-        tooManyEntries: `more than ${limits.maxEntries} phrases`,
+        tooManyEntries: "too many entries",
         stale: "blob was built against a different dictionary (rebuild it)",
         corrupt: "blob is corrupt (rebuild it)",
         misaligned: "blob is not 4-byte aligned",
         textTooLong: "text is too long",
+        noBuiltinDict: "this libjd has no built-in dictionary",
       }[status] ?? `unknown status ${code}`;
     const isLine = LINE_STATUSES.has(status);
     super(isLine ? `line ${line}: ${detail}` : detail);
@@ -237,32 +245,47 @@ async function instantiateResponse(source, imports) {
 }
 
 /**
- * Per-instance bookkeeping of a {@link UserDict}, kept out of the class so
- * {@link JdModule} and {@link Engine} can reach it without widening the
- * public surface.
+ * Per-instance bookkeeping of a {@link Dict} or {@link UserDict}, kept out of
+ * the classes so {@link JdModule} and {@link Engine} can reach it without
+ * widening the public surface.
  *
- * @type {WeakMap<UserDict, {module: JdModule, exports: any, ptr: number, allocSize: number, len: number, engines: number}>}
+ * @type {WeakMap<Dict | UserDict, {module: JdModule, exports: any, ptr: number, allocSize: number, len: number, engines: number}>}
  */
 const dictInternals = new WeakMap();
 
+/** The two kinds of blob a module builds and loads. */
+const KIND_DICT = {
+  name: "Dict",
+  bound: "jd_dict_blob_bound",
+  make: (entries, sourceTag) => new Dict(entries, sourceTag),
+};
+const KIND_USER_DICT = {
+  name: "UserDict",
+  bound: "jd_user_dict_blob_bound",
+  make: (entries, sourceTag) => new UserDict(entries, sourceTag),
+};
+
 /**
  * A loaded libjd wasm module. Wraps one WebAssembly instance and mints Engine
- * contexts from it; the embedded trie and punctuation tables are parsed once on
- * first use and shared read-only across every engine of this module, so create
- * as many engines as you have independent input fields.
+ * contexts from it; the embedded dictionary and punctuation tables are parsed
+ * once on first use and shared read-only across every engine of this module,
+ * so create as many engines as you have independent input fields.
  */
 export class JdModule {
   #exports;
   /** Candidate capacity of each context's scratch buffer. */
   #scratchOptions;
-  /** User-dictionary limits, for error messages. */
+  /** User-dictionary limits. */
   #limits;
+  /** Dictionary limits. */
+  #dictLimits;
 
   /** @internal — use {@link JdModule.instantiate} or {@link JdModule.fromInstance}. */
-  constructor(exports, scratchOptions, limits) {
+  constructor(exports, scratchOptions, limits, dictLimits) {
     this.#exports = exports;
     this.#scratchOptions = scratchOptions;
     this.#limits = limits;
+    this.#dictLimits = dictLimits;
   }
 
   /**
@@ -319,50 +342,96 @@ export class JdModule {
       valueMax: exports.jd_abi_layout(ABI_USER_DICT_VALUE_MAX),
       textMax: exports.jd_abi_layout(ABI_USER_DICT_TEXT_MAX),
     });
-    return new JdModule(exports, exports.jd_abi_layout(ABI_SCRATCH_OPTIONS), limits);
+    // jd_abi_layout returns a u32, which wasm hands JS as a signed i32.
+    const u32 = (what) => exports.jd_abi_layout(what) >>> 0;
+    const dictLimits = Object.freeze({
+      maxEntries: u32(ABI_DICT_MAX_ENTRIES),
+      valueMax: u32(ABI_DICT_VALUE_MAX),
+      textMax: u32(ABI_DICT_TEXT_MAX),
+      builtinEntries: u32(ABI_BUILTIN_DICT_ENTRIES),
+    });
+    return new JdModule(exports, exports.jd_abi_layout(ABI_SCRATCH_OPTIONS), limits, dictLimits);
   }
 
   /**
-   * Create a new input context, over the built-in dictionary alone or, with
-   * `userDict`, merged with a {@link UserDict} of this module. Throws if the
-   * engine can't allocate its per-context buffer. Release it with
-   * {@link Engine#dispose} (or a `using` binding) — before the dictionary.
+   * Create a new input context. It types from `dict`, a {@link Dict} of this
+   * module, or without one from the built-in dictionary — which a module
+   * built without one (libjd-engine) does not have; and it merges in
+   * `userDict`, a {@link UserDict} of this module built on that same
+   * dictionary. Release it with {@link Engine#dispose} (or a `using`
+   * binding) — before the dictionaries, which it reads in place.
    *
-   * @param {{userDict?: UserDict | null}} [options]
+   * Throws when there is no dictionary to type from, when the user
+   * dictionary was built on another dictionary, or when the engine cannot
+   * allocate its per-context buffer.
+   *
+   * @param {{dict?: Dict | null, userDict?: UserDict | null}} [options]
    * @returns {Engine}
    */
   createEngine(options = {}) {
-    const dict = options.userDict ?? null;
-    let ptr = 0;
-    let len = 0;
-    let internal = null;
-    if (dict !== null) {
-      internal = dictInternals.get(dict);
-      if (internal === undefined || internal.module !== this) {
-        throw new TypeError("userDict must be a UserDict created by this module");
-      }
-      if (internal.ptr === 0) throw new Error("UserDict has been disposed");
-      ptr = internal.ptr;
-      len = internal.len;
+    const dict = this.#internalOf(options.dict ?? null, "dict", Dict);
+    const userDict = this.#internalOf(options.userDict ?? null, "userDict", UserDict);
+    const ctx = this.#exports.jd_init(
+      dict?.ptr ?? 0,
+      dict?.len ?? 0,
+      userDict?.ptr ?? 0,
+      userDict?.len ?? 0,
+    );
+    if (ctx === 0) throw new Error(this.#whyNot(dict, userDict));
+    const internals = [dict, userDict].filter((d) => d !== null);
+    for (const d of internals) d.engines++;
+    return new Engine(this.#exports, ctx, this.#scratchOptions, internals);
+  }
+
+  /** Why jd_init refused, worked out only once it has. */
+  #whyNot(dict, userDict) {
+    if (dict === null && this.#dictLimits.builtinEntries === 0) {
+      return "jd_init failed: this libjd has no built-in dictionary; pass a Dict";
     }
-    const ctx = this.#exports.jd_init(ptr, len);
-    if (ctx === 0) throw new Error("jd_init failed (allocation failure)");
-    if (internal !== null) internal.engines++;
-    return new Engine(this.#exports, ctx, this.#scratchOptions, internal);
+    if (userDict !== null) {
+      const infoPtr = this.#alloc(INFO_SIZE);
+      try {
+        const status = this.#exports.jd_user_dict_check(
+          dict?.ptr ?? 0,
+          dict?.len ?? 0,
+          userDict.ptr,
+          userDict.len,
+          infoPtr,
+        );
+        if (status !== 0) return "jd_init failed: the user dictionary was built on another dictionary";
+      } finally {
+        this.#exports.jd_free(infoPtr, INFO_SIZE);
+      }
+    }
+    return "jd_init failed (allocation failure)";
+  }
+
+  /** The bookkeeping of `value`, a live `type` of this module, or null. */
+  #internalOf(value, name, type) {
+    if (value === null) return null;
+    const internal = value instanceof type ? dictInternals.get(value) : undefined;
+    if (internal === undefined || internal.module !== this) {
+      throw new TypeError(`${name} must be a ${type.name} created by this module`);
+    }
+    if (internal.ptr === 0) throw new Error(`${type.name} has been disposed`);
+    return internal;
   }
 
   /**
    * Compile `value<TAB>keys` text — the format of libjd's own table files —
    * into a {@link UserDict}. `#` starts a comment line, blank lines are
    * skipped, spaces around either field are trimmed, CRLF is accepted. Keys
-   * are one to six letters `a`-`z`; values are text without control
-   * characters. A line that breaks these rules is skipped and counted, never
-   * fatal. Exact duplicates, of an earlier line or of a built-in word on the
-   * same code, are dropped and counted; the report's notes say which lines
-   * were skipped and why, which were dropped, and which kept phrases sit on
-   * a code a built-in word or another phrase already uses. Throws a
-   * {@link UserDictError} only for a problem with the call as a whole: too
-   * much text, too many phrases.
+   * are one to six of `a`-`z` and `;`, with no `;` after a letter; values are
+   * text without control characters. A line that breaks these rules is
+   * skipped and counted, never fatal. Exact duplicates, of an earlier line
+   * or of a word on the same code in the dictionary beneath, are dropped and
+   * counted; the report's notes say which lines were skipped and why, which
+   * were dropped, and which kept phrases sit on a code a dictionary word or
+   * another phrase already uses. Throws a {@link UserDictError} only for a
+   * problem with the call as a whole: too much text, too many phrases.
+   *
+   * The phrases sit on the built-in dictionary, or on `dict`: the result then
+   * works only in an engine typing from that `dict`.
    *
    * `sourceTag` is 64 bits of yours, stored in the blob and never
    * interpreted — a modification time, a content hash, a revision — so a
@@ -372,10 +441,58 @@ export class JdModule {
    * encoded again. A byte-order mark is not skipped: drop one first.
    *
    * @param {string | Uint8Array} text
-   * @param {{sourceTag?: number | bigint}} [options]
+   * @param {{sourceTag?: number | bigint, dict?: Dict | null}} [options]
    * @returns {{dict: UserDict, report: import("./index.d.ts").UserDictReport}}
    */
   buildUserDict(text, options = {}) {
+    const base = this.#internalOf(options.dict ?? null, "dict", Dict);
+    return this.#build(KIND_USER_DICT, text, options, (textPtr, textLen, tag, blobPtr, bound, lenPtr, reportPtr) =>
+      this.#exports.jd_user_dict_build(
+        base?.ptr ?? 0,
+        base?.len ?? 0,
+        textPtr,
+        textLen,
+        tag,
+        blobPtr,
+        bound,
+        lenPtr,
+        reportPtr,
+      ),
+    );
+  }
+
+  /**
+   * Compile `value<TAB>keys` text into a {@link Dict}, to type from in place
+   * of the built-in dictionary — by the rules of {@link JdModule#buildUserDict}:
+   * lines that do not parse are skipped and exact repeats dropped, each with
+   * a note (`shared` is always 0). The words on one code are its candidates
+   * in the order of their lines. A large dictionary is many megabytes of
+   * linear memory; cache {@link Dict#bytes} rather than building it at every
+   * start.
+   *
+   * @param {string | Uint8Array} text
+   * @param {{sourceTag?: number | bigint}} [options]
+   * @returns {{dict: Dict, report: import("./index.d.ts").UserDictReport}}
+   */
+  buildDict(text, options = {}) {
+    return this.#build(KIND_DICT, text, options, (textPtr, textLen, tag, blobPtr, bound, lenPtr, reportPtr) =>
+      this.#exports.jd_dict_build(textPtr, textLen, tag, blobPtr, bound, lenPtr, reportPtr),
+    );
+  }
+
+  /**
+   * The empty dictionary: no codes at all. An engine on it types from its
+   * user dictionary alone, built on the same empty dictionary. Every empty
+   * dictionary is the same dictionary, so a user dictionary built on one
+   * works on any.
+   *
+   * @returns {Dict}
+   */
+  emptyDict() {
+    return this.buildDict("").dict;
+  }
+
+  #build(kind, text, options, call) {
     const sourceTag = BigInt(options.sourceTag ?? 0);
     const textBytes = typeof text === "string" ? encoder.encode(text) : text;
 
@@ -391,21 +508,13 @@ export class JdModule {
     let bound = 0;
     try {
       if (textPtr !== 0) new Uint8Array(this.#memory(), textPtr, textBytes.length).set(textBytes);
-      bound = this.#exports.jd_user_dict_blob_bound(textPtr, textBytes.length);
+      bound = this.#exports[kind.bound](textPtr, textBytes.length) >>> 0;
       blobPtr = this.#alloc(bound);
 
-      const status = this.#exports.jd_user_dict_build(
-        textPtr,
-        textBytes.length,
-        sourceTag,
-        blobPtr,
-        bound,
-        blobLenPtr,
-        reportPtr,
-      );
+      const status = call(textPtr, textBytes.length, sourceTag, blobPtr, bound, blobLenPtr, reportPtr);
       const view = new DataView(this.#memory());
       if (status !== 0) {
-        throw new UserDictError(status, view.getUint32(reportPtr + REPORT_LINE_OFF, true), this.#limits);
+        throw new UserDictError(status, view.getUint32(reportPtr + REPORT_LINE_OFF, true));
       }
       const entries = view.getUint32(reportPtr + REPORT_ENTRIES_OFF, true);
       const dropped = view.getUint32(reportPtr + REPORT_DROPPED_OFF, true);
@@ -429,9 +538,9 @@ export class JdModule {
         });
       }
 
-      // The bound leaves room for every line's note and the whole text,
-      // about twice the blob: keep a block the blob's size, and give the
-      // rest back to the module's allocator.
+      // The bound leaves room for the build's working space and every
+      // line's note, a few times the blob: keep a block the blob's size, and
+      // give the rest back to the module's allocator.
       let ptr = blobPtr;
       let allocSize = bound;
       if (bound - blobLen > 64 * 1024) {
@@ -439,7 +548,7 @@ export class JdModule {
         allocSize = Math.max(blobLen, 1);
         new Uint8Array(this.#memory()).copyWithin(ptr, blobPtr, blobPtr + blobLen);
       }
-      const dict = new UserDict(entries, sourceTag);
+      const dict = kind.make(entries, sourceTag);
       dictInternals.set(dict, {
         module: this,
         exports: this.#exports,
@@ -459,29 +568,46 @@ export class JdModule {
 
   /**
    * Wrap a blob cached from an earlier {@link UserDict#bytes}. The bytes are
-   * copied into linear memory and validated exactly as `jd_init` would;
-   * a `"stale"` (another libjd) or `"corrupt"` {@link UserDictError} means
-   * "rebuild from the phrases". Read {@link UserDict#sourceTag} to tell
-   * whether the phrases themselves have changed since.
+   * copied into linear memory and validated exactly as `jd_init` would, on
+   * the built-in dictionary or on `dict`; a `"stale"` (another libjd, or
+   * another dictionary) or `"corrupt"` {@link UserDictError} means "rebuild
+   * from the phrases". Read {@link UserDict#sourceTag} to tell whether the
+   * phrases themselves have changed since.
    *
    * @param {Uint8Array | ArrayBuffer} bytes
+   * @param {{dict?: Dict | null}} [options]
    * @returns {UserDict}
    */
-  loadUserDict(bytes) {
+  loadUserDict(bytes, options = {}) {
+    const base = this.#internalOf(options.dict ?? null, "dict", Dict);
+    return this.#load(KIND_USER_DICT, bytes, (ptr, len, infoPtr) =>
+      this.#exports.jd_user_dict_check(base?.ptr ?? 0, base?.len ?? 0, ptr, len, infoPtr),
+    );
+  }
+
+  /**
+   * Wrap a blob cached from an earlier {@link Dict#bytes}, copied into linear
+   * memory and validated exactly as `jd_init` would.
+   *
+   * @param {Uint8Array | ArrayBuffer} bytes
+   * @returns {Dict}
+   */
+  loadDict(bytes) {
+    return this.#load(KIND_DICT, bytes, (ptr, len, infoPtr) => this.#exports.jd_dict_check(ptr, len, infoPtr));
+  }
+
+  #load(kind, bytes, check) {
     const src = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    if (src.length === 0) throw new UserDictError(USER_DICT_STATUS_CORRUPT, 0, this.#limits);
+    if (src.length === 0) throw new UserDictError(USER_DICT_STATUS_CORRUPT, 0);
 
     const infoPtr = this.#alloc(INFO_SIZE);
     let ptr = this.#alloc(src.length);
     try {
       new Uint8Array(this.#memory(), ptr, src.length).set(src);
-      const status = this.#exports.jd_user_dict_check(ptr, src.length, infoPtr);
-      if (status !== 0) throw new UserDictError(status, 0, this.#limits);
+      const status = check(ptr, src.length, infoPtr);
+      if (status !== 0) throw new UserDictError(status, 0);
       const view = new DataView(this.#memory());
-      const dict = new UserDict(
-        view.getUint32(infoPtr + INFO_ENTRIES_OFF, true),
-        view.getBigUint64(infoPtr, true),
-      );
+      const dict = kind.make(view.getUint32(infoPtr + INFO_ENTRIES_OFF, true), view.getBigUint64(infoPtr, true));
       dictInternals.set(dict, {
         module: this,
         exports: this.#exports,
@@ -496,6 +622,14 @@ export class JdModule {
       if (ptr !== 0) this.#exports.jd_free(ptr, src.length);
       this.#exports.jd_free(infoPtr, INFO_SIZE);
     }
+  }
+
+  /**
+   * The library's dictionary limits (`JD_DICT_*`), and how many entries its
+   * built-in dictionary holds — 0 in libjd-engine.
+   */
+  get dictLimits() {
+    return this.#dictLimits;
   }
 
   /** The library's user-dictionary limits (`JD_USER_DICT_*`). */
@@ -537,25 +671,18 @@ export class JdModule {
   }
 }
 
-/**
- * Phrases of the user's own, compiled into the blob the engine reads in
- * place — one block of linear memory this object owns. Build one with
- * {@link JdModule#buildUserDict}, cache {@link UserDict#bytes}, and wrap the
- * cached bytes with {@link JdModule#loadUserDict} on later launches. Pass it
- * to {@link JdModule#createEngine}; the engine merges its phrases into every
- * candidate list, user phrases first on a shared code.
- */
-export class UserDict {
+/** What a {@link Dict} and a {@link UserDict} share: a blob in linear memory. */
+class Blob {
   #entries;
   #sourceTag;
 
-  /** @internal — use {@link JdModule#buildUserDict} or {@link JdModule#loadUserDict}. */
+  /** @internal */
   constructor(entries, sourceTag) {
     this.#entries = entries;
     this.#sourceTag = sourceTag;
   }
 
-  /** How many phrases the dictionary holds. */
+  /** How many entries the dictionary holds. */
   get entries() {
     return this.#entries;
   }
@@ -570,14 +697,14 @@ export class UserDict {
     return this.#live().len;
   }
 
-  /** True once {@link UserDict#dispose} has run. */
+  /** True once `dispose` has run. */
   get disposed() {
     return dictInternals.get(this).ptr === 0;
   }
 
   /**
    * A copy of the blob — exactly the bytes to cache (IndexedDB, a file) and
-   * hand to {@link JdModule#loadUserDict} next time.
+   * load next time.
    *
    * @returns {Uint8Array}
    */
@@ -597,7 +724,7 @@ export class UserDict {
     if (internal.ptr === 0) return;
     if (internal.engines > 0) {
       throw new Error(
-        `UserDict is still used by ${internal.engines} engine(s); dispose them first`,
+        `${this.constructor.name} is still used by ${internal.engines} engine(s); dispose them first`,
       );
     }
     internal.exports.jd_free(internal.ptr, internal.allocSize);
@@ -606,10 +733,31 @@ export class UserDict {
 
   #live() {
     const internal = dictInternals.get(this);
-    if (internal.ptr === 0) throw new Error("UserDict has been disposed");
+    if (internal.ptr === 0) throw new Error(`${this.constructor.name} has been disposed`);
     return internal;
   }
 }
+
+/**
+ * A dictionary to type from in place of the built-in one: every code and the
+ * words on it, compiled into the blob the engine reads in place — one block
+ * of linear memory this object owns. Build one with
+ * {@link JdModule#buildDict}, cache {@link Dict#bytes}, and wrap the cached
+ * bytes with {@link JdModule#loadDict} on later launches. Pass it to
+ * {@link JdModule#createEngine} as `dict`, and to the user-dictionary calls
+ * for a user dictionary on top of it.
+ */
+export class Dict extends Blob {}
+
+/**
+ * Phrases of the user's own, compiled into the blob the engine reads in
+ * place — one block of linear memory this object owns. Build one with
+ * {@link JdModule#buildUserDict}, cache {@link UserDict#bytes}, and wrap the
+ * cached bytes with {@link JdModule#loadUserDict} on later launches. Pass it
+ * to {@link JdModule#createEngine}; the engine merges its phrases into every
+ * candidate list, user phrases first on a shared code.
+ */
+export class UserDict extends Blob {}
 
 /**
  * One input context — the JS analog of the Rust `JdContext` / Swift `Engine`.
@@ -624,17 +772,17 @@ export class Engine {
   /** Address and capacity of this context's read scratch. */
   #scratchPtr;
   #scratchOptions;
-  /** Bookkeeping of the user dictionary this context reads, if any. */
-  #dict;
+  /** Bookkeeping of the dictionaries this context reads. */
+  #dicts;
 
   /** @internal — use {@link JdModule#createEngine}. */
-  constructor(exports, ctx, scratchOptions, dict) {
+  constructor(exports, ctx, scratchOptions, dicts) {
     this.#exports = exports;
     this.#ctx = ctx;
     this.#statePtr = exports.jd_state_ptr(ctx);
     this.#scratchPtr = exports.jd_scratch_ptr(ctx);
     this.#scratchOptions = scratchOptions;
-    this.#dict = dict;
+    this.#dicts = dicts;
   }
 
   /** True once {@link Engine#dispose} has run; every other call then throws. */
@@ -808,10 +956,8 @@ export class Engine {
     if (this.#ctx !== 0) {
       this.#exports.jd_deinit(this.#ctx);
       this.#ctx = 0;
-      if (this.#dict !== null) {
-        this.#dict.engines--;
-        this.#dict = null;
-      }
+      for (const d of this.#dicts) d.engines--;
+      this.#dicts = [];
     }
   }
 
@@ -828,7 +974,7 @@ if (typeof Symbol.dispose !== "undefined") {
   Engine.prototype[Symbol.dispose] = function () {
     this.dispose();
   };
-  UserDict.prototype[Symbol.dispose] = function () {
+  Blob.prototype[Symbol.dispose] = function () {
     this.dispose();
   };
 }

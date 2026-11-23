@@ -56,13 +56,14 @@ export type UserDictStatus =
   | "corrupt"
   | "misaligned"
   | "textTooLong"
+  | "noBuiltinDict"
   | (string & {});
 
 /**
- * A user dictionary could not be built or accepted: a problem with the call
- * as a whole, never with one line (a line that does not parse is skipped and
- * noted). For `tooManyEntries` `line` is the 1-based line of the first phrase
- * past the cap; otherwise 0.
+ * A dictionary or user dictionary could not be built or accepted: a problem
+ * with the call as a whole, never with one line (a line that does not parse
+ * is skipped and noted). For `tooManyEntries` `line` is the 1-based line of
+ * the first entry past the cap; otherwise 0.
  */
 export class UserDictError extends Error {
   readonly status: UserDictStatus;
@@ -110,7 +111,7 @@ export const UserDictNoteFlags: {
   readonly CODE_IN_LINE: 8;
   /** Skipped: neither blank nor a comment, and no TAB. */
   readonly MALFORMED: 16;
-  /** Skipped: keys empty, longer than 6, or not all a-z. */
+  /** Skipped: keys empty, longer than 6, not all a-z and `;`, or a `;` after a letter. */
   readonly BAD_KEYS: 32;
   /** Skipped: value empty, too long, not UTF-8, or containing control characters. */
   readonly BAD_VALUE: 64;
@@ -144,12 +145,50 @@ export interface BuildUserDictOptions {
    * told apart from the phrases it was built from. Defaults to 0.
    */
   sourceTag?: number | bigint;
+  /**
+   * The dictionary the phrases sit on, a {@link Dict} of this module; the
+   * built-in dictionary when absent. The result works only in an engine
+   * typing from the same dictionary.
+   */
+  dict?: Dict | null;
+}
+
+/** Options for {@link JdModule.buildDict}. */
+export interface BuildDictOptions {
+  /** As for {@link BuildUserDictOptions.sourceTag}. */
+  sourceTag?: number | bigint;
+}
+
+/** Options for {@link JdModule.loadUserDict}. */
+export interface LoadUserDictOptions {
+  /** The dictionary the blob was built on; the built-in dictionary when absent. */
+  dict?: Dict | null;
 }
 
 /** Options for {@link JdModule.createEngine}. */
 export interface CreateEngineOptions {
-  /** A dictionary of this module whose phrases the engine merges in. */
+  /**
+   * A dictionary of this module to type from in place of the built-in one.
+   * Required in libjd-engine, which has no built-in dictionary.
+   */
+  dict?: Dict | null;
+  /**
+   * A user dictionary of this module whose phrases the engine merges in,
+   * built on the same dictionary.
+   */
   userDict?: UserDict | null;
+}
+
+/** The library's dictionary limits, as `jd_abi_layout` reports them. */
+export interface DictLimits {
+  /** Most entries one dictionary holds (`JD_DICT_MAX_ENTRIES`). */
+  readonly maxEntries: number;
+  /** Longest value in UTF-8 bytes (`JD_DICT_VALUE_MAX`). */
+  readonly valueMax: number;
+  /** Most text one build reads, in UTF-8 bytes (`JD_DICT_TEXT_MAX`). */
+  readonly textMax: number;
+  /** Entries in the built-in dictionary: 0 in libjd-engine, which has none. */
+  readonly builtinEntries: number;
 }
 
 /**
@@ -182,11 +221,34 @@ export class JdModule {
   static fromInstance(instance: WebAssembly.Instance): JdModule;
 
   /**
-   * Create a new input context, over the built-in dictionary alone or merged
-   * with a {@link UserDict} of this module. Throws on allocation failure.
-   * Dispose engines before the dictionary they read.
+   * Create a new input context, typing from the built-in dictionary or a
+   * {@link Dict} of this module, merged with a {@link UserDict} built on that
+   * same dictionary. Throws when there is no dictionary to type from, when
+   * the user dictionary was built on another one, or on allocation failure.
+   * Dispose engines before the dictionaries they read.
    */
   createEngine(options?: CreateEngineOptions): Engine;
+
+  /**
+   * Compile `value<TAB>keys` text into a {@link Dict}, to type from in place
+   * of the built-in dictionary. Lines that do not parse are skipped and exact
+   * repeats dropped, each with a note; the words on one code are its
+   * candidates in the order of their lines.
+   */
+  buildDict(text: string | Uint8Array, options?: BuildDictOptions): { dict: Dict; report: UserDictReport };
+
+  /**
+   * The empty dictionary: an engine on it types from its user dictionary
+   * alone. Every empty dictionary is the same, so a user dictionary built on
+   * one works on any.
+   */
+  emptyDict(): Dict;
+
+  /** Wrap a blob cached from an earlier {@link Dict.bytes}, validated exactly as `jd_init` would. */
+  loadDict(bytes: Uint8Array | ArrayBufferLike): Dict;
+
+  /** The library's dictionary limits (`JD_DICT_*`) and its built-in dictionary's size. */
+  get dictLimits(): DictLimits;
 
   /**
    * Compile `value<TAB>keys` text (the format of libjd's own table files)
@@ -217,10 +279,44 @@ export class JdModule {
 
   /**
    * Wrap a blob cached from an earlier {@link UserDict.bytes}, validated
-   * exactly as `jd_init` would. A `stale` (another libjd) or `corrupt` error
+   * exactly as `jd_init` would on the built-in dictionary or `options.dict`.
+   * A `stale` (another libjd, or another dictionary) or `corrupt` error
    * means "rebuild from the phrases".
    */
-  loadUserDict(bytes: Uint8Array | ArrayBufferLike): UserDict;
+  loadUserDict(bytes: Uint8Array | ArrayBufferLike, options?: LoadUserDictOptions): UserDict;
+}
+
+/**
+ * A dictionary to type from in place of the built-in one, compiled into the
+ * blob the engine reads in place — one block of linear memory this object
+ * owns until {@link Dict.dispose}.
+ */
+export class Dict {
+  private constructor();
+
+  /** How many entries the dictionary holds. */
+  get entries(): number;
+
+  /** The tag it was built with, read back from the blob. */
+  get sourceTag(): bigint;
+
+  /** The blob's length in bytes. */
+  get byteLength(): number;
+
+  /** True once {@link Dict.dispose} has run. */
+  get disposed(): boolean;
+
+  /** A copy of the blob — exactly the bytes to cache for {@link JdModule.loadDict}. */
+  bytes(): Uint8Array;
+
+  /**
+   * Release the blob's linear memory. Idempotent. Throws while an engine
+   * created with this dictionary is still alive: dispose the engines first.
+   */
+  dispose(): void;
+
+  /** Enables `using` bindings; equivalent to {@link Dict.dispose}. */
+  [Symbol.dispose](): void;
 }
 
 /**

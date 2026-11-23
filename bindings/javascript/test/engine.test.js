@@ -393,7 +393,7 @@ test("bad lines are skipped and noted, never fatal", () => {
       err instanceof UserDictError &&
       err.status === "tooManyEntries" &&
       err.line === maxEntries + 1 &&
-      err.message === `line ${maxEntries + 1}: more than ${maxEntries} phrases`,
+      err.message === `line ${maxEntries + 1}: too many entries`,
   );
 });
 
@@ -402,7 +402,7 @@ test("the library's hash, and building from bytes", () => {
   assert.equal(mod.hashUserDictText(""), 0x0409638ee2bde459n);
   assert.equal(mod.hashUserDictText("键道\tjd\n"), 0xb5f6c3766f38e694n);
   assert.equal(mod.hashUserDictText(new TextEncoder().encode("键道\tjd\n")), 0xb5f6c3766f38e694n);
-  assert.deepEqual(mod.userDictLimits, { maxEntries: 500000, valueMax: 255, textMax: 16 * 1024 * 1024 });
+  assert.deepEqual(mod.userDictLimits, { maxEntries: 500000, valueMax: 1023, textMax: 16 * 1024 * 1024 });
 
   const text = "测试词\tb\n不\tb\n";
   const fromText = mod.buildUserDict(text, { sourceTag: 3 });
