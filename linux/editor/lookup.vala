@@ -34,11 +34,13 @@ namespace ImeJd {
 
         /** The codes `query` is typed with, in libjd's order — shortest
          * first — from the built-in dictionary and the phrases in
-         * `phrases`, on a context made for this one question. A user phrase
-         * counts toward the candidate numbers of the built-in words it leads
-         * on a code. Phrases that do not build are left out, as the engines
-         * leave out a file they cannot load. */
-        public Jd.Code[] codes (string query, string? phrases) {
+         * `phrases`, on a context made for this one question; with
+         * `user_only`, from the phrases alone. A user phrase counts toward
+         * the candidate numbers of the built-in words it leads on a code.
+         * Phrases that do not build are left out, as the engines leave out a
+         * file they cannot load; with `user_only` there is then nothing to
+         * look in, and the answer is null. */
+        public Jd.Code[]? codes (string query, string? phrases, bool user_only = false) {
             // The blob the context reads in place: it outlives the context,
             // which is gone before this returns.
             uint8[] blob = {};
@@ -48,7 +50,8 @@ namespace ImeJd {
                 // malloc's alignment, past the 4 bytes the engine asks for.
                 var buffer = new uint8[bound];
                 Jd.UserDictReport report;
-                if (Jd.user_dict_build (phrases, phrases.length, UserDictFile.hash (phrases), (void*) buffer,
+                if (Jd.user_dict_build (user_only ? EmptyDict.data () : null, user_only ? EmptyDict.size () : 0,
+                                        phrases, phrases.length, UserDictFile.hash (phrases), (void*) buffer,
                                         bound, out blob_length, out report) == Jd.USER_DICT_OK) {
                     blob = (owned) buffer;
                 } else {
@@ -56,8 +59,15 @@ namespace ImeJd {
                 }
             }
             Jd.Code[] found = {};
+            if (user_only && blob_length == 0) {
+                // The phrases alone, and there are none to be had: never the
+                // built-in dictionary instead.
+                return null;
+            }
             {
-                Jd.Context? context = Jd.Context.init (blob_length > 0 ? (void*) blob : null, blob_length);
+                Jd.Context? context = Jd.Context.init (user_only ? EmptyDict.data () : null,
+                                                       user_only ? EmptyDict.size () : 0,
+                                                       blob_length > 0 ? (void*) blob : null, blob_length);
                 if (context != null) {
                     uint total = context.lookup_codes (query, query.length, null, 0);
                     if (total > 0) {
@@ -94,14 +104,19 @@ namespace ImeJd {
              * commits it: that is the engine's business, and it has changed
              * before. A code from the user dictionary is marked 自造词.
              * `user_dict_enabled` says whether the user's phrases were looked
-             * in too, which shows only when nothing was found. */
-            public Report (string query, Jd.Code[] codes, bool user_dict_enabled) {
+             * in too, and `user_only` whether only they were, which shows
+             * only when nothing was found. */
+            public Report (string query, Jd.Code[] codes, bool user_dict_enabled, bool user_only = false) {
                 string word = quoted (query);
                 if (codes.length == 0) {
                     title = "没有找到「%s」".printf (word);
-                    body = user_dict_enabled
-                        ? "内置词库和用户自造词中都没有这个词。"
-                        : "内置词库中没有这个词。用户自造词未启用，不在查询范围内。";
+                    if (user_dict_enabled && user_only) {
+                        body = "用户自造词中没有这个词。内置词库已忽略，不在查询范围内。";
+                    } else {
+                        body = user_dict_enabled
+                            ? "内置词库和用户自造词中都没有这个词。"
+                            : "内置词库中没有这个词。用户自造词未启用，不在查询范围内。";
+                    }
                     return;
                 }
                 string[] lines = {};
@@ -117,6 +132,13 @@ namespace ImeJd {
                 }
                 title = "「%s」的编码".printf (word);
                 body = string.joinv ("\n", lines);
+            }
+
+            /** Nothing could be looked up: the phrases alone were to be
+             * searched, and they cannot be had, for the reason `why`. */
+            public Report.unavailable (string query, string why) {
+                title = "没有找到「%s」".printf (quoted (query));
+                body = why;
             }
         }
     }

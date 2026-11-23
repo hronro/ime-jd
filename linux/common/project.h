@@ -45,5 +45,7 @@ inline constexpr const char *kLookupUnavailableDetail =
 /// in a text editor.
 inline constexpr const char *kMenuUserDict = "用户自造词…";
 inline constexpr const char *kMenuUserDictEnabled = "启用用户自造词";
+/// The second switch, usable only while the first is on.
+inline constexpr const char *kMenuUserDictOnly = "忽略内置词库";
 
 } // namespace imejd

@@ -23,21 +23,41 @@ namespace {
 
 constexpr const char *kGroup = "UserDict";
 constexpr const char *kEnabledKey = "Enabled";
+constexpr const char *kUserOnlyKey = "UserOnly";
 constexpr std::align_val_t kBlobAlignment{16};
 
 } // namespace
 
+// MARK: - DictBlob
+
+std::shared_ptr<const DictBlob> DictBlob::empty() {
+    static const std::shared_ptr<const DictBlob> dict = [] {
+        const size_t bound = jd_dict_blob_bound(nullptr, 0);
+        void *storage = ::operator new(bound, kBlobAlignment);
+        size_t length = 0;
+        jd_dict_report report{};
+        if (jd_dict_build(nullptr, 0, 0, storage, bound, &length, &report) != JD_USER_DICT_OK) {
+            ::operator delete(storage, kBlobAlignment);
+            return std::shared_ptr<const DictBlob>();
+        }
+        return std::shared_ptr<const DictBlob>(new DictBlob(storage, length));
+    }();
+    return dict;
+}
+
+DictBlob::~DictBlob() { ::operator delete(storage_, kBlobAlignment); }
+
 // MARK: - UserDictBlob
 
 std::shared_ptr<const UserDictBlob> UserDictBlob::build(std::string_view text, uint64_t sourceTag,
-                                                        jd_user_dict_report &report) {
+                                                        jd_user_dict_report &report, const DictBlob *base) {
     report = {};
     const size_t bound = jd_user_dict_blob_bound(text.data(), text.size());
     // 16-byte aligned; the engine requires 4.
     void *storage = ::operator new(bound, kBlobAlignment);
     size_t blobLength = 0;
-    if (jd_user_dict_build(text.data(), text.size(), sourceTag, storage, bound, &blobLength, &report) !=
-        JD_USER_DICT_OK) {
+    if (jd_user_dict_build(base ? base->data() : nullptr, base ? base->size() : 0, text.data(), text.size(),
+                           sourceTag, storage, bound, &blobLength, &report) != JD_USER_DICT_OK) {
         ::operator delete(storage, kBlobAlignment);
         return nullptr;
     }
@@ -55,7 +75,7 @@ namespace userdict_file {
 
 std::string header() {
     // 6: the longest code libjd accepts in a user dictionary.
-    return "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，1 到 6 个字符。";
+    return "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，开头可以有分号（;），1 到 6 个字符。";
 }
 
 uint64_t hash(std::string_view text) {
@@ -138,7 +158,8 @@ UserDictStore::UserDictStore(std::string directory, FailureHandler onFailure)
     // Make sure there is a directory to watch, and a place to write.
     makeDirectories(directory_);
     addWatch();
-    enabled_ = readSwitch();
+    enabled_ = readSwitch(kEnabledKey);
+    userOnly_ = readSwitch(kUserOnlyKey);
     reload();
 }
 
@@ -150,29 +171,62 @@ UserDictStore::~UserDictStore() {
 
 std::string UserDictStore::defaultDirectory() { return files::configDirectory(); }
 
-bool UserDictStore::setEnabled(bool enabled) {
-    if (enabled == enabled_) {
-        return true;
-    }
+bool UserDictStore::writeSwitch(const char *key, bool on) {
     std::optional<std::string> settings;
     if (readFile(settingsPath_, settings) != 0) {
         return false;
     }
     makeDirectories(directory_);
-    if (!writeFileAtomically(settingsPath_,
-                             withIniValue(settings.value_or(""), kGroup, kEnabledKey, enabled ? "true" : "false"))) {
+    return writeFileAtomically(settingsPath_, withIniValue(settings.value_or(""), kGroup, key, on ? "true" : "false"));
+}
+
+bool UserDictStore::setEnabled(bool enabled) {
+    if (enabled == enabled_) {
+        return true;
+    }
+    if (!writeSwitch(kEnabledKey, enabled)) {
         return false;
     }
     enabled_ = enabled;
     ++generation_;
+    notifyIfUnavailable();
     return true;
 }
 
-std::shared_ptr<const UserDictBlob> UserDictStore::activeDictionary() const {
-    return enabled_ ? dictionary_ : nullptr;
+bool UserDictStore::setUserOnly(bool userOnly) {
+    if (userOnly == userOnly_) {
+        return true;
+    }
+    if (!writeSwitch(kUserOnlyKey, userOnly)) {
+        return false;
+    }
+    reload();
+    return true;
+}
+
+UserDictSelection UserDictStore::selection() const {
+    UserDictSelection selection;
+    if (!enabled_) {
+        return selection;
+    }
+    if (!userOnly_) {
+        selection.dict = dictionary_;
+        return selection;
+    }
+    if (dictionary_) {
+        selection.kind = UserDictSelection::Kind::UserOnly;
+        selection.dict = dictionary_;
+        return selection;
+    }
+    selection.kind = UserDictSelection::Kind::Unavailable;
+    selection.why = "用户自造词未能加载：" + (lastError_ ? lastError_->message() : std::string("没有词条文件"));
+    return selection;
 }
 
 std::string UserDictStore::statusText() const {
+    if (const auto chosen = selection(); chosen.kind == UserDictSelection::Kind::Unavailable) {
+        return chosen.why + "，暂时直接输入字母";
+    }
     if (lastError_) {
         return "用户自造词：" + lastError_->message();
     }
@@ -191,11 +245,20 @@ std::string UserDictStore::statusText() const {
 
 bool UserDictStore::reload() {
     bool changed = false;
-    // The switch may have been flipped by another process: the other
+    // The switches may have been flipped by another process: the other
     // framework's frontend, or the editor.
-    const bool enabled = readSwitch();
+    const bool enabled = readSwitch(kEnabledKey);
     if (enabled != enabled_) {
         enabled_ = enabled;
+        changed = true;
+    }
+    const bool userOnly = readSwitch(kUserOnlyKey);
+    if (userOnly != userOnly_) {
+        userOnly_ = userOnly;
+        // The phrases are built on the other base now: build them again,
+        // even from the same text.
+        builtHash_.reset();
+        failedHash_.reset();
         changed = true;
     }
     if (loadFile()) {
@@ -204,15 +267,32 @@ bool UserDictStore::reload() {
     if (changed) {
         ++generation_;
     }
+    notifyIfUnavailable();
     return changed;
 }
 
-bool UserDictStore::readSwitch() const {
+void UserDictStore::notifyIfUnavailable() {
+    const auto chosen = selection();
+    if (chosen.kind != UserDictSelection::Kind::Unavailable) {
+        notifiedUnavailable_.clear();
+        return;
+    }
+    // A file that fails to build is told by fail() already.
+    if (chosen.why == notifiedUnavailable_ || lastError_) {
+        return;
+    }
+    notifiedUnavailable_ = chosen.why;
+    if (onFailure_) {
+        onFailure_("用户自造词未能加载", chosen.why + "。忽略内置词库时，键道暂时直接输入字母。");
+    }
+}
+
+bool UserDictStore::readSwitch(const char *key) const {
     std::optional<std::string> settings;
     if (readFile(settingsPath_, settings) != 0 || !settings) {
         return false;
     }
-    const auto value = iniValue(*settings, kGroup, kEnabledKey);
+    const auto value = iniValue(*settings, kGroup, key);
     // GKeyFile's spellings of true.
     return value == "true" || value == "1";
 }
@@ -260,7 +340,8 @@ bool UserDictStore::loadFile() {
     }
 
     jd_user_dict_report report{};
-    auto dictionary = UserDictBlob::build(*text, *hash, report);
+    const auto base = userOnly_ ? DictBlob::empty() : nullptr;
+    auto dictionary = UserDictBlob::build(*text, *hash, report, base.get());
     if (!dictionary) {
         LoadError failure;
         failure.kind = LoadError::Kind::Build;
@@ -282,7 +363,9 @@ bool UserDictStore::fail(LoadError error, std::optional<uint64_t> hash) {
     // A failed rebuild after a text-editor save would otherwise go unseen
     // until the user wonders why a phrase does not come up.
     if (onFailure_) {
-        const char *fallback = dictionary_ ? "已沿用上一次成功加载的词库。" : "当前没有加载用户自造词。";
+        const char *fallback = dictionary_         ? "已沿用上一次成功加载的词库。"
+                               : typesUserDictOnly() ? "忽略内置词库时，键道暂时直接输入字母。"
+                                                     : "当前没有加载用户自造词。";
         onFailure_("用户自造词未能加载", lastError_->message() + "。" + fallback);
     }
     return false;

@@ -8,17 +8,28 @@
 #include <vector>
 
 #include "check.h"
+#include "engine.h"
 #include "temp_dir.h"
 #include "user_dict.h"
 
+using imejd::UserDictSelection;
 using imejd::UserDictStore;
 namespace file = imejd::userdict_file;
+
+namespace {
+
+/// The user dictionary selection() hands an engine, if any.
+std::shared_ptr<const imejd::UserDictBlob> active(const UserDictStore &store) {
+    return store.selection().dict;
+}
+
+} // namespace
 
 TEST(noFileMeansNoDictionary) {
     TempDir dir;
     UserDictStore store(dir.path());
     CHECK(!store.dictionary());
-    CHECK(!store.activeDictionary());
+    CHECK(!active(store));
     CHECK_EQ(store.generation(), 0u);
     CHECK_EQ(store.statusText(), "用户自造词：尚无词条");
     // Nothing reloaded, nothing changed.
@@ -116,19 +127,19 @@ TEST(theSwitchChangesTheActiveDictionaryWithoutTouchingTheFile) {
     // Off by default: the file is loaded, but engines get nothing.
     CHECK(!store.isEnabled());
     CHECK(store.dictionary());
-    CHECK(!store.activeDictionary());
+    CHECK(!active(store));
     CHECK_EQ(store.generation(), 1u);
     CHECK(store.setEnabled(false));
     CHECK_EQ(store.generation(), 1u);
 
     CHECK(store.setEnabled(true));
-    CHECK(store.activeDictionary());
+    CHECK(active(store));
     CHECK_EQ(store.generation(), 2u);
     CHECK_EQ(dir.read("settings.ini"), "[UserDict]\nEnabled=true\n");
     CHECK_EQ(dir.read(file::fileName), "键道\tzzzzzz\n");
 
     CHECK(store.setEnabled(false));
-    CHECK(!store.activeDictionary());
+    CHECK(!active(store));
     CHECK(store.dictionary());
     CHECK_EQ(store.generation(), 3u);
     CHECK_EQ(dir.read("settings.ini"), "[UserDict]\nEnabled=false\n");
@@ -244,4 +255,56 @@ TEST(utf8Validation) {
     CHECK(!file::isUtf8("\xED\xA0\x80"));      // a surrogate
     CHECK(!file::isUtf8("\xF4\x90\x80\x80"));  // past U+10FFFF
     CHECK(file::isUtf8("\xF0\x9F\x98\x80"));   // 😀
+}
+
+// MARK: - Only the user's phrases
+
+TEST(userOnlyBuildsOnTheEmptyDictionary) {
+    TempDir dir;
+    dir.write(file::fileName, "不\tb\n测试\tb\n");
+    UserDictStore store(dir.path());
+    CHECK(store.setEnabled(true));
+    CHECK_EQ(store.report()->dropped, 1u); // 不/b repeats a built-in word
+    CHECK(store.selection().kind == UserDictSelection::Kind::BuiltIn);
+    const auto before = store.generation();
+
+    CHECK(store.setUserOnly(true));
+    CHECK(store.isUserOnly());
+    CHECK(store.generation() > before);
+    CHECK_EQ(dir.read("settings.ini"), "[UserDict]\nUserOnly=true\nEnabled=true\n");
+    CHECK_EQ(store.report()->dropped, 0u); // nothing to repeat on the empty dictionary
+    const auto chosen = store.selection();
+    CHECK(chosen.kind == UserDictSelection::Kind::UserOnly);
+    imejd::Engine engine(chosen.dict, imejd::DictBlob::empty());
+    CHECK(engine.valid());
+    engine.pressKey('b');
+    const auto page = engine.readRange(0, 3);
+    CHECK_EQ(page.size(), 2u);
+    CHECK_EQ(page.at(0).value, "不");
+    CHECK_EQ(page.at(1).value, "测试");
+
+    CHECK(store.setUserOnly(false));
+    CHECK_EQ(store.report()->dropped, 1u);
+}
+
+TEST(userOnlyWithNothingToLoadIsUnavailableNeverTheBuiltInDictionary) {
+    TempDir dir;
+    std::vector<std::string> told;
+    UserDictStore store(dir.path(), [&](const std::string &, const std::string &body) { told.push_back(body); });
+    CHECK(store.setEnabled(true));
+    CHECK(store.setUserOnly(true));
+    const auto chosen = store.selection();
+    CHECK(chosen.kind == UserDictSelection::Kind::Unavailable);
+    CHECK_EQ(chosen.why, "用户自造词未能加载：没有词条文件");
+    CHECK_EQ(store.statusText(), "用户自造词未能加载：没有词条文件，暂时直接输入字母");
+    CHECK_EQ(told.size(), 1u);
+    // Told once, not again while nothing changed.
+    store.reload();
+    CHECK_EQ(told.size(), 1u);
+
+    // The switch flipped from another process is seen at the next reload.
+    store.setEnabled(false);
+    CHECK(store.selection().kind == UserDictSelection::Kind::BuiltIn);
+    CHECK(!store.selection().dict);
+    CHECK(store.isUserOnly());
 }

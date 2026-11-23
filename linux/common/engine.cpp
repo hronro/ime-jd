@@ -6,15 +6,24 @@
 
 namespace imejd {
 
-Engine::Engine(std::shared_ptr<const UserDictBlob> dict) : dict_(std::move(dict)) {
+Engine::Engine(std::shared_ptr<const UserDictBlob> dict, std::shared_ptr<const DictBlob> base)
+    : base_(std::move(base)), dict_(std::move(dict)) {
+    if (base_) {
+        // The phrases alone: never the built-in dictionary instead.
+        ctx_ = jd_init(base_->data(), base_->size(), dict_ ? dict_->data() : nullptr, dict_ ? dict_->size() : 0);
+        if (ctx_) {
+            state_ = jd_state_ptr(ctx_);
+        }
+        return;
+    }
     if (dict_) {
-        ctx_ = jd_init(dict_->data(), dict_->size());
+        ctx_ = jd_init(nullptr, 0, dict_->data(), dict_->size());
     }
     if (!ctx_) {
         // A blob this library has just built always validates. Should it
         // not, the built-in dictionary alone is still an engine.
         dict_.reset();
-        ctx_ = jd_init(nullptr, 0);
+        ctx_ = jd_init(nullptr, 0, nullptr, 0);
     }
     if (ctx_) {
         state_ = jd_state_ptr(ctx_);

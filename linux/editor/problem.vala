@@ -49,7 +49,7 @@ namespace ImeJd {
                         return "缺少制表符（无编码），不生效";
                     }
                     if ((flags & Jd.LINE_BAD_KEYS) != 0) {
-                        return "编码无效（1 到 %d 个 a-z），不生效".printf (MAX_KEY_LENGTH);
+                        return "编码无效（1 到 %d 个 a-z，开头可以有 ;），不生效".printf (MAX_KEY_LENGTH);
                     }
                     return "词无效（不能为空或含控制字符，最长 %u 字节），不生效".printf (Jd.USER_DICT_VALUE_MAX);
                 case ProblemKind.DUPLICATE:

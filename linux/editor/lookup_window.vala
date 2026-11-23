@@ -135,7 +135,11 @@ namespace ImeJd {
             // type with the last one that loaded, which this process never
             // had, and the 用户自造词 window says why.
             string? phrases = store.enabled && store.report != null ? store.text : null;
-            var report = new CodeLookup.Report (query, CodeLookup.codes (query, phrases), store.enabled);
+            var codes = CodeLookup.codes (query, phrases, store.types_user_dict_only);
+            var report = codes != null
+                ? new CodeLookup.Report (query, codes, store.enabled, store.types_user_dict_only)
+                : new CodeLookup.Report.unavailable (query, "用户自造词未能加载：%s".printf (
+                    store.error != null ? store.error.message : "没有词条文件"));
 
             answer = new Prompt (this, report.title, report.body, { "好" });
             yield answer.choose ();

@@ -10,6 +10,7 @@
 
 namespace imejd {
 
+class DictBlob;
 class UserDictBlob;
 
 struct Candidate {
@@ -28,8 +29,10 @@ struct KeyResult {
 
 class Engine {
 public:
-    /// An engine over the built-in dictionary, plus `dict` when there is one.
-    explicit Engine(std::shared_ptr<const UserDictBlob> dict = nullptr);
+    /// An engine over the built-in dictionary, plus `dict` when there is one
+    /// — or, given a `base`, over `base` and `dict` alone, with no fallback:
+    /// should they be refused, there is no engine (valid() is false).
+    explicit Engine(std::shared_ptr<const UserDictBlob> dict = nullptr, std::shared_ptr<const DictBlob> base = nullptr);
     ~Engine();
 
     Engine(const Engine &) = delete;
@@ -47,7 +50,11 @@ public:
     /// would corrupt memory, so a frontend checks once and refuses to run.
     static bool abiMatches();
 
+    /// Whether there is a context to type with.
+    bool valid() const { return ctx_ != nullptr; }
+
 private:
+    std::shared_ptr<const DictBlob> base_;
     std::shared_ptr<const UserDictBlob> dict_;
     jd_context *ctx_ = nullptr;
     const jd_state *state_ = nullptr;

@@ -250,3 +250,20 @@ TEST(anEditedDictionaryIsAdoptedOnceNothingIsComposing) {
     CHECK_EQ(f.host.page.at(0).value, "键道");
     CHECK(contains(f.host.page, "键道"));
 }
+
+TEST(withNothingToTypeFromKeysPassThroughAsPlainLetters) {
+    Fixture f;
+    // 忽略内置词库 with no phrases file: no dictionary, so every key is
+    // the application's.
+    CHECK(f.store.setEnabled(true));
+    CHECK(f.store.setUserOnly(true));
+    CHECK(!type(f.session, f.host, "n"));
+    CHECK(f.host.committed.empty());
+
+    // Phrases arrive: the next key types from them, and only them.
+    f.dir.write(imejd::userdict_file::fileName, "测试\tb\n");
+    f.store.reload();
+    CHECK(type(f.session, f.host, "b"));
+    CHECK_EQ(f.host.page.size(), 1u);
+    CHECK_EQ(f.host.page.at(0).value, "测试");
+}

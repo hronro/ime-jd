@@ -10,6 +10,11 @@ Session::~Session() = default;
 
 bool Session::handleKey(const KeyInput &key, Host &host) {
     syncEngine();
+    // No dictionary to type from (忽略内置词库, with none to be had): the
+    // key is the application's, a plain letter. The store has said why.
+    if (passesKeys_) {
+        return false;
+    }
     return dispatch(keyAction(key, isComposing()), host);
 }
 
@@ -55,7 +60,18 @@ void Session::syncEngine() {
     if (engine_ && (engineGeneration_ == store_.generation() || isComposing() || !visible_.empty())) {
         return;
     }
-    engine_ = std::make_unique<Engine>(store_.activeDictionary());
+    const auto chosen = store_.selection();
+    switch (chosen.kind) {
+    case UserDictSelection::Kind::BuiltIn:
+        engine_ = std::make_unique<Engine>(chosen.dict);
+        break;
+    case UserDictSelection::Kind::UserOnly:
+    case UserDictSelection::Kind::Unavailable:
+        // On the empty dictionary: the phrases alone, or nothing at all.
+        engine_ = std::make_unique<Engine>(chosen.dict, DictBlob::empty());
+        break;
+    }
+    passesKeys_ = chosen.kind == UserDictSelection::Kind::Unavailable || !engine_->valid();
     engineGeneration_ = store_.generation();
 }
 

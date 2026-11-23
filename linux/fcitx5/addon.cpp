@@ -190,6 +190,21 @@ FcitxEngine::FcitxEngine(fcitx::Instance *instance)
     userDictEnabledItem_.onActivate = [this](fcitx::InputContext *ic) {
         store_.setEnabled(!store_.isEnabled());
         userDictEnabledItem_.update(ic);
+        userDictOnlyItem_.update(ic);
+        userDictStatusItem_.update(ic);
+    };
+    userDictOnlyItem_.setCheckable(true);
+    userDictOnlyItem_.text = [] { return std::string(kMenuUserDictOnly); };
+    userDictOnlyItem_.checked = [this] { return store_.isUserOnly(); };
+    userDictOnlyItem_.onActivate = [this](fcitx::InputContext *ic) {
+        // Only while the user dictionary is on: off, the second switch
+        // means nothing, and the item stays as it is.
+        if (!store_.isEnabled()) {
+            return;
+        }
+        store_.setUserOnly(!store_.isUserOnly());
+        userDictOnlyItem_.update(ic);
+        userDictStatusItem_.update(ic);
     };
     userDictStatusItem_.text = [this] { return store_.statusText(); };
 
@@ -202,6 +217,7 @@ FcitxEngine::FcitxEngine(fcitx::Instance *instance)
     ui.registerAction("imejd-lookup", &lookupItem_);
     ui.registerAction("imejd-user-dict", &userDictItem_);
     ui.registerAction("imejd-user-dict-enabled", &userDictEnabledItem_);
+    ui.registerAction("imejd-user-dict-only", &userDictOnlyItem_);
     ui.registerAction("imejd-user-dict-status", &userDictStatusItem_);
     // Registered like the items, as Fcitx's tray menu shows only those.
     for (size_t i = 0; i < separators_.size(); ++i) {
@@ -217,7 +233,7 @@ FcitxEngine::FcitxEngine(fcitx::Instance *instance)
         menu_.insert(menu_.end(), {&updateItem_, &*separator++, &autoCheckItem_});
     }
     menu_.insert(menu_.end(), {&*separator++, &lookupItem_, &*separator++, &userDictItem_, &userDictEnabledItem_,
-                               &userDictStatusItem_});
+                               &userDictOnlyItem_, &userDictStatusItem_});
 }
 
 FcitxEngine::~FcitxEngine() = default;
@@ -294,6 +310,7 @@ void FcitxEngine::reload() {
     // told.
     if (auto *ic = instance_->mostRecentInputContext()) {
         userDictEnabledItem_.update(ic);
+        userDictOnlyItem_.update(ic);
         userDictStatusItem_.update(ic);
         if (update_) {
             updateItem_.update(ic);

@@ -6,10 +6,17 @@
 // same one every client reads (bindings/swift/UserDictFile.swift).
 //
 // Both files live in one directory, ~/.config/ime-jd ($XDG_CONFIG_HOME): the
-// phrases, 用户自造词.txt, and settings.ini, which holds the switch:
+// phrases, 用户自造词.txt, and settings.ini, which holds the switches:
 //
 //   [UserDict]
 //   Enabled=true
+//   UserOnly=true
+//
+// The second, 忽略内置词库, turns the built-in dictionary off while the
+// first is on: the phrases are then built on the empty dictionary and are all
+// there is to type from. With none to be had — no file, or one that never
+// built — the sessions let keys through as plain letters and the user is told
+// why; it never falls back to the built-in dictionary.
 //
 // There is no blob cache. The process holding the store — fcitx5 itself, or
 // the IBus engine's own — runs once per login session, and a build is about
@@ -22,7 +29,7 @@
 //
 // A context's dictionary is fixed for its lifetime, so the store never
 // touches an engine. It bumps generation(), and each session re-creates its
-// engine with activeDictionary() at the next moment nothing is composing.
+// engine from selection() at the next moment nothing is composing.
 // Everything runs on the framework's main loop.
 #pragma once
 
@@ -38,14 +45,37 @@
 
 namespace imejd {
 
+/// A dictionary to type from in place of the built-in one — here only ever
+/// the empty one, for 忽略内置词库: the aligned buffer jd_dict_build wrote.
+class DictBlob {
+public:
+    /// The empty dictionary, built once per process. Every empty dictionary
+    /// is the same one, so a user dictionary built on it works on any.
+    static std::shared_ptr<const DictBlob> empty();
+    ~DictBlob();
+
+    DictBlob(const DictBlob &) = delete;
+    DictBlob &operator=(const DictBlob &) = delete;
+
+    const void *data() const { return storage_; }
+    size_t size() const { return size_; }
+
+private:
+    DictBlob(void *storage, size_t size) : storage_(storage), size_(size) {}
+
+    void *storage_;
+    size_t size_;
+};
+
 /// A compiled user dictionary: the aligned buffer jd_user_dict_build wrote,
 /// whose first size() bytes are the blob.
 class UserDictBlob {
 public:
-    /// Compiles `text` (lines of `value<TAB>keys`). Returns nullptr when the
-    /// build fails as a whole; `report.status` and `report.line` say why.
+    /// Compiles `text` (lines of `value<TAB>keys`) on `base`, or on the
+    /// built-in dictionary when it is null. Returns nullptr when the build
+    /// fails as a whole; `report.status` and `report.line` say why.
     static std::shared_ptr<const UserDictBlob> build(std::string_view text, uint64_t sourceTag,
-                                                     jd_user_dict_report &report);
+                                                     jd_user_dict_report &report, const DictBlob *base = nullptr);
     ~UserDictBlob();
 
     UserDictBlob(const UserDictBlob &) = delete;
@@ -77,6 +107,23 @@ uint64_t hash(std::string_view text);
 bool isUtf8(std::string_view text);
 
 } // namespace userdict_file
+
+/// What a session types from, by the two switches.
+struct UserDictSelection {
+    enum class Kind {
+        /// The built-in dictionary, with `dict` merged in when there is one.
+        BuiltIn,
+        /// `dict` alone, on the empty dictionary.
+        UserOnly,
+        /// The phrases alone were asked for and cannot be had, for the
+        /// reason `why` gives: keys type themselves. Never the built-in
+        /// dictionary instead.
+        Unavailable,
+    };
+    Kind kind = Kind::BuiltIn;
+    std::shared_ptr<const UserDictBlob> dict;
+    std::string why;
+};
 
 class UserDictStore {
 public:
@@ -111,8 +158,8 @@ public:
     const std::string &directory() const { return directory_; }
     const std::string &filePath() const { return filePath_; }
 
-    /// Bumped whenever activeDictionary() may differ from what an existing
-    /// engine was created with.
+    /// Bumped whenever selection() may differ from what an existing engine
+    /// was created with.
     uint64_t generation() const { return generation_; }
 
     /// The user's switch, off until they turn it on. Off means every new
@@ -123,8 +170,17 @@ public:
     /// not be saved; the switch is then unchanged.
     bool setEnabled(bool enabled);
 
-    /// What an engine created right now should read.
-    std::shared_ptr<const UserDictBlob> activeDictionary() const;
+    /// The second switch, 忽略内置词库: off until the user turns it on, and
+    /// heeded only while isEnabled() is on.
+    bool isUserOnly() const { return userOnly_; }
+    /// Turns it on or off, saves it and rebuilds the phrases on the other
+    /// base. Returns false when it could not be saved; it is then unchanged.
+    bool setUserOnly(bool userOnly);
+    /// Whether the phrases are all there is to type from right now.
+    bool typesUserDictOnly() const { return enabled_ && userOnly_; }
+
+    /// What an engine created right now types from.
+    UserDictSelection selection() const;
     /// The last successfully built dictionary — kept while switched off, and
     /// kept across a failed rebuild.
     const std::shared_ptr<const UserDictBlob> &dictionary() const { return dictionary_; }
@@ -136,8 +192,9 @@ public:
     /// One line for the input method's menu.
     std::string statusText() const;
 
-    /// Re-reads the switch, and the file, rebuilding when its content
-    /// changed. Returns whether activeDictionary() may now differ.
+    /// Re-reads the switches, and the file, rebuilding when its content — or
+    /// the base it is built on — changed. Returns whether selection() may now
+    /// differ.
     bool reload();
 
     /// Creates the phrases file with header(), unless there is one, so a
@@ -154,8 +211,10 @@ public:
     bool drainWatch();
 
 private:
-    bool readSwitch() const;
+    bool readSwitch(const char *key) const;
+    bool writeSwitch(const char *key, bool on);
     bool loadFile();
+    void notifyIfUnavailable();
     bool fail(LoadError error, std::optional<uint64_t> hash);
     void addWatch();
 
@@ -166,6 +225,9 @@ private:
 
     uint64_t generation_ = 0;
     bool enabled_ = false;
+    bool userOnly_ = false;
+    /// The unavailable reason last told, so one state is told once.
+    std::string notifiedUnavailable_;
     std::shared_ptr<const UserDictBlob> dictionary_;
     std::optional<jd_user_dict_report> report_;
     std::optional<LoadError> lastError_;

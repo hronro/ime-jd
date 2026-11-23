@@ -37,7 +37,7 @@ namespace ImeJd {
         /** The first line of every file the editor writes, for whoever opens
          * it in a text editor. 6: the longest code libjd takes. */
         public const string HEADER =
-            "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，1 到 6 个字符。";
+            "# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，开头可以有分号（;），1 到 6 个字符。";
 
         /** The file's text, or null when there is no file. Read with
          * read(2), as the engines read it, for the system's own short

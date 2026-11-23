@@ -6,6 +6,36 @@
 
 namespace ImeJd {
 
+    /** The empty dictionary — jd_dict_build on no text — that the phrases
+     * sit on with 忽略内置词库, built once. Every empty dictionary is the
+     * same one. */
+    public class EmptyDict {
+        private static uint8[]? bytes = null;
+        private static size_t length = 0;
+
+        public static void* data () {
+            ensure ();
+            return (void*) bytes;
+        }
+
+        public static size_t size () {
+            ensure ();
+            return length;
+        }
+
+        private static void ensure () {
+            if (bytes != null) {
+                return;
+            }
+            size_t bound = Jd.dict_blob_bound (null, 0);
+            // malloc's alignment, past the 4 bytes the engine asks for.
+            var buffer = new uint8[bound];
+            Jd.UserDictReport report;
+            Jd.dict_build (null, 0, 0, (void*) buffer, bound, out length, out report);
+            bytes = (owned) buffer;
+        }
+    }
+
     /** What libjd's build of the file says: the counts, and one note per
      * line it skipped, dropped, or found sharing a code. */
     public class Report : Object {
@@ -15,15 +45,17 @@ namespace ImeJd {
         public uint invalid;
         public Jd.UserDictNote[] notes;
 
-        /** Builds `text`, tagged with `tag`. Returns null when the build
-         * fails as a whole; `status` and `line` then say why. */
-        public static Report? build (string text, uint64 tag, out uint status, out uint line) {
+        /** Builds `text`, tagged with `tag`, on the built-in dictionary or —
+         * `user_only` — the empty one. Returns null when the build fails as
+         * a whole; `status` and `line` then say why. */
+        public static Report? build (string text, uint64 tag, bool user_only, out uint status, out uint line) {
             size_t bound = Jd.user_dict_blob_bound (text, text.length);
             // malloc's alignment, past the 4 bytes the engine asks for.
             var buffer = new uint8[bound];
             size_t blob_length;
             Jd.UserDictReport raw;
-            status = Jd.user_dict_build (text, text.length, tag, (void*) buffer, bound, out blob_length, out raw);
+            status = Jd.user_dict_build (user_only ? EmptyDict.data () : null, user_only ? EmptyDict.size () : 0,
+                                         text, text.length, tag, (void*) buffer, bound, out blob_length, out raw);
             line = raw.line;
             if (status != Jd.USER_DICT_OK) {
                 return null;
@@ -83,6 +115,7 @@ namespace ImeJd {
         private const string SETTINGS_NAME = "settings.ini";
         private const string SWITCH_GROUP = "UserDict";
         private const string SWITCH_KEY = "Enabled";
+        private const string USER_ONLY_KEY = "UserOnly";
         private const string WINDOW_GROUP = "UserDictWindow";
         /** One save is several events. */
         private const uint DEBOUNCE_MS = 300;
@@ -92,6 +125,15 @@ namespace ImeJd {
 
         /** The user's switch, as settings.ini has it: off until turned on. */
         public bool enabled { get; private set; }
+        /** The second switch, 忽略内置词库: off until turned on, and heeded
+         * only while `enabled` is on. The phrases are then built on the empty
+         * dictionary, and are all the engines type from. */
+        public bool user_only { get; private set; }
+
+        /** Whether the phrases are all there is to type from right now. */
+        public bool types_user_dict_only {
+            get { return enabled && user_only; }
+        }
         /** The file's text; null when there is no file, or it cannot be
          * read. */
         public string? text { get; private set; }
@@ -154,9 +196,12 @@ namespace ImeJd {
         public void reload () {
             // Off when settings.ini cannot be read, as the engines see it.
             try {
-                enabled = Ini.get_value (read_settings (), SWITCH_GROUP, SWITCH_KEY) in new string[] { "true", "1" };
+                string settings = read_settings ();
+                enabled = Ini.get_value (settings, SWITCH_GROUP, SWITCH_KEY) in new string[] { "true", "1" };
+                user_only = Ini.get_value (settings, SWITCH_GROUP, USER_ONLY_KEY) in new string[] { "true", "1" };
             } catch (UserDictError failure) {
                 enabled = false;
+                user_only = false;
             }
 
             string? text = null;
@@ -175,7 +220,7 @@ namespace ImeJd {
             }
             if (text != null) {
                 uint status, line;
-                report = Report.build (text, UserDictFile.hash (text), out status, out line);
+                report = Report.build (text, UserDictFile.hash (text), user_only, out status, out line);
                 if (report == null) {
                     error = new LoadError ();
                     error.kind = LoadError.Kind.BUILD;
@@ -198,6 +243,13 @@ namespace ImeJd {
         public void save_switch (bool on) throws Error {
             write_settings (Ini.set_value (read_settings (), SWITCH_GROUP, SWITCH_KEY, on ? "true" : "false"));
             enabled = on;
+        }
+
+        /** Turns 忽略内置词库 on or off, keeping every other setting, and
+         * builds the file again on the other base. */
+        public void save_user_only (bool on) throws Error {
+            write_settings (Ini.set_value (read_settings (), SWITCH_GROUP, USER_ONLY_KEY, on ? "true" : "false"));
+            reload ();
         }
 
         /** The window's size when it was last closed; false when there is

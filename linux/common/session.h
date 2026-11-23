@@ -87,6 +87,9 @@ private:
     /// Created at the first key; re-created when the user dictionary changes,
     /// see syncEngine().
     std::unique_ptr<Engine> engine_;
+    /// No dictionary to type from — 忽略内置词库, with none to be had —
+    /// so every key is the application's (see handleKey).
+    bool passesKeys_ = false;
     uint64_t engineGeneration_ = 0;
     std::string composition_;
     /// The candidates currently on screen.

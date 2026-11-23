@@ -2,7 +2,9 @@
  * libjd's calls (core/include/jd.h), the part the editor uses: building the
  * phrases file, for the notes the build leaves on its lines and for its
  * verdict on the file as a whole, and 编码反查's lookup, on a context of its
- * own over the built-in dictionary and, built here, the user's.
+ * own over the built-in dictionary and, built here, the user's. With
+ * 忽略内置词库 the phrases sit on the empty dictionary instead, which
+ * jd_dict_build makes from no text.
  */
 [CCode (cheader_filename = "jd.h")]
 namespace Jd {
@@ -56,11 +58,20 @@ namespace Jd {
         public uint notes_offset;
     }
 
+    [CCode (cname = "jd_dict_blob_bound")]
+    public size_t dict_blob_bound (string? text, size_t text_len);
+
+    [CCode (cname = "jd_dict_build")]
+    public uint dict_build (string? text, size_t text_len, uint64 source_tag,
+                            void *buf, size_t buf_cap, out size_t blob_len,
+                            out UserDictReport report);
+
     [CCode (cname = "jd_user_dict_blob_bound")]
     public size_t user_dict_blob_bound (string phrases, size_t phrases_len);
 
+    /** On `dict` — null for the built-in dictionary. */
     [CCode (cname = "jd_user_dict_build")]
-    public uint user_dict_build (string phrases, size_t phrases_len, uint64 source_tag,
+    public uint user_dict_build (void *dict, size_t dict_len, string phrases, size_t phrases_len, uint64 source_tag,
                                  void *buf, size_t buf_cap, out size_t blob_len,
                                  out UserDictReport report);
 
@@ -84,9 +95,10 @@ namespace Jd {
     [Compact]
     [CCode (cname = "jd_context", free_function = "jd_deinit")]
     public class Context {
-        /** Null when the blob fails validation. */
+        /** Over `dict` — null for the built-in dictionary — and `user_dict`.
+         * Null when a blob fails validation. */
         [CCode (cname = "jd_init")]
-        public static Context? init (void *user_dict, size_t user_dict_len);
+        public static Context? init (void *dict, size_t dict_len, void *user_dict, size_t user_dict_len);
 
         /** Writes up to `out_cap` codes of `value` to `out`, and returns how
          * many there are in all. */

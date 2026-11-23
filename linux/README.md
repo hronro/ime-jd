@@ -150,7 +150,10 @@ The user's own phrases, in `~/.config/ime-jd/用户自造词.txt` (`$XDG_CONFIG_
 ```ini
 [UserDict]
 Enabled=true
+UserOnly=true
 ```
+
+The second switch, **忽略内置词库**, in the same menu and the editor, works only while the first is on. On, the phrases are built on libjd's empty dictionary and are all the engines type from; with none to be had — no file, or one that never built — the sessions let every key through to the application, the menu's last line says why, and a notification says so once. It never falls back to the built-in dictionary.
 
 The directory is watched, so a saved edit is rebuilt within a moment and the next composition uses it. The menu's last line says how many phrases are in use, and how many lines were skipped as invalid or ignored as duplicates. A file that cannot be loaded at all — not UTF-8, over the engine's caps — leaves the last good dictionary in use, says so on that line, and raises a desktop notification. All of this follows the macOS client (`macos/JdIME/UserDict/UserDictStore.swift`).
 

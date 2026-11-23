@@ -323,8 +323,31 @@ def the_menu_has_macos_groups_and_the_code_lookup():
         rest = ['imejd-separator-2', 'imejd-lookup', 'imejd-separator-3']
     check_eq(list(c.properties),
              ['InputMode', 'imejd-separator-1', 'imejd-about', *update, *rest,
-              'imejd-user-dict', 'imejd-user-dict-enabled', 'imejd-user-dict-status'],
+              'imejd-user-dict', 'imejd-user-dict-enabled', 'imejd-user-dict-only', 'imejd-user-dict-status'],
              'the menu, in its groups')
+
+
+@test
+def only_the_users_phrases_when_the_built_in_dictionary_is_off():
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(os.path.join(CONFIG_DIR, '用户自造词.txt'), 'w', encoding='utf-8') as f:
+        f.write('键道\tz\n')
+    c = Context()
+    c.ic.property_activate('imejd-user-dict-enabled', IBus.PropState.CHECKED)
+    check(wait_for(lambda: c.properties['imejd-user-dict-enabled']['state'] == IBus.PropState.CHECKED),
+          'the user dictionary is on')
+    check(wait_for(lambda: c.properties['imejd-user-dict-only']['sensitive']), 'the second switch can be chosen')
+    c.ic.property_activate('imejd-user-dict-only', IBus.PropState.CHECKED)
+    check(wait_for(lambda: c.properties['imejd-user-dict-only']['state'] == IBus.PropState.CHECKED),
+          'the second switch shows as on')
+    c.type('z')
+    check_eq(c.candidates, ['键道'], 'the phrase, and nothing built in')
+    c.press(IBus.KEY_Escape)
+
+    # Back to the built-in dictionary, for the tests after this one.
+    c.ic.property_activate('imejd-user-dict-only', IBus.PropState.UNCHECKED)
+    check(wait_for(lambda: c.properties['imejd-user-dict-only']['state'] == IBus.PropState.UNCHECKED),
+          'the second switch shows as off')
 
 
 @test

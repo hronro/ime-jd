@@ -91,6 +91,7 @@ private:
     FcitxMenuItem lookupItem_;
     FcitxMenuItem userDictItem_;
     FcitxMenuItem userDictEnabledItem_;
+    FcitxMenuItem userDictOnlyItem_;
     FcitxMenuItem userDictStatusItem_;
     /// Between the menu's groups; the tarball's update check has two.
     std::array<FcitxMenuItem, 3> separators_;

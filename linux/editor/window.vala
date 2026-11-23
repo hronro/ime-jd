@@ -51,6 +51,8 @@ namespace ImeJd {
         private bool updating_check;
 
         private Gtk.CheckButton enable_check;
+        /** 忽略内置词库: usable only while `enable_check` is on. */
+        private Gtk.CheckButton only_check;
         private Gtk.SearchEntry search_entry;
         private Gtk.ColumnView view;
         private Gtk.Button add_button;
@@ -98,9 +100,13 @@ namespace ImeJd {
 
         private void build_content () {
             enable_check = new Gtk.CheckButton.with_label ("启用用户自造词");
-            enable_check.hexpand = true;
             enable_check.halign = Gtk.Align.START;
             enable_check.toggled.connect (toggle_enabled);
+            only_check = new Gtk.CheckButton.with_label ("忽略内置词库");
+            only_check.tooltip_text = "只用这里的词条打字";
+            only_check.hexpand = true;
+            only_check.halign = Gtk.Align.START;
+            only_check.toggled.connect (toggle_user_only);
 
             search_entry = new Gtk.SearchEntry ();
             search_entry.placeholder_text = "搜索词或编码";
@@ -113,6 +119,7 @@ namespace ImeJd {
 
             var top = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 6);
             top.append (enable_check);
+            top.append (only_check);
             top.append (search_entry);
 
             // The table.
@@ -405,6 +412,8 @@ namespace ImeJd {
             }
             if (!store.enabled) {
                 parts += "已停用";
+            } else if (store.types_user_dict_only) {
+                parts += rows.get_n_items () == 0 ? "已忽略内置词库，但尚无词条：键道只能输入字母和标点" : "已忽略内置词库";
             }
             status_label.label = string.joinv ("，", parts);
             status_label.tooltip_text = status_label.label;
@@ -418,6 +427,8 @@ namespace ImeJd {
         private void sync_check () {
             updating_check = true;
             enable_check.active = store.enabled;
+            only_check.active = store.user_only;
+            only_check.sensitive = store.enabled;
             updating_check = false;
         }
 
@@ -621,10 +632,26 @@ namespace ImeJd {
                 store.save_switch (enable_check.active);
             } catch (Error error) {
                 warning ("cannot save the switch: %s", error.message);
-                sync_check ();
                 inform.begin ("无法保存设置", error.message);
             }
+            sync_check ();
             update_status ();
+        }
+
+        private void toggle_user_only () {
+            if (updating_check) {
+                return;
+            }
+            end_editing ();
+            try {
+                // Builds the file again, on the other base: the rows' verdicts
+                // change with it.
+                store.save_user_only (only_check.active);
+            } catch (Error error) {
+                warning ("cannot save the switch: %s", error.message);
+                inform.begin ("无法保存设置", error.message);
+            }
+            store_changed ();
         }
 
         /** A new, empty row below the selection (or at the end), its 词 cell

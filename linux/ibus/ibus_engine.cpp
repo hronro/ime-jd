@@ -58,6 +58,7 @@ constexpr const char *kAutoCheckProperty = "imejd-update-auto-check";
 constexpr const char *kLookupProperty = "imejd-lookup";
 constexpr const char *kUserDictProperty = "imejd-user-dict";
 constexpr const char *kUserDictEnabledProperty = "imejd-user-dict-enabled";
+constexpr const char *kUserDictOnlyProperty = "imejd-user-dict-only";
 constexpr const char *kUserDictStatusProperty = "imejd-user-dict-status";
 
 /// Hints are drawn dimmer than the value, as on macOS.
@@ -173,6 +174,13 @@ IBusProperty *userDictEnabledProperty() {
                     g_store->isEnabled() ? PROP_STATE_CHECKED : PROP_STATE_UNCHECKED);
 }
 
+/// Sensitive only while the user dictionary is on.
+IBusProperty *userDictOnlyProperty() {
+    return property(kUserDictOnlyProperty, PROP_TYPE_TOGGLE, imejd::kMenuUserDictOnly,
+                    g_store->isEnabled() ? TRUE : FALSE,
+                    g_store->isUserOnly() ? PROP_STATE_CHECKED : PROP_STATE_UNCHECKED);
+}
+
 IBusProperty *userDictStatusProperty() {
     return property(kUserDictStatusProperty, PROP_TYPE_NORMAL, g_store->statusText(), FALSE);
 }
@@ -202,6 +210,7 @@ void registerProperties(IBusEngine *engine) {
     separator();
     ibus_prop_list_append(list, property(kUserDictProperty, PROP_TYPE_NORMAL, imejd::kMenuUserDict));
     ibus_prop_list_append(list, userDictEnabledProperty());
+    ibus_prop_list_append(list, userDictOnlyProperty());
     ibus_prop_list_append(list, userDictStatusProperty());
     ibus_engine_register_properties(engine, list);
 }
@@ -216,6 +225,7 @@ void updateProperties(IBusEngine *engine) {
         ibus_engine_update_property(engine, autoCheckProperty());
     }
     ibus_engine_update_property(engine, userDictEnabledProperty());
+    ibus_engine_update_property(engine, userDictOnlyProperty());
     ibus_engine_update_property(engine, userDictStatusProperty());
 }
 
@@ -353,6 +363,11 @@ void propertyActivate(IBusEngine *engine, const gchar *name, guint propState) {
         }
     } else if (key == kUserDictEnabledProperty) {
         g_store->setEnabled(propState == PROP_STATE_CHECKED);
+        updateProperties(engine);
+    } else if (key == kUserDictOnlyProperty) {
+        if (g_store->isEnabled()) {
+            g_store->setUserOnly(propState == PROP_STATE_CHECKED);
+        }
         updateProperties(engine);
     } else if (key == kUpdateProperty && g_update) {
         g_update->activate();

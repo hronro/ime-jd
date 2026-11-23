@@ -65,7 +65,7 @@ Store open_store (TempDir dir) {
 
 Report build (string text) {
     uint status, line;
-    var report = Report.build (text, UserDictFile.hash (text), out status, out line);
+    var report = Report.build (text, UserDictFile.hash (text), false, out status, out line);
     assert_nonnull (report);
     return report;
 }
@@ -189,9 +189,9 @@ void test_ini_set () {
 
 void test_problem_texts () {
     assert_cmpstr (new Problem.invalid (Jd.LINE_MALFORMED).text, CompareOperator.EQ, "缺少制表符（无编码），不生效");
-    assert_cmpstr (new Problem.invalid (Jd.LINE_BAD_KEYS).text, CompareOperator.EQ, "编码无效（1 到 6 个 a-z），不生效");
+    assert_cmpstr (new Problem.invalid (Jd.LINE_BAD_KEYS).text, CompareOperator.EQ, "编码无效（1 到 6 个 a-z，开头可以有 ;），不生效");
     assert_cmpstr (new Problem.invalid (Jd.LINE_BAD_VALUE).text, CompareOperator.EQ,
-        "词无效（不能为空或含控制字符，最长 255 字节），不生效");
+        "词无效（不能为空或含控制字符，最长 1023 字节），不生效");
     assert_cmpstr (new Problem.duplicate (2).text, CompareOperator.EQ, "与第 3 条重复，不生效");
     assert_cmpstr (new Problem.duplicate (-1).text, CompareOperator.EQ, "与内置词重复，不生效");
     assert_cmpstr (new Problem.shared_code (2, 2, 2).text, CompareOperator.EQ, "与 2 个内置词及第 3 条等 2 条同码");
@@ -414,6 +414,40 @@ void test_lookup_trims_only_spaces_tabs_and_line_breaks () {
     assert_cmpstr (CodeLookup.query (" \n"), CompareOperator.EQ, "");
 }
 
+void test_store_user_only () {
+    var dir = new TempDir ();
+    dir.write (UserDictFile.NAME, "不\tb\n测试\tb\n");
+    var store = open_store (dir);
+    try {
+        store.save_switch (true);
+    } catch (Error error) {
+        assert_not_reached ();
+    }
+    // On the built-in dictionary, 不/b repeats a word of it.
+    assert_cmpuint (store.report.dropped, CompareOperator.EQ, 1);
+    try {
+        store.save_user_only (true);
+    } catch (Error error) {
+        assert_not_reached ();
+    }
+    assert_true (store.user_only);
+    assert_true (store.types_user_dict_only);
+    assert_cmpstr (dir.read ("settings.ini"), CompareOperator.EQ, "[UserDict]\nUserOnly=true\nEnabled=true\n");
+    // On the empty dictionary there is nothing to repeat.
+    assert_cmpuint (store.report.dropped, CompareOperator.EQ, 0);
+
+    // 编码反查 looks in the phrases alone.
+    var codes = CodeLookup.codes ("不", store.text, true);
+    assert_nonnull (codes);
+    assert_cmpint (codes.length, CompareOperator.EQ, 1);
+    assert_cmpstr (CodeLookup.keys (codes[0]), CompareOperator.EQ, "b");
+    assert_cmpint (CodeLookup.codes ("的", store.text, true).length, CompareOperator.EQ, 0);
+    assert_cmpstr (new CodeLookup.Report ("的", {}, true, true).body, CompareOperator.EQ,
+                   "用户自造词中没有这个词。内置词库已忽略，不在查询范围内。");
+    // No phrases at all: nothing to look in, never the built-in dictionary.
+    assert_null (CodeLookup.codes ("的", null, true));
+}
+
 int main (string[] args) {
     Test.init (ref args);
     Test.add_func ("/file/parse", test_parse);
@@ -431,6 +465,7 @@ int main (string[] args) {
     Test.add_func ("/store/reports-what-cannot-be-read", test_store_reports_what_cannot_be_read);
     Test.add_func ("/store/reports-a-file-over-the-cap", test_store_reports_a_file_over_the_cap);
     Test.add_func ("/store/switch", test_store_switch);
+    Test.add_func ("/store/user-only", test_store_user_only);
     Test.add_func ("/store/keeps-settings-it-cannot-read", test_store_keeps_settings_it_cannot_read);
     Test.add_func ("/lookup/lists-every-code", test_lookup_lists_every_code);
     Test.add_func ("/lookup/marks-user-phrases", test_lookup_marks_user_phrases);
