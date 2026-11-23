@@ -19,7 +19,9 @@ concurrency:
 
 jobs:
   # Zig engine: unit + integration tests, including the generator parsers
-  # and the end-to-end tests against the real embedded blobs.
+  # and the end-to-end tests against the real embedded blobs — then again as
+  # libjd-engine, built without the embedded dictionary, where the tests
+  # that type on it skip and the ones for a host's own dictionary run.
   test-core:
     name: core (zig)
     runs-on: ubuntu-latest
@@ -36,6 +38,10 @@ jobs:
       - name: Run core tests
         working-directory: core
         run: zig build test --summary all
+
+      - name: Run core tests (libjd-engine)
+        working-directory: core
+        run: zig build test -Dbuiltin_dict=false --summary all
 
   # JavaScript bindings: type-check the hand-written .d.ts, then drive the real
   # engine through the wasm C ABI in Node. `npm test`'s pretest zig-builds core
@@ -71,6 +77,16 @@ jobs:
       - name: Run binding tests
         working-directory: bindings/javascript
         run: npm test
+
+      # The host-dictionary tests again, on the wasm built without the
+      # embedded dictionary.
+      - name: Build libjd-engine (wasm)
+        working-directory: core
+        run: zig build -Dtarget=wasm32-freestanding -Doptimize=fast -Dbuiltin_dict=false --prefix "$RUNNER_TEMP/jd-engine"
+
+      - name: Run dictionary tests (libjd-engine)
+        working-directory: bindings/javascript
+        run: JD_WASM="$RUNNER_TEMP/jd-engine/bin/jd.wasm" node --test test/dict.test.js
 
   # Web client: type-check, unit tests (the real engine in Node), the
   # production build, then the end-to-end suite on that build in Chromium,
@@ -153,6 +169,10 @@ jobs:
       - name: Test bindings/rust
         working-directory: bindings/rust
         run: cargo test
+
+      - name: Test bindings/rust (libjd-engine)
+        working-directory: bindings/rust
+        run: cargo test --no-default-features
 
       - name: Test cli
         working-directory: cli

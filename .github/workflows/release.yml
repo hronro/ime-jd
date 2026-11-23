@@ -52,7 +52,11 @@ jobs:
   #   - Windows: one .zip with the DLL, its import lib, the static lib, and
   #     include/ (jd.dll + jd.lib + jd_static.lib share the .lib/.dll space,
   #     so they ride together rather than being split by extension).
-  # The intermediate upload-artifact is what the CLI/IME jobs consume.
+  # Each comes twice: libjd, with the embedded 键道 dictionary, and
+  # libjd-engine (-Dbuiltin_dict=false), without it, for a host that passes
+  # its own dictionary — the same files, header and symbols, over 95%
+  # smaller. The intermediate upload-artifact, libjd, is what
+  # the CLI/IME jobs consume.
   build-libs:
     name: libs ${{ matrix.platform }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
@@ -132,6 +136,19 @@ jobs:
           path: dist/libjd-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
 
+      - name: Build libjd-engine
+        working-directory: core
+        run: zig build -Doptimize=fast -Dtarget=${{ matrix.zig_target }} -Dbuiltin_dict=false --prefix zig-out-engine
+
+      - name: Stage libjd-engine bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="dist/libjd-engine-${{ matrix.platform }}-${{ matrix.arch }}"
+          mkdir -p "$out"
+          cp -R core/zig-out-engine/. "$out/"
+          cp -R core/include "$out/include"
+
       - name: Package release archives
         shell: bash
         run: |
@@ -139,40 +156,51 @@ jobs:
           ver="${GITHUB_REF_NAME}"
           platform="${{ matrix.platform }}"
           arch="${{ matrix.arch }}"
-          bundle="dist/libjd-$platform-$arch"
           out_dir="$PWD/release"
           mkdir -p "$out_dir"
-          stage="$(mktemp -d)"
-          cp -R "$bundle/include" "$stage/include"
 
-          if [[ "$platform" == "windows" ]]; then
-            cp "$bundle/bin/jd.dll" "$bundle/lib/jd.lib" "$bundle/lib/jd_static.lib" "$stage/"
-            ( cd "$stage" && zip -r -9 -q "$out_dir/libjd-$ver-windows-$arch.zip" . )
-          elif [[ "$platform" == "ios" ]]; then
-            # iOS ships only the static lib (no dynamic lib for the App Store sandbox).
-            cp "$bundle/lib/libjd.a" "$stage/"
-            tar -cf - -C "$stage" libjd.a include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-ios-$arch.a.tar.xz"
-          elif [[ "$platform" == "android" ]]; then
-            # Android ships only the dynamic lib, the one the app links its
-            # JNI library against (see android/scripts/build-libjd.sh).
-            cp "$bundle/lib/libjd.so" "$stage/"
-            tar -cf - -C "$stage" libjd.so include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-android-$arch.so.tar.xz"
-          elif [[ "$platform" == "wasm" ]]; then
-            # A single self-contained reactor module; ship it alongside include/
-            # (the C ABI it exports) as one archive. No arch split — wasm32 is
-            # the only slice, so the asset name drops $arch.
-            cp "$bundle/bin/jd.wasm" "$stage/"
-            tar -cf - -C "$stage" jd.wasm include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-wasm.wasm.tar.xz"
-          else
-            case "$platform" in
-              linux) dyn="libjd.so";    dynext="so"    ;;
-              macos) dyn="libjd.dylib"; dynext="dylib" ;;
-            esac
-            cp "$bundle/lib/$dyn" "$bundle/lib/libjd.a" "$stage/"
-            # XZ_OPT=-e9 → xz extreme preset, level 9 (smallest output).
-            tar -cf - -C "$stage" "$dyn"  include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-$platform-$arch.$dynext.tar.xz"
-            tar -cf - -C "$stage" libjd.a include | XZ_OPT=-e9 xz -c > "$out_dir/libjd-$ver-$platform-$arch.a.tar.xz"
-          fi
+          # package NAME: the archives of dist/NAME-$platform-$arch, named
+          # NAME-$ver-… — libjd and libjd-engine alike, whose files inside
+          # are named the same.
+          package() {
+            local name="$1"
+            local bundle="dist/$name-$platform-$arch"
+            local stage
+            stage="$(mktemp -d)"
+            cp -R "$bundle/include" "$stage/include"
+
+            if [[ "$platform" == "windows" ]]; then
+              cp "$bundle/bin/jd.dll" "$bundle/lib/jd.lib" "$bundle/lib/jd_static.lib" "$stage/"
+              ( cd "$stage" && zip -r -9 -q "$out_dir/$name-$ver-windows-$arch.zip" . )
+            elif [[ "$platform" == "ios" ]]; then
+              # iOS ships only the static lib (no dynamic lib for the App Store sandbox).
+              cp "$bundle/lib/libjd.a" "$stage/"
+              tar -cf - -C "$stage" libjd.a include | XZ_OPT=-e9 xz -c > "$out_dir/$name-$ver-ios-$arch.a.tar.xz"
+            elif [[ "$platform" == "android" ]]; then
+              # Android ships only the dynamic lib, the one the app links its
+              # JNI library against (see android/scripts/build-libjd.sh).
+              cp "$bundle/lib/libjd.so" "$stage/"
+              tar -cf - -C "$stage" libjd.so include | XZ_OPT=-e9 xz -c > "$out_dir/$name-$ver-android-$arch.so.tar.xz"
+            elif [[ "$platform" == "wasm" ]]; then
+              # A single self-contained reactor module; ship it alongside include/
+              # (the C ABI it exports) as one archive. No arch split — wasm32 is
+              # the only slice, so the asset name drops $arch.
+              cp "$bundle/bin/jd.wasm" "$stage/"
+              tar -cf - -C "$stage" jd.wasm include | XZ_OPT=-e9 xz -c > "$out_dir/$name-$ver-wasm.wasm.tar.xz"
+            else
+              local dyn dynext
+              case "$platform" in
+                linux) dyn="libjd.so";    dynext="so"    ;;
+                macos) dyn="libjd.dylib"; dynext="dylib" ;;
+              esac
+              cp "$bundle/lib/$dyn" "$bundle/lib/libjd.a" "$stage/"
+              # XZ_OPT=-e9 → xz extreme preset, level 9 (smallest output).
+              tar -cf - -C "$stage" "$dyn"  include | XZ_OPT=-e9 xz -c > "$out_dir/$name-$ver-$platform-$arch.$dynext.tar.xz"
+              tar -cf - -C "$stage" libjd.a include | XZ_OPT=-e9 xz -c > "$out_dir/$name-$ver-$platform-$arch.a.tar.xz"
+            fi
+          }
+          package libjd
+          package libjd-engine
           ls -l "$out_dir"
 
       - name: Upload to release
