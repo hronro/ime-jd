@@ -52,7 +52,22 @@
 
 ## 📦 安装指南
 
-iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法/id6791807743) 下载，其它平台用户请前往 [GitHub Releases](https://github.com/hronro/ime-jd/releases/latest) 下载对应平台的安装包。**输入法安装包的文件名均以 `jd-ime-` 开头**（页面上其它文件的用途见[下文](#releases-页面上的其它文件)）：
+iOS 用户可以前往 [App Store](https://apps.apple.com/cn/app/键道输入法/id6791807743) 下载，其它平台用户请前往 [GitHub Releases](https://github.com/hronro/ime-jd/releases/latest) 下载对应平台的安装包。**输入法安装包的文件名均以 `jd-ime-` 开头**（页面上其它文件的用途见[下文](#releases-页面上的其它文件)）。
+
+无法顺利访问 GitHub 的用户（例如中国大陆的用户）可以从备用地址下载最新版本，文件与 GitHub Releases 上的完全相同：
+
+| 平台 | 最新版本 |
+|---|---|
+| Windows（x86_64） | <https://ime-jd-repo.hronro.com/releases/latest/download/jd-ime-windows-x86_64.zip> |
+| Windows（arm64） | <https://ime-jd-repo.hronro.com/releases/latest/download/jd-ime-windows-arm64.zip> |
+| macOS（Apple 芯片） | <https://ime-jd-repo.hronro.com/releases/latest/download/jd-ime-macos-arm64.pkg> |
+| macOS（Intel 芯片） | <https://ime-jd-repo.hronro.com/releases/latest/download/jd-ime-macos-x86_64.pkg> |
+| Android（arm64） | <https://ime-jd-repo.hronro.com/releases/latest/download/jd-ime-android-arm64.apk> |
+| Android（x86_64） | <https://ime-jd-repo.hronro.com/releases/latest/download/jd-ime-android-x86_64.apk> |
+| Linux 通用压缩包（x86_64） | <https://ime-jd-repo.hronro.com/releases/latest/download/jd-ime-linux-x86_64.tar.xz> |
+| Linux 通用压缩包（arm64） | <https://ime-jd-repo.hronro.com/releases/latest/download/jd-ime-linux-arm64.tar.xz> |
+
+各平台的安装包：
 
 - **Windows**: 下载 `jd-ime-{版本号}-windows-{架构}.zip`（大多数电脑选 `x86_64`，搭载骁龙等 ARM 处理器的电脑选 `arm64`），然后按照下方的 [Windows 安装步骤](#windows-安装步骤) 完成安装
 - **macOS**: 下载 `jd-ime-{版本号}-macos-{架构}.pkg`（搭载 Apple 芯片的 Mac 选 `arm64`，Intel 芯片的 Mac 选 `x86_64`）

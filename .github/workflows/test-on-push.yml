@@ -364,6 +364,26 @@ jobs:
           working-directory: android
           script: ./gradlew connectedAndroidTest
 
+  # The Worker behind ime-jd-repo.hronro.com (cf-worker/worker.js): the
+  # update feed and the latest release from its bucket, older releases from
+  # GitHub, asked again while GitHub refuses. The package repositories
+  # through it are tested end to end in build-on-push.yml.
+  test-repo-worker:
+    name: repo worker (node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Run the Worker's tests
+        run: node --test cf-worker/worker.test.mjs
+
   # Linux: the Fcitx 5 addon, the IBus engine and the user-dictionary editor,
   # built in the oldest distro the release targets and in the newest, with
   # the shared layer's and the editor's tests, then run end to end in real

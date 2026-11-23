@@ -8,3 +8,12 @@ main = "worker.js"
 compatibility_date = "2026-10-01"
 workers_dev = false
 routes = [{ pattern = "ime-jd-repo.hronro.com", custom_domain = true }]
+
+# The latest release's installers and the update feed naming them, which the
+# release workflow puts there (latest.sh). Made once, before the Worker is
+# deployed with it:
+#
+#   npx wrangler r2 bucket create ime-jd-latest
+[[r2_buckets]]
+binding = "LATEST"
+bucket_name = "ime-jd-latest"

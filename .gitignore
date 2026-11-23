@@ -1,1 +1,3 @@
 .DS_Store
+# Wrangler's scratch files, from `wrangler dev` and `wrangler r2 object`.
+.wrangler/
