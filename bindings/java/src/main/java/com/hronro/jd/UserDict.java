@@ -16,9 +16,13 @@ import org.jspecify.annotations.Nullable;
  * {@link #fromBuffer}, for a cache file mapped into memory, which no engine
  * then copies. {@link #hash} tags a build with the text it came from. A
  * blob is tied to the build of libjd that made it, by its format and by the
- * built-in dictionary it was deduplicated against: after a library update,
- * {@code fromBlob} throws {@link UserDictException.Status#STALE}, and the
- * phrases are simply built again.
+ * dictionary it was deduplicated against: after a library update, {@code
+ * fromBlob} throws {@link UserDictException.Status#STALE}, and the phrases
+ * are simply built again.
+ *
+ * <p>The phrases sit on libjd's embedded dictionary, or on a {@link Dict} of
+ * your own: the methods that take a {@code Dict} build and take back a user
+ * dictionary for an {@link Engine#Engine(Dict, UserDict)} on it.
  */
 public final class UserDict {
     // Mirrors of jd.h's limits. JNI_OnLoad refuses a library whose own entry,
@@ -27,13 +31,13 @@ public final class UserDict {
     /** The most phrases one dictionary may hold ({@code JD_USER_DICT_MAX_ENTRIES}). */
     public static final int MAX_ENTRIES = 500_000;
 
-    /** The longest value, in UTF-8 bytes ({@code JD_USER_DICT_VALUE_MAX}). */
-    public static final int MAX_VALUE_BYTES = 255;
+    /** The longest value, in UTF-8 bytes ({@code JD_USER_DICT_VALUE_MAX}), as a dictionary's. */
+    public static final int MAX_VALUE_BYTES = 1023;
 
     /** The most text one build reads, in UTF-8 bytes ({@code JD_USER_DICT_TEXT_MAX}). */
     public static final int MAX_TEXT_BYTES = 16 * 1024 * 1024;
 
-    /** The longest code. jd.h states it in prose: keys are 1 to 6 letters. */
+    /** The longest code. jd.h states it in prose: 1 to 6 of a-z and {@code ;}. */
     public static final int MAX_KEY_LENGTH = 6;
 
     /**
@@ -86,7 +90,7 @@ public final class UserDict {
     }
 
     /** The bytes from position to limit as a buffer of their own, which must be direct. */
-    private static ByteBuffer direct(ByteBuffer bytes) {
+    static ByteBuffer direct(ByteBuffer bytes) {
         if (!bytes.isDirect()) {
             throw new IllegalArgumentException("not a direct buffer");
         }
@@ -102,10 +106,11 @@ public final class UserDict {
      * Builds a dictionary from lines of {@code value<TAB>keys}, the line format
      * of libjd's own table files, read exactly as {@code jd.h} describes:
      * blank lines and {@code #} comments are skipped, spaces around either
-     * field are trimmed, CRLF is accepted, and keys are one to six letters
-     * a-z. A line that breaks the rules is skipped and noted, never fatal;
-     * exact duplicates are dropped and noted; kept phrases on a shared code
-     * are noted.
+     * field are trimmed, CRLF is accepted, and keys are one to six of a-z
+     * and {@code ;}, with no {@code ;} after a letter. A line that breaks the
+     * rules is skipped and noted, never fatal; exact duplicates, of an
+     * earlier line or of a word on the same code in the embedded dictionary,
+     * are dropped and noted; kept phrases on a shared code are noted.
      *
      * @param sourceTag 64 bits of the caller's own, such as a content hash or
      *     a revision, stored in the blob and read back by {@link #fromBlob},
@@ -124,9 +129,38 @@ public final class UserDict {
      * not skipped (libjd would take U+FEFF as part of line 1): drop one first.
      */
     public static Built build(byte[] utf8, long sourceTag) throws UserDictException {
-        Object[] result = Jni.userDictBuild(utf8, sourceTag);
-        byte[] blob = (byte[]) result[0];
-        int[] report = (int[]) result[1];
+        return built(Jni.userDictBuild(null, utf8, sourceTag), sourceTag);
+    }
+
+    /**
+     * {@link #build(String, long)} on {@code dict} instead of the embedded
+     * dictionary: phrases that repeat its words are dropped, the notes name
+     * its words on a shared code, and the result works only with an engine
+     * on {@code dict}.
+     */
+    public static Built build(Dict dict, String text, long sourceTag) throws UserDictException {
+        return build(dict, text.getBytes(StandardCharsets.UTF_8), sourceTag);
+    }
+
+    /** {@link #build(Dict, String, long)} from UTF-8 bytes as they are. */
+    public static Built build(Dict dict, byte[] utf8, long sourceTag) throws UserDictException {
+        return built(Jni.userDictBuild(dict.nativeBlob(), utf8, sourceTag), sourceTag);
+    }
+
+    private static Built built(@Nullable Object[] raw, long sourceTag) throws UserDictException {
+        Result result = result(raw);
+        return new Built(new UserDict(result.blob(), null, result.report().entries(), sourceTag), result.report());
+    }
+
+    /** A build's blob and report, from the {blob, int[] report} pair Jni returns. */
+    record Result(byte[] blob, UserDictReport report) {}
+
+    static Result result(@Nullable Object[] raw) throws UserDictException {
+        if (raw == null) {
+            throw new OutOfMemoryError("dictionary build");
+        }
+        byte[] blob = (byte[]) raw[0];
+        int[] report = (int[]) raw[1];
         if (blob == null) {
             throw new UserDictException(UserDictException.Status.of(report[0]), report[1]);
         }
@@ -134,8 +168,16 @@ public final class UserDict {
         for (int i = 6; i + 4 < report.length; i += 5) {
             notes.add(new UserDictNote(report[i], report[i + 1], report[i + 2], report[i + 3], report[i + 4]));
         }
-        UserDictReport summary = new UserDictReport(report[2], report[3], report[4], report[5], notes);
-        return new Built(new UserDict(blob, null, report[2], sourceTag), summary);
+        return new Result(blob, new UserDictReport(report[2], report[3], report[4], report[5], notes));
+    }
+
+    /** A check's {status, entries, source tag}, or the exception its status means. */
+    static long[] verdict(long[] verdict) throws UserDictException {
+        int status = (int) verdict[0];
+        if (status != 0) {
+            throw new UserDictException(UserDictException.Status.of(status), 0);
+        }
+        return verdict;
     }
 
     /**
@@ -148,13 +190,14 @@ public final class UserDict {
      *     from the phrases"
      */
     public static UserDict fromBlob(byte[] blob) throws UserDictException {
+        return fromBlob(null, blob);
+    }
+
+    /** {@link #fromBlob(byte[])} for a blob built on {@code dict}. */
+    public static UserDict fromBlob(@Nullable Dict dict, byte[] blob) throws UserDictException {
         // The caller's array stays the caller's: check and keep a copy.
         byte[] own = blob.clone();
-        long[] verdict = Jni.userDictCheck(own);
-        int status = (int) verdict[0];
-        if (status != 0) {
-            throw new UserDictException(UserDictException.Status.of(status), 0);
-        }
+        long[] verdict = verdict(Jni.userDictCheck(dict == null ? null : dict.nativeBlob(), own));
         return new UserDict(own, null, (int) verdict[1], verdict[2]);
     }
 
@@ -173,17 +216,28 @@ public final class UserDict {
      *     again from the phrases"
      */
     public static UserDict fromBuffer(ByteBuffer blob) throws UserDictException {
+        return fromBuffer(null, blob);
+    }
+
+    /** {@link #fromBuffer(ByteBuffer)} for a blob built on {@code dict}. */
+    public static UserDict fromBuffer(@Nullable Dict dict, ByteBuffer blob) throws UserDictException {
         ByteBuffer own = direct(blob);
-        long[] verdict = Jni.userDictCheckDirect(own);
-        int status = (int) verdict[0];
-        if (status != 0) {
-            throw new UserDictException(UserDictException.Status.of(status), 0);
-        }
+        long[] verdict = verdict(Jni.userDictCheck(dict == null ? null : dict.nativeBlob(), own));
         return new UserDict(null, own, (int) verdict[1], verdict[2]);
+    }
+
+    /** The blob as libjd's calls take it: the array, or the direct buffer. */
+    Object nativeBlob() {
+        return buffer != null ? buffer : blob;
     }
 
     /** The blob, to cache for {@link #fromBlob}: a copy, so changing it changes nothing here. */
     public byte[] getBlob() {
+        return copyOf(blob, buffer);
+    }
+
+    /** A copy of a blob held in an array or a buffer. */
+    static byte[] copyOf(byte @Nullable [] blob, @Nullable ByteBuffer buffer) {
         if (blob != null) {
             return blob.clone();
         }

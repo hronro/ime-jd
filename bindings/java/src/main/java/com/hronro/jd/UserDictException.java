@@ -1,9 +1,9 @@
 package com.hronro.jd;
 
 /**
- * Why a user dictionary could not be built or taken back: a failure of the
- * call as a whole, mirroring the {@code JD_USER_DICT_*} statuses in
- * {@code jd.h}. A line that does not parse is never one; the build skips it
+ * Why a dictionary or user dictionary could not be built or taken back: a
+ * failure of the call as a whole, mirroring the {@code JD_USER_DICT_*}
+ * statuses in {@code jd.h}. A line that does not parse is never one; the build skips it
  * and says so in a {@link UserDictNote}.
  */
 public final class UserDictException extends Exception {
@@ -13,16 +13,21 @@ public final class UserDictException extends Exception {
     public enum Status {
         /** The output buffer was smaller than the bound (a bug in this binding). */
         BUFFER_TOO_SMALL(1),
-        /** More than {@link UserDict#MAX_ENTRIES} phrases; the line is the first one past the cap. */
+        /**
+         * More than {@link UserDict#MAX_ENTRIES} phrases, or {@link Dict#MAX_ENTRIES} in a
+         * dictionary; the line is the first one past the cap.
+         */
         TOO_MANY_ENTRIES(2),
-        /** A cached blob built by a different libjd: the format or the built-in dictionary differ. */
+        /** A cached blob built by a different libjd, or a user dictionary built on another dictionary. */
         STALE(3),
         /** A cached blob that is structurally invalid. */
         CORRUPT(4),
         /** The buffer was not 4-byte aligned (a bug in this binding). */
         MISALIGNED(5),
-        /** The text exceeds {@code JD_USER_DICT_TEXT_MAX}. */
+        /** The text exceeds the cap: {@code JD_USER_DICT_TEXT_MAX}, or {@code JD_DICT_TEXT_MAX}. */
         TEXT_TOO_LONG(6),
+        /** No dictionary was given, and this libjd has none of its own (libjd-engine). */
+        NO_BUILTIN_DICT(7),
         /** A status this binding does not know, from a newer library. */
         UNKNOWN(-1);
 
@@ -73,11 +78,12 @@ public final class UserDictException extends Exception {
     private static String describe(Status status, int line) {
         String what = switch (status) {
             case BUFFER_TOO_SMALL -> "output buffer too small";
-            case TOO_MANY_ENTRIES -> "more than " + UserDict.MAX_ENTRIES + " phrases";
+            case TOO_MANY_ENTRIES -> "too many entries";
             case STALE -> "blob was built against a different dictionary";
             case CORRUPT -> "blob is corrupt";
             case MISALIGNED -> "blob is not 4-byte aligned";
             case TEXT_TOO_LONG -> "text is too long";
+            case NO_BUILTIN_DICT -> "this libjd has no built-in dictionary";
             case UNKNOWN -> "unknown status";
         };
         return status == Status.TOO_MANY_ENTRIES ? "line " + line + ": " + what : what;

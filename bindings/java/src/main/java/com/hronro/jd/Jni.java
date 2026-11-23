@@ -25,21 +25,18 @@ final class Jni {
 
     private Jni() {}
 
-    /**
-     * A new context over the built-in dictionary, merged with {@code userDict}
-     * when given: a {@link UserDict}'s blob, copied into native memory the
-     * context owns. 0 when that memory cannot be had, or jd_init refuses the
-     * blob.
-     */
-    static native long init(byte @Nullable [] userDict);
+    // A blob argument is a byte[], copied where libjd needs it to stay put,
+    // or a direct ByteBuffer — a mapped file — read where it is.
 
     /**
-     * {@link #init} over a blob in a direct buffer, read where it is and never
-     * copied: the caller keeps the buffer reachable until {@link #deinit}.
+     * A new context typing from {@code dict} — null for the embedded
+     * dictionary — merged with {@code userDict} when given. A blob in a
+     * direct buffer is read in place: the caller keeps the buffer reachable
+     * until {@link #deinit}. 0 when jd_init refuses (see {@link Engine}).
      */
-    static native long initDirect(ByteBuffer userDict);
+    static native long init(@Nullable Object dict, @Nullable Object userDict);
 
-    /** Frees a context from {@link #init}, and its copy of the blob. */
+    /** Frees a context from {@link #init}, and its copies of the blobs. */
     static native void deinit(long handle);
 
     static native EngineState pressKey(long handle, byte key);
@@ -65,11 +62,11 @@ final class Jni {
      */
     static native Object[] lookupCodes(long handle, byte[] value);
 
-    /** A cached blob, validated exactly as jd_init would: {status, entries, source tag}. */
-    static native long[] userDictCheck(byte[] blob);
+    /** A cached dictionary blob, validated exactly as jd_init would: {status, entries, source tag}. */
+    static native long[] dictCheck(Object blob);
 
-    /** {@link #userDictCheck} over a direct buffer, in place. */
-    static native long[] userDictCheckDirect(ByteBuffer blob);
+    /** A cached user-dictionary blob on {@code dict}, validated exactly as jd_init would. */
+    static native long[] userDictCheck(@Nullable Object dict, Object blob);
 
     /** libjd's content hash, jd_user_dict_hash. */
     static native long userDictHash(byte[] bytes);
@@ -77,11 +74,17 @@ final class Jni {
     /** {@link #userDictHash} over a direct buffer, in place. */
     static native long userDictHashDirect(ByteBuffer bytes);
 
+    /** Entries in the embedded dictionary: 0 in libjd-engine. */
+    static native int builtinEntries();
+
     /**
-     * Builds a user dictionary from UTF-8 text: {blob, report}. The blob is a
+     * Builds a dictionary from UTF-8 text: {blob, report}. The blob is a
      * byte[], or null when the build failed as a whole; the report is an int[]
      * of status, line, entries, dropped, shared and invalid, then five ints
      * per note: line, flags, other, built-in and peers.
      */
-    static native @Nullable Object[] userDictBuild(byte[] text, long sourceTag);
+    static native @Nullable Object[] dictBuild(byte[] text, long sourceTag);
+
+    /** {@link #dictBuild} for a user dictionary on {@code dict} (null for the embedded one). */
+    static native @Nullable Object[] userDictBuild(@Nullable Object dict, byte[] text, long sourceTag);
 }

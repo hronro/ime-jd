@@ -102,6 +102,20 @@ try {
 
 A large dictionary is better mapped than read: `UserDict.fromBuffer` takes a direct `ByteBuffer` — a `MappedByteBuffer` of the cache file — and every engine reads it where it is, so the blob never enters the heap and no engine copies it. `UserDict.hash(ByteBuffer)` hashes a mapped text file the same way, and `UserDict.build(byte[], long)` builds from the file's bytes without decoding them. A mapped file must be replaced atomically, never rewritten in place.
 
+### Your own dictionary
+
+An engine types from libjd's embedded 键道 dictionary unless it is given a `Dict` of its own — built from text of the same format by the same code that builds the embedded one, so it types the same way and as fast, at up to 16 777 215 entries. A user dictionary then sits on top of it: the `UserDict` methods that take a `Dict` build it and take it back.
+
+```java
+Dict dict = Dict.build(tablesText, tablesHash).dict();       // about 0.3 s per million entries: cache getBlob()
+UserDict phrases = UserDict.build(dict, text, contentHash).dict();
+try (Engine engine = new Engine(dict, phrases)) {
+    // …
+}
+```
+
+`Dict.fromBuffer` takes a mapped cache file in place — the way to load a large one. `Dict.empty()` has no codes at all, for typing from a user dictionary alone. A user dictionary built on one dictionary is `STALE` on any other, the embedded one included, and `new Engine(dict, userDict)` refuses the pair with an `IllegalStateException` that says so. Linked against libjd-engine, the library without an embedded dictionary, `Dict.builtinEntries()` is 0 and every engine needs a `Dict`.
+
 ### Reverse lookup
 
 `lookupCodes` goes the other way — the codes a value is typed with, from the built-in tables and the engine's user dictionary, and where the value sits on each:

@@ -29,8 +29,10 @@ public final class Engine implements AutoCloseable {
     // dictionary's blob (jd_jni.c). 0 once closed.
     private long handle;
 
-    // The dictionary, kept reachable while the engine is: a blob in a direct
-    // buffer is read where it is, not copied, and must outlive the context.
+    // The dictionaries, kept reachable while the engine is: a blob in a
+    // direct buffer is read where it is, not copied, and must outlive the
+    // context.
+    private @Nullable Dict dict;
     private @Nullable UserDict userDict;
 
     /** An engine over the built-in dictionary alone. */
@@ -40,20 +42,50 @@ public final class Engine implements AutoCloseable {
 
     /**
      * An engine whose candidate lists merge in {@code userDict}; null for the
-     * built-in dictionary alone. An engine's dictionary is fixed for its
-     * lifetime: to adopt another, create another engine.
+     * built-in dictionary alone. An engine's dictionaries are fixed for its
+     * lifetime: to adopt others, create another engine.
      *
-     * @throws IllegalStateException if the native context cannot be created
+     * @throws IllegalStateException if the native context cannot be created:
+     *     in libjd-engine, which has no built-in dictionary; for a user
+     *     dictionary built on another dictionary; or out of memory
      */
     public Engine(@Nullable UserDict userDict) {
-        long created = userDict != null && userDict.buffer != null
-                ? Jni.initDirect(userDict.buffer)
-                : Jni.init(userDict == null ? null : userDict.blob);
+        open(null, userDict);
+    }
+
+    /**
+     * An engine typing from {@code dict} instead of the built-in dictionary,
+     * merged with {@code userDict}, which must have been built on this same
+     * {@code dict} ({@link UserDict#build(Dict, String, long)}).
+     *
+     * @throws IllegalStateException if the native context cannot be created:
+     *     for a user dictionary built on another dictionary, or out of memory
+     */
+    public Engine(Dict dict, @Nullable UserDict userDict) {
+        open(dict, userDict);
+    }
+
+    private void open(@Nullable Dict dict, @Nullable UserDict userDict) {
+        long created = Jni.init(
+                dict == null ? null : dict.nativeBlob(), userDict == null ? null : userDict.nativeBlob());
         if (created == 0) {
-            throw new IllegalStateException("jd_init failed (allocation failure)");
+            throw new IllegalStateException(whyNot(dict, userDict));
         }
         handle = created;
+        this.dict = dict;
         this.userDict = userDict;
+    }
+
+    /** Why jd_init refused: worked out only then, to spare a start that succeeds a second check. */
+    private static String whyNot(@Nullable Dict dict, @Nullable UserDict userDict) {
+        if (dict == null && Dict.builtinEntries() == 0) {
+            return "jd_init failed: this libjd has no built-in dictionary; pass a Dict";
+        }
+        if (userDict != null
+                && Jni.userDictCheck(dict == null ? null : dict.nativeBlob(), userDict.nativeBlob())[0] != 0) {
+            return "jd_init failed: the user dictionary was built on another dictionary";
+        }
+        return "jd_init failed (allocation failure)";
     }
 
     /** Feeds one keystroke, an ASCII byte, and returns the resulting state. */
@@ -145,6 +177,7 @@ public final class Engine implements AutoCloseable {
         if (handle != 0) {
             Jni.deinit(handle);
             handle = 0;
+            dict = null;
             userDict = null;
         }
     }

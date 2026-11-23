@@ -30,7 +30,10 @@ public record UserDictNote(int line, int flags, int other, int builtIn, int peer
     public static final int CODE_IN_LINE = 0x8;
     /** Skipped: neither blank nor a comment, and no TAB. */
     public static final int MALFORMED = 0x10;
-    /** Skipped: keys empty, longer than {@link UserDict#MAX_KEY_LENGTH}, or not all a-z. */
+    /**
+     * Skipped: keys empty, longer than {@link UserDict#MAX_KEY_LENGTH}, not all a-z and
+     * {@code ;}, or a {@code ;} after a letter.
+     */
     public static final int BAD_KEYS = 0x20;
     /** Skipped: value empty, too long, not UTF-8, or containing control characters. */
     public static final int BAD_VALUE = 0x40;

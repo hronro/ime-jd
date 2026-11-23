@@ -8,15 +8,16 @@
 // so a candidate strip that has fetched 900 candidates but only shows 9 pays
 // for 9 rows' worth of String work at a time.
 //
-// A user dictionary crosses as plain arrays: `userDictBuild` returns the blob
-// as a byte[] and the report as an int[], `userDictCheck` a cached blob's
-// verdict as a long[], and `init` copies a blob into memory of its own,
-// because jd_init reads the blob in place for the context's whole lifetime and
-// a JVM array can move. A blob in a direct ByteBuffer — a mapped cache file —
-// does not move, so `initDirect` and `userDictCheckDirect` read it where it
-// is, and the Java side keeps the buffer reachable for as long as an engine
-// uses it. `lookupCodes` returns plain arrays too. The only classes built
-// here are EngineState and Candidate (see JNI_OnLoad).
+// A dictionary and a user dictionary cross as plain arrays: `dictBuild` and
+// `userDictBuild` return the blob as a byte[] and the report as an int[], and
+// `dictCheck` and `userDictCheck` a cached blob's verdict as a long[]. A blob
+// argument is a byte[] or a direct ByteBuffer — a mapped cache file — (see
+// `blob_arg`). `init` copies a byte[] into memory of its own, because jd_init
+// reads a blob in place for the context's whole lifetime and a JVM array can
+// move; a direct buffer does not move, so it is read where it is, and the
+// Java side keeps the buffer reachable for as long as an engine uses it.
+// `lookupCodes` returns plain arrays too. The only classes built here are
+// EngineState and Candidate (see JNI_OnLoad).
 //
 // The functions' names and types come from com_hronro_jd_Jni.h, which javac -h
 // writes from Jni.java. Both native builds compile this file against it with
@@ -47,6 +48,7 @@ static jmethodID g_arraylist_ctor;  // (I)V
 static jmethodID g_arraylist_add;   // (Ljava/lang/Object;)Z
 static jclass    g_object_cls;      // java/lang/Object, for userDictBuild's and lookupCodes' pairs
 static jclass    g_string_cls;      // java/lang/String, for lookupCodes' keys
+static jclass    g_bytes_cls;       // byte[], to tell a blob in an array from one in a buffer
 
 // Fails the library load with an UnsatisfiedLinkError saying `why`. ART swaps
 // whatever is pending for a generic "JNI_ERR returned from JNI_OnLoad", so an
@@ -107,6 +109,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     if (g_object_cls == NULL) return fail_load(env, missing);
     g_string_cls = global_class(env, "java/lang/String");
     if (g_string_cls == NULL) return fail_load(env, missing);
+    g_bytes_cls = global_class(env, "[B");
+    if (g_bytes_cls == NULL) return fail_load(env, missing);
 
     // This file reads libjd's structs through the hand-written jd.h, so a
     // drift between the header and the compiled library would corrupt memory
@@ -120,6 +124,9 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
         jd_abi_layout(JD_ABI_USER_DICT_MAX_ENTRIES) != JD_USER_DICT_MAX_ENTRIES ||
         jd_abi_layout(JD_ABI_USER_DICT_VALUE_MAX) != JD_USER_DICT_VALUE_MAX ||
         jd_abi_layout(JD_ABI_USER_DICT_TEXT_MAX) != JD_USER_DICT_TEXT_MAX ||
+        jd_abi_layout(JD_ABI_DICT_MAX_ENTRIES) != JD_DICT_MAX_ENTRIES ||
+        jd_abi_layout(JD_ABI_DICT_VALUE_MAX) != JD_DICT_VALUE_MAX ||
+        jd_abi_layout(JD_ABI_DICT_TEXT_MAX) != JD_DICT_TEXT_MAX ||
         jd_abi_layout(JD_ABI_SIZEOF_CODE) != sizeof(jd_code) ||
         jd_abi_layout(JD_ABI_CODE_CAP) != JD_CODE_CAP) {
         return fail_load(env, "jd_jni: libjd's struct layout or limits differ from jd.h");
@@ -244,74 +251,78 @@ static jobject build_state(JNIEnv *env, jd_context *ctx) {
 
 // ---- the engine: Engine's half of Jni ----
 
-// What Engine holds as its handle: the context, and the copy of the
-// user-dictionary blob it was created with (NULL for the built-in dictionary
-// alone, and for a blob read in place). jd_init never copies the blob and
-// reads it until jd_deinit, so it lives here and is freed only after the
-// context.
+// A blob argument's bytes, for as long as the caller needs them: NULL for a
+// null one; a direct ByteBuffer's memory, where it is; a byte[]'s contents,
+// copied into `*owned` — malloc's alignment covers the 4 libjd asks for —
+// which the caller frees. 0, with an exception pending, when that fails.
+static int blob_arg(JNIEnv *env, jobject blob, const void **bytes, size_t *len, void **owned) {
+    *bytes = NULL;
+    *len = 0;
+    *owned = NULL;
+    if (blob == NULL) return 1;
+    if ((*env)->IsInstanceOf(env, blob, g_bytes_cls)) {
+        const jsize n = (*env)->GetArrayLength(env, (jbyteArray)blob);
+        void *copy = malloc(n > 0 ? (size_t)n : 1);
+        if (copy == NULL) {
+            throw_oom(env, "blob copy");
+            return 0;
+        }
+        (*env)->GetByteArrayRegion(env, (jbyteArray)blob, 0, n, (jbyte *)copy);
+        *owned = copy;
+        *bytes = copy;
+        *len = (size_t)n;
+        return 1;
+    }
+    const void *at = (*env)->GetDirectBufferAddress(env, blob);
+    const jlong capacity = (*env)->GetDirectBufferCapacity(env, blob);
+    if (at == NULL || capacity < 0) {
+        jclass iae = (*env)->FindClass(env, "java/lang/IllegalArgumentException");
+        if (iae != NULL) (*env)->ThrowNew(env, iae, "not a direct buffer");
+        return 0;
+    }
+    *bytes = at;
+    *len = (size_t)capacity;
+    return 1;
+}
+
+// What Engine holds as its handle: the context, and the copies of the
+// dictionary and user-dictionary blobs it was created with (NULL for none,
+// and for a blob read in place). jd_init never copies a blob and reads it
+// until jd_deinit, so they live here and are freed only after the context.
 typedef struct {
     jd_context *ctx;
-    void *blob;
+    void *dict;
+    void *user_dict;
 } engine_t;
 
 static jd_context *ctx_of(jlong handle) {
     return ((engine_t *)(intptr_t)handle)->ctx;
 }
 
-// 0 on allocation failure, or when jd_init refuses the blob — which a blob
-// that userDictBuild made, or userDictCheck passed, never is.
+static void free_engine(engine_t *e) {
+    free(e->dict);
+    free(e->user_dict);
+    free(e);
+}
+
+// 0 when jd_init refuses: no dictionary in libjd-engine, a user dictionary
+// built on another dictionary, or no memory — told apart on the Java side.
+// Also 0, with an exception pending, when a blob argument is unusable.
 JNIEXPORT jlong JNICALL
-Java_com_hronro_jd_Jni_init(JNIEnv *env, jclass cls, jbyteArray user_dict) {
+Java_com_hronro_jd_Jni_init(JNIEnv *env, jclass cls, jobject dict, jobject user_dict) {
     (void)cls;
     engine_t *e = (engine_t *)calloc(1, sizeof(engine_t));
     if (e == NULL) return 0;
-    size_t len = 0;
-    if (user_dict != NULL) {
-        len = (size_t)(*env)->GetArrayLength(env, user_dict);
-        // malloc's alignment (8 or 16) covers the 4 jd_init asks for.
-        e->blob = malloc(len > 0 ? len : 1);
-        if (e->blob == NULL) {
-            free(e);
-            return 0;
-        }
-        (*env)->GetByteArrayRegion(env, user_dict, 0, (jsize)len, (jbyte *)e->blob);
-    }
-    e->ctx = jd_init(e->blob, len);
-    if (e->ctx == NULL) {
-        free(e->blob);
-        free(e);
+    const void *dict_bytes, *user_bytes;
+    size_t dict_len, user_len;
+    if (!blob_arg(env, dict, &dict_bytes, &dict_len, &e->dict) ||
+        !blob_arg(env, user_dict, &user_bytes, &user_len, &e->user_dict)) {
+        free_engine(e);
         return 0;
     }
-    return (jlong)(intptr_t)e;
-}
-
-// A direct buffer's memory, where it is: NULL, with IllegalArgumentException
-// pending, for a buffer that is not direct.
-static const void *direct_bytes(JNIEnv *env, jobject buffer, size_t *len) {
-    const void *bytes = (*env)->GetDirectBufferAddress(env, buffer);
-    const jlong capacity = (*env)->GetDirectBufferCapacity(env, buffer);
-    if (bytes == NULL || capacity < 0) {
-        jclass iae = (*env)->FindClass(env, "java/lang/IllegalArgumentException");
-        if (iae != NULL) (*env)->ThrowNew(env, iae, "not a direct buffer");
-        return NULL;
-    }
-    *len = (size_t)capacity;
-    return bytes;
-}
-
-// `init`, over a blob in a direct buffer the Java side keeps alive until
-// `deinit`: read in place, never copied.
-JNIEXPORT jlong JNICALL
-Java_com_hronro_jd_Jni_initDirect(JNIEnv *env, jclass cls, jobject user_dict) {
-    (void)cls;
-    size_t len = 0;
-    const void *blob = direct_bytes(env, user_dict, &len);
-    if (blob == NULL) return 0;
-    engine_t *e = (engine_t *)calloc(1, sizeof(engine_t));
-    if (e == NULL) return 0;
-    e->ctx = jd_init(blob, len);
+    e->ctx = jd_init(dict_bytes, dict_len, user_bytes, user_len);
     if (e->ctx == NULL) {
-        free(e);
+        free_engine(e);
         return 0;
     }
     return (jlong)(intptr_t)e;
@@ -322,8 +333,7 @@ Java_com_hronro_jd_Jni_deinit(JNIEnv *env, jclass cls, jlong handle) {
     (void)env; (void)cls;
     engine_t *e = (engine_t *)(intptr_t)handle;
     jd_deinit(e->ctx);
-    free(e->blob); // only now: the context read it until jd_deinit
-    free(e);
+    free_engine(e); // only now: the context read the blobs until jd_deinit
 }
 
 JNIEXPORT jobject JNICALL
@@ -467,10 +477,10 @@ Java_com_hronro_jd_Jni_lookupCodes(JNIEnv *env, jclass cls, jlong handle, jbyteA
 
 // ---- the user dictionary: UserDict's half of Jni ----
 
-// Validate a cached blob exactly as jd_init would (jd_user_dict_check) and
-// return {status, entries, source_tag}. The engine validates again in
-// jd_init; this is how a client reads the tag that says whether the cache is
-// still its text's before using it.
+// A cached blob's verdict, as jd_init would give it: {status, entries,
+// source_tag}. The engine validates again in jd_init; this is how a client
+// reads the tag that says whether the cache is still its text's before using
+// it.
 static jlongArray verdict_of(JNIEnv *env, unsigned int status, const jd_user_dict_info *info) {
     const jlong verdict[3] = { (jlong)status, (jlong)info->entries, (jlong)info->source_tag };
     jlongArray out = (*env)->NewLongArray(env, 3);
@@ -478,45 +488,44 @@ static jlongArray verdict_of(JNIEnv *env, unsigned int status, const jd_user_dic
     return out;
 }
 
-// The array is read where it lies while the VM holds it still; a byte[]
-// promises no alignment, though, and a misaligned one is checked in a copy.
+// jd_dict_check on a dictionary blob.
 JNIEXPORT jlongArray JNICALL
-Java_com_hronro_jd_Jni_userDictCheck(JNIEnv *env, jclass cls, jbyteArray blob) {
+Java_com_hronro_jd_Jni_dictCheck(JNIEnv *env, jclass cls, jobject blob) {
     (void)cls;
-    const jsize len = (*env)->GetArrayLength(env, blob);
-    jd_user_dict_info info = {0};
-    unsigned int status;
-    // An empty array may pin to NULL with nothing pending: it is no blob.
-    if (len == 0) return verdict_of(env, jd_user_dict_check(NULL, 0, &info), &info);
-    void *pinned = (*env)->GetPrimitiveArrayCritical(env, blob, NULL);
-    if (pinned == NULL) return NULL; // OutOfMemoryError pending
-    if (((uintptr_t)pinned & 3) == 0) {
-        status = jd_user_dict_check(pinned, (size_t)len, &info);
-        (*env)->ReleasePrimitiveArrayCritical(env, blob, pinned, JNI_ABORT);
-    } else {
-        (*env)->ReleasePrimitiveArrayCritical(env, blob, pinned, JNI_ABORT);
-        void *copy = malloc(len > 0 ? (size_t)len : 1); // malloc's alignment covers the 4 asked for
-        if (copy == NULL) {
-            throw_oom(env, "user dictionary check buffer");
-            return NULL;
-        }
-        (*env)->GetByteArrayRegion(env, blob, 0, len, (jbyte *)copy);
-        status = jd_user_dict_check(copy, (size_t)len, &info);
-        free(copy);
-    }
+    const void *bytes;
+    size_t len;
+    void *owned;
+    if (!blob_arg(env, blob, &bytes, &len, &owned)) return NULL;
+    jd_dict_info info = {0};
+    const unsigned int status = jd_dict_check(bytes, len, &info);
+    free(owned);
     return verdict_of(env, status, &info);
 }
 
-// `userDictCheck` over a direct buffer, in place.
+// jd_user_dict_check on a user-dictionary blob, on `dict` (null for the
+// embedded dictionary).
 JNIEXPORT jlongArray JNICALL
-Java_com_hronro_jd_Jni_userDictCheckDirect(JNIEnv *env, jclass cls, jobject blob) {
+Java_com_hronro_jd_Jni_userDictCheck(JNIEnv *env, jclass cls, jobject dict, jobject blob) {
     (void)cls;
-    size_t len = 0;
-    const void *bytes = direct_bytes(env, blob, &len);
-    if (bytes == NULL) return NULL;
+    const void *dict_bytes, *bytes;
+    size_t dict_len, len;
+    void *dict_owned, *owned;
+    if (!blob_arg(env, dict, &dict_bytes, &dict_len, &dict_owned)) return NULL;
+    if (!blob_arg(env, blob, &bytes, &len, &owned)) {
+        free(dict_owned);
+        return NULL;
+    }
     jd_user_dict_info info = {0};
-    const unsigned int status = jd_user_dict_check(bytes, len, &info);
+    const unsigned int status = jd_user_dict_check(dict_bytes, dict_len, bytes, len, &info);
+    free(owned);
+    free(dict_owned);
     return verdict_of(env, status, &info);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_hronro_jd_Jni_builtinEntries(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+    return (jint)jd_abi_layout(JD_ABI_BUILTIN_DICT_ENTRIES);
 }
 
 // libjd's content hash (jd_user_dict_hash) of a byte[], read in place.
@@ -537,78 +546,107 @@ Java_com_hronro_jd_Jni_userDictHash(JNIEnv *env, jclass cls, jbyteArray bytes) {
 JNIEXPORT jlong JNICALL
 Java_com_hronro_jd_Jni_userDictHashDirect(JNIEnv *env, jclass cls, jobject bytes) {
     (void)cls;
-    size_t len = 0;
-    const void *at = direct_bytes(env, bytes, &len);
-    if (at == NULL) return 0;
-    return (jlong)jd_user_dict_hash(at, len);
+    const void *at;
+    size_t len;
+    void *owned;
+    // A direct buffer is read in place: `owned` stays NULL.
+    if (!blob_arg(env, bytes, &at, &len, &owned)) return 0;
+    const unsigned long long hash = jd_user_dict_hash(at, len);
+    free(owned);
+    return (jlong)hash;
 }
 
-// Build a user dictionary from UTF-8 `text` into a buffer of the size
-// jd_user_dict_blob_bound asks for, and hand back a two-element Object[]:
+// What a build left in `buf` as a two-element Object[]:
 //   [0] the blob as a byte[] — null when the build failed as a whole;
 //   [1] the report as an int[]: status, line, entries, dropped, shared,
 //       invalid, then five ints per note: line, flags, other, builtin, peers.
-// Every verdict is libjd's; this only moves it across. Throws
+// Every verdict is libjd's; this only moves it across. NULL, with an
+// OutOfMemoryError pending, when the arrays cannot be had.
+static jobjectArray build_result(JNIEnv *env, unsigned int status, const jd_user_dict_report *report,
+                                 const void *buf, size_t blob_len) {
+    const unsigned int notes = status == JD_USER_DICT_OK ? report->notes : 0;
+    jobjectArray out = NULL;
+    jintArray summary = (*env)->NewIntArray(env, (jsize)(6 + 5 * notes));
+    if (summary == NULL) return NULL;
+    const jint head[6] = {
+        (jint)report->status, (jint)report->line, (jint)report->entries,
+        (jint)report->dropped, (jint)report->shared, (jint)report->invalid,
+    };
+    (*env)->SetIntArrayRegion(env, summary, 0, 6, head);
+    // The notes sit past the blob, ascending by line (see jd.h): five
+    // unsigned ints each, which is the layout of the int[] they go to, so
+    // they cross in one call.
+    _Static_assert(sizeof(jd_user_dict_note) == 5 * sizeof(jint), "a note is five ints");
+    if (notes > 0) {
+        (*env)->SetIntArrayRegion(env, summary, 6, (jsize)(5 * notes),
+            (const jint *)((const char *)buf + report->notes_offset));
+    }
+    jbyteArray blob = NULL;
+    if (status == JD_USER_DICT_OK) {
+        blob = (*env)->NewByteArray(env, (jsize)blob_len);
+        if (blob == NULL) return NULL;
+        (*env)->SetByteArrayRegion(env, blob, 0, (jsize)blob_len, (const jbyte *)buf);
+    }
+    out = (*env)->NewObjectArray(env, 2, g_object_cls, NULL);
+    if (out != NULL) {
+        (*env)->SetObjectArrayElement(env, out, 0, blob);
+        (*env)->SetObjectArrayElement(env, out, 1, summary);
+    }
+    return out;
+}
+
+// A dictionary build — `dict` is NULL — or a user-dictionary build on
+// `dict_arg` (null for the embedded dictionary) from UTF-8 `text`, into a
+// buffer of the size the bound asks for: see build_result. Throws
 // OutOfMemoryError when the buffer cannot be had.
-JNIEXPORT jobjectArray JNICALL
-Java_com_hronro_jd_Jni_userDictBuild(
-    JNIEnv *env, jclass cls, jbyteArray text, jlong source_tag) {
-    (void)cls;
+static jobjectArray build(JNIEnv *env, int user, jobject dict_arg, jbyteArray text, jlong source_tag) {
+    const void *dict_bytes;
+    size_t dict_len;
+    void *dict_owned;
+    if (!blob_arg(env, dict_arg, &dict_bytes, &dict_len, &dict_owned)) return NULL;
     const jsize text_len = (*env)->GetArrayLength(env, text);
     jbyte *bytes = (*env)->GetByteArrayElements(env, text, NULL);
-    if (bytes == NULL) return NULL; // OutOfMemoryError pending
+    if (bytes == NULL) { // OutOfMemoryError pending
+        free(dict_owned);
+        return NULL;
+    }
     // The library takes a NULL pointer as no text, but never needs one: an
     // empty array still has an address to point at.
     static const char empty = 0;
-    const char *phrases = text_len > 0 ? (const char *)bytes : &empty;
+    const char *chars = text_len > 0 ? (const char *)bytes : &empty;
 
-    const size_t bound = jd_user_dict_blob_bound(phrases, (size_t)text_len);
+    const size_t bound = user ? jd_user_dict_blob_bound(chars, (size_t)text_len)
+                              : jd_dict_blob_bound(chars, (size_t)text_len);
     void *buf = malloc(bound > 0 ? bound : 1); // malloc's alignment covers the 4 asked for
     if (buf == NULL) {
         (*env)->ReleaseByteArrayElements(env, text, bytes, JNI_ABORT);
-        throw_oom(env, "user dictionary build buffer");
+        free(dict_owned);
+        throw_oom(env, "dictionary build buffer");
         return NULL;
     }
     size_t blob_len = 0;
     jd_user_dict_report report = {0};
-    const unsigned int status = jd_user_dict_build(
-        phrases, (size_t)text_len, (unsigned long long)source_tag,
-        buf, bound, &blob_len, &report);
+    const unsigned int status = user
+        ? jd_user_dict_build(dict_bytes, dict_len, chars, (size_t)text_len,
+                             (unsigned long long)source_tag, buf, bound, &blob_len, &report)
+        : jd_dict_build(chars, (size_t)text_len, (unsigned long long)source_tag,
+                        buf, bound, &blob_len, &report);
     (*env)->ReleaseByteArrayElements(env, text, bytes, JNI_ABORT);
+    free(dict_owned);
 
-    // Any NULL below has an OutOfMemoryError pending, which the caller sees.
-    const unsigned int notes = status == JD_USER_DICT_OK ? report.notes : 0;
-    jobjectArray out = NULL;
-    jintArray summary = (*env)->NewIntArray(env, (jsize)(6 + 5 * notes));
-    if (summary != NULL) {
-        const jint head[6] = {
-            (jint)report.status, (jint)report.line, (jint)report.entries,
-            (jint)report.dropped, (jint)report.shared, (jint)report.invalid,
-        };
-        (*env)->SetIntArrayRegion(env, summary, 0, 6, head);
-        // The notes sit past the blob, ascending by line (see jd.h): five
-        // unsigned ints each, which is the layout of the int[] they go to,
-        // so they cross in one call.
-        _Static_assert(sizeof(jd_user_dict_note) == 5 * sizeof(jint), "a note is five ints");
-        if (notes > 0) {
-            (*env)->SetIntArrayRegion(env, summary, 6, (jsize)(5 * notes),
-                (const jint *)((const char *)buf + report.notes_offset));
-        }
-        jbyteArray blob = NULL;
-        if (status == JD_USER_DICT_OK) {
-            blob = (*env)->NewByteArray(env, (jsize)blob_len);
-            if (blob != NULL) {
-                (*env)->SetByteArrayRegion(env, blob, 0, (jsize)blob_len, (const jbyte *)buf);
-            }
-        }
-        if (status != JD_USER_DICT_OK || blob != NULL) {
-            out = (*env)->NewObjectArray(env, 2, g_object_cls, NULL);
-            if (out != NULL) {
-                (*env)->SetObjectArrayElement(env, out, 0, blob);
-                (*env)->SetObjectArrayElement(env, out, 1, summary);
-            }
-        }
-    }
+    jobjectArray out = build_result(env, status, &report, buf, blob_len);
     free(buf);
     return out;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_hronro_jd_Jni_dictBuild(JNIEnv *env, jclass cls, jbyteArray text, jlong source_tag) {
+    (void)cls;
+    return build(env, 0, NULL, text, source_tag);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_hronro_jd_Jni_userDictBuild(JNIEnv *env, jclass cls, jobject dict, jbyteArray text, jlong source_tag) {
+    (void)cls;
+    return build(env, 1, dict, text, source_tag);
 }
