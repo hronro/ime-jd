@@ -1,21 +1,24 @@
-//! Build-time trie generator.
+//! Build-time generator of the embedded dictionary.
 //!
 //! Usage (driven by build.zig, not run by hand):
-//!   gen_trie <out_dir> <eol> <target_endian> <table.txt> [<table.txt> ...]
+//!   gen_trie <out_dir> <target_endian> <table.txt> [<table.txt> ...]
+//!
+//! Joins the table files (lines of "<value>\t<keys>" with '#' comments)
+//! into one text and builds it with `dict.build` — the builder a host uses
+//! at runtime, with the same line rules — so the embedded dictionary is
+//! exactly what a host would get from the same text. Unlike a host's build,
+//! this one is strict: a line the builder would skip or drop fails the
+//! build, naming the file and line.
 //!
 //! `target_endian` is "le" or "be" — gen_trie runs on the host, so when the
-//! target's endianness differs from the host's, `trie.buildBlob` byte-swaps
-//! every u32 field before writing the blob to disk.
+//! target's endianness differs from the host's, every u32 field is
+//! byte-swapped before the blob is written.
 //!
-//! Reads each table file (lines of "<value>\t<keys>" with '#' comments),
-//! builds the trie via `trie.buildBlob`, then writes:
+//! Writes:
 //!
-//!   <out_dir>/trie.bin              — the on-disk format (see blob_format.zig)
+//!   <out_dir>/trie.bin              — the blob (see src/blob_format.zig)
 //!   <out_dir>/trie_blob_module.zig  — a tiny wrapper that exposes
 //!                                     `pub const bytes = @embedFile("trie.bin");`
-//!                                     plus `fingerprint`, a CRC-32 of the
-//!                                     blob that user-dictionary blobs record
-//!                                     (see src/user_dict.zig)
 //!
 //! The wrapper sits next to trie.bin so `@embedFile` resolves correctly when
 //! the consumer module imports it.
@@ -26,66 +29,65 @@ const testing = std.testing;
 // `trie` is wired in by build.zig as a named module so this script doesn't
 // need to reach across the package boundary into ../src/.
 const trie = @import("trie");
+const dict = trie.dict;
 
-/// Diagnostic print that stays silent under `zig build test`. The unit tests
-/// below intentionally exercise the parse-error branches; without this gate,
-/// each `expectError` would push an `error: ...` line onto the test runner's
-/// captured stderr, which `zig build` (as of Zig 0.17) then renders as a
-/// (bogus) "failed command" block — even when every test passes.
+/// The table files joined into one text, and where each one starts in it,
+/// so a line of the text can be traced back to its file.
+const Joined = struct {
+    text: []const u8,
+    /// 1-based line in `text` that each file's first line became.
+    first_lines: []const u32,
+    paths: []const []const u8,
+
+    /// The file and 1-based line within it of `line` of the text.
+    fn locate(self: Joined, line: u32) struct { []const u8, u32 } {
+        var i: usize = self.first_lines.len;
+        while (i > 1 and self.first_lines[i - 1] > line) i -= 1;
+        return .{ self.paths[i - 1], line - self.first_lines[i - 1] + 1 };
+    }
+};
+
+/// Join `files` — each one's contents, by `paths` — into one text, each
+/// ending with a newline so no line runs into the next file.
+fn join(arena: std.mem.Allocator, paths: []const []const u8, files: []const []const u8) !Joined {
+    var text: std.ArrayList(u8) = .empty;
+    const first_lines = try arena.alloc(u32, files.len);
+    var line: u32 = 1;
+    for (files, first_lines) |data, *first| {
+        first.* = line;
+        try text.appendSlice(arena, data);
+        if (data.len != 0 and data[data.len - 1] != '\n') try text.append(arena, '\n');
+        line += @intCast(std.mem.count(u8, data, "\n") + @intFromBool(data.len != 0 and data[data.len - 1] != '\n'));
+    }
+    return .{ .text = text.items, .first_lines = first_lines, .paths = paths };
+}
+
+fn noteReason(flags: u32) []const u8 {
+    if (flags & dict.NoteFlag.malformed != 0) return "no TAB between value and keys";
+    if (flags & dict.NoteFlag.bad_keys != 0) return "keys must be 1-6 of a-z and ';', with no ';' after a letter";
+    if (flags & dict.NoteFlag.bad_value != 0) return "value must be 1-1023 bytes of UTF-8 without control characters";
+    if (flags & dict.NoteFlag.repeats_line != 0) return "repeats an earlier line";
+    return "unknown problem";
+}
+
+/// Write every note to stderr as `path:line: reason`. A dictionary that
+/// earns any note fails the build.
+fn reportNotes(joined: Joined, notes: []const dict.Note) void {
+    for (notes) |n| {
+        const path, const line = joined.locate(n.line);
+        if (n.flags & dict.NoteFlag.repeats_line != 0) {
+            const other_path, const other_line = joined.locate(n.other);
+            diag("{s}:{d}: {s} ({s}:{d})\n", .{ path, line, noteReason(n.flags), other_path, other_line });
+        } else {
+            diag("{s}:{d}: {s}\n", .{ path, line, noteReason(n.flags) });
+        }
+    }
+}
+
+/// Diagnostic print that stays silent under `zig build test`, where
+/// `zig build` would render stderr as a (bogus) failed command.
 fn diag(comptime fmt: []const u8, args: anytype) void {
     if (!builtin.is_test) std.debug.print(fmt, args);
-}
-
-/// Parse the contents of a single table file. Split from `parseTables` so
-/// the parsing logic can be unit-tested without touching the filesystem.
-fn parseTable(
-    arena: std.mem.Allocator,
-    out: *std.ArrayList(trie.Entry),
-    data: []const u8,
-    eol: []const u8,
-    path: []const u8,
-) !void {
-    var it = std.mem.splitSequence(u8, data, eol);
-    while (it.next()) |raw_line| {
-        const trimmed = std.mem.trim(u8, raw_line, " \r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-
-        const tab = std.mem.findScalar(u8, trimmed, '\t') orelse {
-            diag("error: line without TAB in {s}: {s}\n", .{ path, trimmed });
-            return error.MalformedTableLine;
-        };
-        const value = std.mem.trim(u8, trimmed[0..tab], " ");
-        const keys = std.mem.trim(u8, trimmed[tab + 1 ..], " ");
-        if (keys.len == 0) continue;
-
-        // buildBlob enforces the same alphabet as a hard error, but checking
-        // here too gives the dictionary editor the file and line at fault.
-        for (keys) |k| {
-            if (!trie.isValidKeyByte(k)) {
-                diag("error: key byte '{c}' (0x{x}) outside the a-z ';' alphabet in {s}: {s}\n", .{ k, k, path, trimmed });
-                return error.KeyOutsideAlphabet;
-            }
-        }
-
-        try out.append(arena, .{ .keys = keys, .value = value });
-    }
-}
-
-fn parseTables(
-    arena: std.mem.Allocator,
-    io: std.Io,
-    paths: []const []const u8,
-    eol: []const u8,
-) ![]trie.Entry {
-    var entries: std.ArrayList(trie.Entry) = .empty;
-    const cwd = std.Io.Dir.cwd();
-
-    for (paths) |path| {
-        const data = try cwd.readFileAlloc(io, path, arena, .limited(1 << 30));
-        try parseTable(arena, &entries, data, eol, path);
-    }
-
-    return entries.toOwnedSlice(arena);
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -103,21 +105,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const io = threaded.io();
 
     const raw_args = try init.args.toSlice(arena);
-    if (raw_args.len < 5) {
-        std.debug.print("usage: gen_trie <out_dir> <eol> <target_endian> <table.txt> [<table.txt> ...]\n", .{});
+    if (raw_args.len < 4) {
+        std.debug.print("usage: gen_trie <out_dir> <target_endian> <table.txt> [<table.txt> ...]\n", .{});
         return error.MissingArgs;
     }
     const out_dir_path = raw_args[1];
-    const eol_arg = raw_args[2];
-    const endian_arg = raw_args[3];
-    const table_paths = raw_args[4..];
-
-    const eol: []const u8 = if (std.mem.eql(u8, eol_arg, "lf"))
-        "\n"
-    else if (std.mem.eql(u8, eol_arg, "crlf"))
-        "\r\n"
-    else
-        eol_arg;
+    const endian_arg = raw_args[2];
+    const table_paths = raw_args[3..];
 
     const target_endian: std.lang.Endian = blk: {
         if (std.mem.eql(u8, endian_arg, "le")) break :blk .little;
@@ -126,53 +120,56 @@ pub fn main(init: std.process.Init.Minimal) !void {
         return error.BadEndianArg;
     };
 
-    const entries = try parseTables(arena, io, table_paths, eol);
-    const blob = try trie.buildBlob(arena, entries, target_endian);
-
     const cwd = std.Io.Dir.cwd();
+    const files = try arena.alloc([]const u8, table_paths.len);
+    for (table_paths, files) |path, *data| {
+        data.* = try cwd.readFileAlloc(io, path, arena, .limited(1 << 30));
+    }
+    const joined = try join(arena, table_paths, files);
+
+    var report: dict.Report = undefined;
+    var blob = dict.buildAlloc(gpa.allocator(), joined.text, 0, &report) catch |err| {
+        if (err == error.BuildFailed) {
+            const path, const line = if (report.line != 0) joined.locate(report.line) else .{ "tables", 0 };
+            std.debug.print("{s}:{d}: the dictionary does not build (status {d})\n", .{ path, line, report.status });
+        }
+        return err;
+    };
+    defer blob.deinit(gpa.allocator());
+    if (blob.report.notes != 0) {
+        reportNotes(joined, blob.notes());
+        return error.BadTableLines;
+    }
+
+    const bytes = blob.buf[0..blob.len];
+    // Read the log line's numbers before a cross-endian swap.
+    const header = std.mem.bytesToValue(trie.Header, bytes[0..@sizeOf(trie.Header)]);
+    if (target_endian != builtin.target.cpu.arch.endian()) {
+        dict.byteSwapBlob(bytes, builtin.target.cpu.arch.endian());
+    }
+
     var out_dir = try cwd.createDirPathOpen(io, out_dir_path, .{});
     defer out_dir.close(io);
-
-    try out_dir.writeFile(io, .{ .sub_path = "trie.bin", .data = blob });
-
-    // A user-dictionary blob is deduplicated against this exact dictionary
-    // and records this value, so `jd_init` can tell a cached blob from an
-    // older release apart (see src/user_dict.zig).
-    const fingerprint = std.hash.Crc32.hash(blob);
-    const module_src = try arena.print(
+    try out_dir.writeFile(io, .{ .sub_path = "trie.bin", .data = bytes });
+    try out_dir.writeFile(io, .{
+        .sub_path = "trie_blob_module.zig",
+        .data =
         \\//! Auto-generated by scripts/gen_trie.zig — do not edit.
         \\pub const bytes align(4) = @embedFile("trie.bin").*;
-        \\/// CRC-32 of trie.bin — identifies the dictionary a user-dictionary
-        \\/// blob was built against.
-        \\pub const fingerprint: u32 = 0x{x:0>8};
         \\
-    , .{fingerprint});
-    try out_dir.writeFile(io, .{ .sub_path = "trie_blob_module.zig", .data = module_src });
+        ,
+    });
 
     // Surface the worst-case caps the blob embedded. These dictate
     // per-context memory in `jd_init`; logging them gives early visibility
-    // into the per-context resident size. The header is read in the
-    // target's byte order — the blob is not in the host's when they differ,
-    // so it cannot be parsed here as a `Trie`.
+    // into the per-context resident size.
     //
     // Write to stdout (not stderr): zig build's Run step captures stderr when
     // a step has output args, then renders it as a "failed command" even on
     // exit 0. Informational lines belong on stdout.
-    const header = std.mem.bytesToValue(trie.Header, blob[0..@sizeOf(trie.Header)]);
-    const field = struct {
-        fn get(v: u32, endian: std.lang.Endian) u32 {
-            return if (endian == builtin.target.cpu.arch.endian()) v else @byteSwap(v);
-        }
-    }.get;
     const msg = try arena.print(
         "gen_trie: {d} entries → {d} bytes blob (frontier_cap={d}, path_buf_cap={d}, max_value_len={d})\n",
-        .{
-            entries.len,
-            blob.len,
-            field(header.frontier_cap, target_endian),
-            field(header.path_buf_cap, target_endian),
-            field(header.max_value_len, target_endian),
-        },
+        .{ header.values_count, bytes.len, header.frontier_cap, header.path_buf_cap, header.max_value_len },
     );
     try std.Io.File.stdout().writeStreamingAll(io, msg);
 }
@@ -181,129 +178,58 @@ pub fn main(init: std.process.Init.Minimal) !void {
 // Tests
 // =========================================================================
 
-const ParseFixture = struct {
-    arena_state: std.heap.ArenaAllocator,
-    entries: std.ArrayList(trie.Entry),
-
-    fn init() ParseFixture {
-        return .{
-            .arena_state = std.heap.ArenaAllocator.init(testing.allocator),
-            .entries = .empty,
-        };
+test "join keeps every file's lines apart and traceable" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const paths = [_][]const u8{ "one.txt", "two.txt", "three.txt", "four.txt" };
+    // The second file has no final newline; the third is empty.
+    const files = [_][]const u8{ "甲\ta\n# c\n", "乙\tb", "", "丙\tc\r\n丁\td\r\n" };
+    const joined = try join(arena, &paths, &files);
+    try testing.expectEqualStrings("甲\ta\n# c\n乙\tb\n丙\tc\r\n丁\td\r\n", joined.text);
+    const want = [_]struct { u32, []const u8, u32 }{
+        .{ 1, "one.txt", 1 },
+        .{ 2, "one.txt", 2 },
+        .{ 3, "two.txt", 1 },
+        .{ 4, "four.txt", 1 },
+        .{ 5, "four.txt", 2 },
+    };
+    for (want) |w| {
+        const path, const line = joined.locate(w[0]);
+        try testing.expectEqualStrings(w[1], path);
+        try testing.expectEqual(w[2], line);
     }
-
-    fn deinit(self: *ParseFixture) void {
-        self.arena_state.deinit();
-    }
-
-    fn arena(self: *ParseFixture) std.mem.Allocator {
-        return self.arena_state.allocator();
-    }
-};
-
-test "parseTable: single line parses value\\tkeys" {
-    var f = ParseFixture.init();
-    defer f.deinit();
-
-    try parseTable(f.arena(), &f.entries, "甲\ta\n", "\n", "test.txt");
-    try testing.expectEqual(@as(usize, 1), f.entries.items.len);
-    try testing.expectEqualStrings("甲", f.entries.items[0].value);
-    try testing.expectEqualStrings("a", f.entries.items[0].keys);
 }
 
-test "parseTable: multiple lines" {
-    var f = ParseFixture.init();
-    defer f.deinit();
-
-    try parseTable(f.arena(), &f.entries, "甲\ta\n乙\tab\n丙\tabc\n", "\n", "test.txt");
-    try testing.expectEqual(@as(usize, 3), f.entries.items.len);
-    try testing.expectEqualStrings("乙", f.entries.items[1].value);
-    try testing.expectEqualStrings("ab", f.entries.items[1].keys);
+test "the joined text builds with no notes, CRLF and all" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const paths = [_][]const u8{ "a.txt", "b.txt" };
+    const files = [_][]const u8{ "# header\n\n甲\ta\n：\t;;\n", "  乙  \t  ab  \r\n" };
+    const joined = try join(arena, &paths, &files);
+    var blob = try dict.buildAlloc(testing.allocator, joined.text, 0, null);
+    defer blob.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 0), blob.report.notes);
+    try testing.expectEqual(@as(u32, 3), blob.report.entries);
 }
 
-test "parseTable: skips comments and blank lines" {
-    var f = ParseFixture.init();
-    defer f.deinit();
-
-    try parseTable(
-        f.arena(),
-        &f.entries,
-        "# header comment\n" ++
-            "\n" ++
-            "甲\ta\n" ++
-            "# mid comment\n" ++
-            "\n" ++
-            "乙\tab\n",
-        "\n",
-        "test.txt",
-    );
-    try testing.expectEqual(@as(usize, 2), f.entries.items.len);
-}
-
-test "parseTable: line without TAB is an error" {
-    var f = ParseFixture.init();
-    defer f.deinit();
-
-    try testing.expectError(error.MalformedTableLine, parseTable(f.arena(), &f.entries, "no-tab-here\n", "\n", "test.txt"));
-}
-
-test "parseTable: key bytes outside the alphabet are an error" {
-    var f = ParseFixture.init();
-    defer f.deinit();
-
-    // Uppercase, digit, and interior-whitespace typos must name the file
-    // instead of flowing into the builder.
-    try testing.expectError(error.KeyOutsideAlphabet, parseTable(f.arena(), &f.entries, "甲\tA\n", "\n", "test.txt"));
-    try testing.expectError(error.KeyOutsideAlphabet, parseTable(f.arena(), &f.entries, "甲\ta0\n", "\n", "test.txt"));
-    try testing.expectError(error.KeyOutsideAlphabet, parseTable(f.arena(), &f.entries, "甲\ta b\n", "\n", "test.txt"));
-}
-
-test "parseTable: ';' is a valid key byte" {
-    var f = ParseFixture.init();
-    defer f.deinit();
-
-    try parseTable(f.arena(), &f.entries, "：\t;;\n", "\n", "test.txt");
-    try testing.expectEqual(@as(usize, 1), f.entries.items.len);
-    try testing.expectEqualStrings(";;", f.entries.items[0].keys);
-}
-
-test "parseTable: empty keys silently skipped" {
-    var f = ParseFixture.init();
-    defer f.deinit();
-
-    // A line like "value\t" (or "value\t   ") has empty trimmed keys and is dropped.
-    try parseTable(f.arena(), &f.entries, "甲\ta\n乙\t   \n丙\tc\n", "\n", "test.txt");
-    try testing.expectEqual(@as(usize, 2), f.entries.items.len);
-    try testing.expectEqualStrings("甲", f.entries.items[0].value);
-    try testing.expectEqualStrings("丙", f.entries.items[1].value);
-}
-
-test "parseTable: trims surrounding spaces" {
-    var f = ParseFixture.init();
-    defer f.deinit();
-
-    try parseTable(f.arena(), &f.entries, "  甲  \t  a  \n", "\n", "test.txt");
-    try testing.expectEqual(@as(usize, 1), f.entries.items.len);
-    try testing.expectEqualStrings("甲", f.entries.items[0].value);
-    try testing.expectEqualStrings("a", f.entries.items[0].keys);
-}
-
-test "parseTable: CRLF line endings" {
-    var f = ParseFixture.init();
-    defer f.deinit();
-
-    try parseTable(f.arena(), &f.entries, "甲\ta\r\n乙\tab\r\n", "\r\n", "test.txt");
-    try testing.expectEqual(@as(usize, 2), f.entries.items.len);
-    try testing.expectEqualStrings("ab", f.entries.items[1].keys);
-}
-
-test "parseTable: appends to existing entries" {
-    var f = ParseFixture.init();
-    defer f.deinit();
-
-    try parseTable(f.arena(), &f.entries, "甲\ta\n", "\n", "first.txt");
-    try parseTable(f.arena(), &f.entries, "乙\tb\n", "\n", "second.txt");
-    try testing.expectEqual(@as(usize, 2), f.entries.items.len);
-    try testing.expectEqualStrings("甲", f.entries.items[0].value);
-    try testing.expectEqualStrings("乙", f.entries.items[1].value);
+test "a bad line earns a note, traced to its file" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const paths = [_][]const u8{ "a.txt", "b.txt" };
+    const files = [_][]const u8{ "甲\ta\n", "no tab\n甲\ta\n" };
+    const joined = try join(arena, &paths, &files);
+    var blob = try dict.buildAlloc(testing.allocator, joined.text, 0, null);
+    defer blob.deinit(testing.allocator);
+    const notes = blob.notes();
+    try testing.expectEqual(@as(usize, 2), notes.len);
+    const p0, const l0 = joined.locate(notes[0].line);
+    try testing.expectEqualStrings("b.txt", p0);
+    try testing.expectEqual(@as(u32, 1), l0);
+    try testing.expectEqual(dict.NoteFlag.repeats_line, notes[1].flags);
+    const p1, const l1 = joined.locate(notes[1].other);
+    try testing.expectEqualStrings("a.txt", p1);
+    try testing.expectEqual(@as(u32, 1), l1);
 }

@@ -304,14 +304,19 @@ test "user phrases on one code are indexed in file order" {
     try testing.expectEqual(@as(u32, 2), out[0].index);
 }
 
-test "a value repeated on one built-in code is reported once, at its first index" {
+test "a value repeated on one code is reported once, at its first index" {
+    // A dictionary build drops the repeat (`dict.build`), so the second 甲
+    // on "a" never reaches the trie: one hit on "a", at index 0.
     var f = try Fixture.init(&.{
         .{ .keys = "a", .value = "甲" },
         .{ .keys = "a", .value = "乙" },
-        .{ .keys = "a", .value = "甲" },
         .{ .keys = "b", .value = "甲" },
     }, null);
     defer f.deinit();
+    try testing.expectError(error.RepeatedEntry, trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = "a", .value = "甲" },
+        .{ .keys = "a", .value = "甲" },
+    }));
 
     var out: [4]Code = undefined;
     try testing.expectEqual(@as(u32, 2), f.codes("甲", &out));

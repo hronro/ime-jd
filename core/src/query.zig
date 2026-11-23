@@ -693,7 +693,7 @@ const expected_a = [_]pagination.ExpectedOption{
     .{ .value = "丁2", .hint = "cd" },
     .{ .value = "丁3", .hint = "cd" },
     .{ .value = "丁4", .hint = "ce" },
-    .{ .value = "FooBar", .hint = "c;" },
+    .{ .value = "FooBar", .hint = "cz" },
 };
 
 const expected_ac = [_]pagination.ExpectedOption{
@@ -703,7 +703,7 @@ const expected_ac = [_]pagination.ExpectedOption{
     .{ .value = "丁2", .hint = "d" },
     .{ .value = "丁3", .hint = "d" },
     .{ .value = "丁4", .hint = "e" },
-    .{ .value = "FooBar", .hint = ";" },
+    .{ .value = "FooBar", .hint = "z" },
 };
 
 test "works with initial typing" {
@@ -790,21 +790,28 @@ test "press space when no other key has been pressed" {
 }
 
 test "`;` descends when the current node has a ';' child" {
-    // Node "ac" HAS a ';' child ("ac;" → FooBar), so case B is skipped and
-    // this is an ordinary case-E descent.
-    var th = try buildTestTrie(testing.allocator);
+    // A code may go on with ';' only before its first letter (`dict.isValidKeys`),
+    // so the one place this happens is the `;` window: node `;` has a ';'
+    // child (`;;` → ：), so case B is skipped and this is an ordinary case-E
+    // descent rather than a pick of the window's 2nd option.
+    var th = try trie_mod.buildTrie(testing.allocator, &.{
+        .{ .keys = ";", .value = "；" },
+        .{ .keys = ";a", .value = "@" },
+        .{ .keys = ";;", .value = "：" },
+    });
     defer th.deinit(testing.allocator);
     var harness = try ContextHarness.init(testing.allocator, &th.trie);
     defer harness.deinit(testing.allocator);
     const ctx = &harness.ctx;
 
-    ctx.pressKey('a');
-    ctx.pressKey('c');
+    ctx.pressKey(';');
+    try expectNoCommit(ctx);
+    try testing.expectEqual(@as(u32, 3), ctx.state.options_count);
     ctx.pressKey(';');
 
     try expectNoCommit(ctx);
     try testing.expectEqual(@as(u32, 1), ctx.state.options_count);
-    try expectWindow(ctx, 1, &.{.{ .value = "FooBar" }});
+    try expectWindow(ctx, 1, &.{.{ .value = "：" }});
 }
 
 test "press `;` to commit the anchor's 2nd option" {
@@ -839,19 +846,16 @@ test "`;` is page-independent: it picks relative to the anchor" {
 test "press `;` when there are options starting with ';'" {
     var th = try trie_mod.buildTrie(testing.allocator, &.{
         .{ .keys = "a", .value = "甲" },
-        .{ .keys = "ab", .value = "乙" },
-        .{ .keys = "ac", .value = "丙" },
-        .{ .keys = "ad;", .value = "Hello World" },
-        .{ .keys = "ae;a", .value = "Foo" },
-        .{ .keys = "ae;b", .value = "Bar" },
+        .{ .keys = ";", .value = "；" },
+        .{ .keys = ";;a", .value = "Foo" },
+        .{ .keys = ";;b", .value = "Bar" },
     });
     defer th.deinit(testing.allocator);
     var harness = try ContextHarness.init(testing.allocator, &th.trie);
     defer harness.deinit(testing.allocator);
     const ctx = &harness.ctx;
 
-    ctx.pressKey('a');
-    ctx.pressKey('e');
+    ctx.pressKey(';');
     ctx.pressKey(';');
 
     try expectNoCommit(ctx);

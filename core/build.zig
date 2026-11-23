@@ -4,9 +4,15 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // EOL of the table .txt files. Normally "\n" on Unix; pass "\r\n" if your
-    // checkout has CRLF endings on Windows.
-    const tables_eol_option = b.option([]const u8, "tables_eol", "EOL for tables/*.txt files (default: lf)") orelse "lf";
+    // EOL of the punctuation-mark .txt files. Normally "\n" on Unix; pass
+    // "\r\n" if your checkout has CRLF endings on Windows. (The dictionary
+    // tables need no such option: every dictionary line drops a trailing CR.)
+    const tables_eol_option = b.option([]const u8, "tables_eol", "EOL for punctuation-marks/*.txt files (default: lf)") orelse "lf";
+
+    // libjd embeds the 键道 dictionary by default. Without it — libjd-engine
+    // — a host passes its own dictionary to jd_init, and the library is
+    // over 95% smaller.
+    const builtin_dict = b.option(bool, "builtin_dict", "Embed the built-in dictionary (default: true; false builds libjd-engine)") orelse true;
 
     // Release builds of the library ship without debug info. Zig only strips
     // `small` by default; `fast` and `safe` would otherwise carry DWARF (or a
@@ -22,7 +28,7 @@ pub fn build(b: *std.Build) void {
         .big => "be",
     };
 
-    // ========== Trie blob (existing) ==========
+    // ========== Dictionary blob ==========
 
     // Shared format module (host + target).
     const blob_format_target_mod = b.createModule(.{
@@ -59,7 +65,6 @@ pub fn build(b: *std.Build) void {
 
     const gen_trie_run = b.addRunArtifact(gen_trie_exe);
     const trie_out_dir = gen_trie_run.addOutputDirectoryArg2("trie_data", .{});
-    gen_trie_run.addArg(tables_eol_option);
     gen_trie_run.addArg(target_endian_arg);
     // Add every table file as an explicit input so cache invalidation works.
     const tables = [_][]const u8{
@@ -73,9 +78,21 @@ pub fn build(b: *std.Build) void {
     };
     for (tables) |t| gen_trie_run.addFileArg(b.path(t));
 
-    // Blob module wrapping trie.bin via @embedFile, exposed as `trie_blob`.
+    // Blob module wrapping trie.bin via @embedFile, exposed as `trie_blob`
+    // — or, without a built-in dictionary, an empty one (and gen_trie never
+    // runs).
+    const trie_blob_source = if (builtin_dict)
+        trie_out_dir.path(b, "trie_blob_module.zig")
+    else
+        b.addWriteFiles().add(
+            "trie_blob_module.zig",
+            \\//! No embedded dictionary: built with -Dbuiltin_dict=false.
+            \\pub const bytes align(4) = [0]u8{};
+            \\
+            ,
+        );
     const trie_blob_module = b.createModule(.{
-        .root_source_file = trie_out_dir.path(b, "trie_blob_module.zig"),
+        .root_source_file = trie_blob_source,
         .target = target,
     });
 

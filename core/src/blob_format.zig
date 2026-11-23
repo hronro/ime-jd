@@ -1,33 +1,31 @@
-//! On-disk format for the build-time-generated trie blob.
+//! On-disk format of a dictionary blob: the embedded one, generated at
+//! build time, and any a host builds at runtime (see `dict.zig`).
 //!
-//! The generator (`scripts/gen_trie.zig`) emits a single contiguous byte
-//! buffer in this layout; the runtime (`trie.zig`) reinterprets that
-//! buffer in place via @ptrCast. Both ends must speak the same format, so
-//! everything is defined once here.
+//! The builder (`dict.build`) emits a single contiguous byte buffer in
+//! this layout; the runtime (`trie.zig`) reinterprets that buffer in place
+//! via @ptrCast. Both ends must speak the same format, so everything is
+//! defined once here.
 //!
 //! Cross-platform notes:
-//!   - All integer fields are explicit u8/u32 — no usize.
+//!   - All integer fields are explicit u8/u32 — no usize. A 64-bit field is
+//!     split into two u32 halves, so the header stays 4-byte aligned and a
+//!     cross-endian swap is word by word.
 //!   - Layout uses `extern struct` so field order/padding is guaranteed.
-//!   - All multi-byte integers are stored in **target** endianness. The
-//!     build-time generator (`scripts/gen_trie.zig`) runs on the host;
-//!     when the host and target endianness differ, `trie.buildBlob`
-//!     byte-swaps every u32 field after construction. The runtime is
-//!     consequently free to read fields directly via `@ptrCast`, in its
-//!     own native endianness, on any target.
-//!   - The Node struct is 16 bytes including 3 bytes of natural padding
-//!     after `values_len`. Keep it 4-byte-aligned so the runtime can take
-//!     the embedded byte slice and @ptrCast it to []const Node without
-//!     copying. The build system aligns @embedFile data; we assert the
-//!     alignment at startup as a sanity check.
+//!   - All multi-byte integers are stored in the byte order of the machine
+//!     that reads the blob. A host builds for itself; the build-time
+//!     generator (`scripts/gen_trie.zig`) runs on the build host and
+//!     byte-swaps every u32 field when the target's endianness differs
+//!     (`dict.byteSwapBlob`). `endian_tag` catches a blob that crossed
+//!     over anyway.
+//!   - The Node struct is 16 bytes. Keep it 4-byte-aligned so the runtime
+//!     can take the byte slice and @ptrCast it to []const Node without
+//!     copying. The build system aligns @embedFile data, and a host's blob
+//!     must be 4-byte aligned.
 
 const std = @import("std");
 
-/// 24-byte fixed header at offset 0 of the blob.
-/// Pool offsets are computed at runtime from the counts here.
-///
-/// No magic/version fields: the blob is regenerated from source every build
-/// (`scripts/gen_trie.zig` → `trie.bin` → `@embedFile`), so generator and
-/// runtime are always in lockstep within this monorepo.
+/// Fixed header at offset 0 of the blob. Pool offsets are computed from
+/// the counts here.
 ///
 /// Nodes are numbered breadth-first from the root (index 0), each node's
 /// children in `keyRank` order. That makes the child pool implicit: the
@@ -39,35 +37,59 @@ const std = @import("std");
 /// `n - 1` over the nodes' `children_start` — which is what turns a value
 /// back into its code.
 pub const Header = extern struct {
+    magic: [4]u8,
+    format_version: u32,
+    /// `ENDIAN_TAG`, written natively: it reads back wrong on a blob from
+    /// the other endianness.
+    endian_tag: u32,
+
     node_count: u32,
     values_count: u32,
     /// Bytes in the strings pool, NULs included.
     strings_total: u32,
 
-    // Worst-case BFS state sizes — computed in `buildBlob`, consumed by
-    // `jd_init` to size the per-context buffer. `frontier_cap` is the max
-    // node count in any non-root subtree; `path_buf_cap` is the max sum of
+    // Worst-case BFS state sizes, consumed by `jd_init` to size the
+    // per-context buffer. `frontier_cap` is the max node count in any
+    // non-root subtree; `path_buf_cap` is the max sum of
     // (depth − start_depth) across nodes in any non-root subtree.
     frontier_cap: u32,
     path_buf_cap: u32,
 
-    // Longest value string in bytes (excluding the NUL terminator) —
-    // computed in `buildBlob`. It sets the upper bound a consumer can query
-    // via `jd_abi_layout(JD_ABI_MAX_COMMIT_LEN)` when it wants a fixed buffer
-    // big enough to join any commit the engine can produce.
+    /// Longest value string in bytes (excluding the NUL terminator).
     max_value_len: u32,
+
+    /// Identifies the dictionary's contents: a hash of every byte past the
+    /// header. A user dictionary records the fingerprint of the dictionary
+    /// it was built against.
+    fingerprint_lo: u32,
+    fingerprint_hi: u32,
+    /// The host's `source_tag`, never interpreted.
+    source_tag_lo: u32,
+    source_tag_hi: u32,
+
+    pub fn fingerprint(self: *const Header) u64 {
+        return (@as(u64, self.fingerprint_hi) << 32) | self.fingerprint_lo;
+    }
+
+    pub fn sourceTag(self: *const Header) u64 {
+        return (@as(u64, self.source_tag_hi) << 32) | self.source_tag_lo;
+    }
 };
 
-/// Number of u32 fields in `Header` — what a cross-endian build swaps.
-pub const HEADER_WORDS: usize = @sizeOf(Header) / @sizeOf(u32);
+pub const MAGIC: [4]u8 = "JDDT".*;
+/// Bumped whenever the layout changes; an older blob then checks as stale.
+pub const FORMAT_VERSION: u32 = 1;
+pub const ENDIAN_TAG: u32 = 0x0102_0304;
 
-/// 16-byte fixed-layout node. `_pad` is unused but keeps the struct
-/// 4-aligned so an array of Nodes is naturally aligned for u32 reads.
+/// Number of u32 fields in `Header` after `magic` — what a cross-endian
+/// build swaps.
+pub const HEADER_WORDS: usize = (@sizeOf(Header) - 4) / @sizeOf(u32);
+
+/// 16-byte fixed-layout node.
 pub const Node = extern struct {
-    // count occupies the low 24 bits, width the high 8 bits. We pack them
-    // because count fits comfortably in 24 bits even at full scale
-    // (140K << 16M) and packing saves 3 bytes/node of otherwise-wasted
-    // alignment padding.
+    // count occupies the low 24 bits, width the high 8 bits. A node's
+    // count is its subtree's values, so the root's — every value in the
+    // dictionary — caps a dictionary at 2^24 − 1 entries.
     count_and_width: u32,
 
     // Offset into values_pool where this node's values list starts.
@@ -79,11 +101,8 @@ pub const Node = extern struct {
     // `children_start + 1 ..= children_start + width`.
     children_start: u32,
 
-    // Number of values directly at this node (usually 0–3).
-    // Width is the number of children — packed into count_and_width above.
-    values_len: u8,
-
-    _pad: [3]u8,
+    // Number of values directly at this node.
+    values_len: u32,
 
     pub inline fn count(self: *const Node) u32 {
         return self.count_and_width & 0x00FF_FFFF;
@@ -112,20 +131,25 @@ pub const Value = extern struct {
     }
 };
 
+comptime {
+    std.debug.assert(@sizeOf(Header) % 4 == 0);
+    std.debug.assert(@alignOf(Header) == 4);
+    std.debug.assert(@sizeOf(Node) == 16);
+    std.debug.assert(@sizeOf(Value) == 8);
+}
+
 /// Every non-root node has exactly one incoming edge, so the child pool
 /// holds one key per node but the root.
 pub fn childKeysTotal(node_count: usize) usize {
     return node_count -| 1;
 }
 
-/// Compute total blob size for given pool counts. Generator uses this to
-/// size its output buffer; runtime uses it as a sanity check.
+/// Compute total blob size for given pool counts.
 pub fn blobSize(node_count: usize, values_count: usize, strings_total: usize) usize {
     return PoolOffsets.compute(node_count, values_count).strings + strings_total;
 }
 
-/// Pool offsets within the blob. Used by both the generator (to know
-/// where to write each pool) and the runtime (to know where to read).
+/// Pool offsets within the blob.
 ///
 ///   [Header][Node × node_count][Value × values_count]
 ///   [u32 × values_count: by_value][u8 × node_count − 1: child_keys, padded to 4]
@@ -134,6 +158,8 @@ pub fn blobSize(node_count: usize, values_count: usize, strings_total: usize) us
 /// `by_value` lists every value index once, sorted by the value's bytes
 /// and then by index — so the values equal to a string are one binary
 /// search away and come out in node order, i.e. shortest code first.
+/// The strings pool holds the values in value order, each followed by its
+/// NUL, back to back.
 pub const PoolOffsets = struct {
     nodes: usize,
     values: usize,

@@ -1,8 +1,9 @@
 //! Runtime-built user dictionary: blob format, builder, validator, lookups.
 //!
-//! The embedded trie is generated at build time and lives in rodata. A user
-//! dictionary is the host's: it builds a *blob* with `build` from
-//! `value<TAB>keys` lines (the same line format as `tables/*.txt`), caches
+//! A dictionary (`dict.zig`) — the embedded one, or one a host built — is a
+//! trie. A user dictionary sits on top of one: the host builds a *blob*
+//! with `build` from `value<TAB>keys` lines (the same line rules as every
+//! dictionary, `dict.parseLine`), caches
 //! the bytes wherever it likes, and hands them to `jd_init`, keeping that
 //! memory alive and unmoved until `jd_deinit`. Nothing in this file
 //! allocates — `build` works entirely inside the host's output buffer, and
@@ -13,7 +14,7 @@
 //!   [Header][Entry × entry_count][strings pool]
 //!
 //! Entries are sorted by key length, then by the keys themselves in
-//! `trie.keyRank` order (keys are stored as rank bytes 0..25, so a plain
+//! `trie.keyRank` order (keys are stored as rank bytes 0..26, so a plain
 //! byte comparison *is* keyRank order), then by position in the source
 //! text. That is exactly the order `pagination.NodePagination` enumerates a
 //! trie subtree in — shorter completions first, ties by key rank — so the
@@ -26,10 +27,10 @@
 //! `fromBytes` validates everything a corrupt or stale cache could get
 //! wrong — sizes, offsets, sort order, key alphabet, NUL terminators,
 //! UTF-8 — in one linear pass, so the engine never trusts host bytes.
-//! The header also records which built-in dictionary the blob was built
-//! against: `build` drops phrases that duplicate a built-in word, so a blob
-//! is only valid for the dictionary it was deduplicated against, and a
-//! fingerprint mismatch is reported as `stale` (rebuild from the phrases).
+//! The header also records which dictionary the blob was built against:
+//! `build` drops phrases that duplicate a word of that dictionary, so a
+//! blob is only valid on top of it, and a fingerprint mismatch is reported
+//! as `stale` (rebuild from the phrases).
 //! A host-defined 64-bit `source_tag` travels in the header too, so a host
 //! can tell whether a cached blob still matches the phrases it has — a
 //! file's modification time, a content hash, a database revision — without
@@ -39,6 +40,7 @@ const std = @import("std");
 const testing = std.testing;
 const trie_mod = @import("trie");
 const Trie = trie_mod.Trie;
+const dict = trie_mod.dict;
 
 /// Longest key sequence, shared with the trie (`Context.pressed_keys` is
 /// sized to it).
@@ -50,10 +52,9 @@ pub const MAX_KEYS_LEN: usize = trie_mod.MAX_KEYS_LEN;
 /// 12 MB and a build's buffer about 26 MB.
 pub const MAX_ENTRIES: u32 = 500_000;
 
-/// Longest phrase value in bytes, excluding the NUL. Mirrors
-/// `JD_USER_DICT_VALUE_MAX`. Independent of the built-in tables so the
-/// commit-length bound (`JD_ABI_MAX_COMMIT_LEN`) is stable across releases.
-pub const VALUE_MAX: u32 = 255;
+/// Longest phrase value in bytes, excluding the NUL: the same as any
+/// dictionary's. Mirrors `JD_USER_DICT_VALUE_MAX`.
+pub const VALUE_MAX: u32 = dict.VALUE_MAX;
 
 /// Hard cap on the input text handed to `build`. Mirrors
 /// `JD_USER_DICT_TEXT_MAX`. Room for `MAX_ENTRIES` phrases at over 30
@@ -63,126 +64,23 @@ pub const TEXT_MAX: usize = 16 * 1024 * 1024;
 
 /// Bumped whenever the blob layout changes; an older blob then validates
 /// as `stale` and the host rebuilds it from the phrases it persisted.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 const MAGIC: [4]u8 = "JDUD".*;
 /// Written natively; reads back wrong on a blob from the other endianness.
 const ENDIAN_TAG: u32 = 0x0102_0304;
-/// User keys are letters only, so every stored rank is below this; ';'
-/// (rank 26) is the built-in symbol codes' key — see `parseLine`.
-const LETTERS: u8 = 26;
 
 /// `Entry.code`'s packing: a code's length, then 5 bits per key.
 const RANK_BITS = 5;
 const LEN_BITS = 3;
 const CODE_BITS = LEN_BITS + RANK_BITS * MAX_KEYS_LEN;
 
-/// Mirrors the `JD_USER_DICT_*` status codes in `include/jd.h`. These are
-/// failures of a call as a whole; a line that does not parse is not one —
-/// `build` skips it and leaves a `Note` saying why.
-pub const Status = enum(u32) {
-    ok = 0,
-    /// `build`: the output buffer is smaller than `blobBound` requires.
-    buffer_too_small = 1,
-    /// `build`: more than `MAX_ENTRIES` phrases.
-    too_many_entries = 2,
-    /// `check`/`jd_init`: built by a different libjd (format version,
-    /// endianness, or built-in dictionary differ). Rebuild it.
-    stale = 3,
-    /// `check`/`jd_init`: structurally invalid. Rebuild it.
-    corrupt = 4,
-    /// `check`/`jd_init`/`build`: the blob pointer is not 4-byte aligned.
-    misaligned = 5,
-    /// `build`: the input text exceeds `TEXT_MAX`.
-    text_too_long = 6,
-};
-
-/// Mirrors `jd_user_dict_report` in `include/jd.h`.
-pub const Report = extern struct {
-    /// A `Status` value.
-    status: u32,
-    /// 1-based line of the input the status refers to; 0 when it refers
-    /// to the whole call.
-    line: u32,
-    /// Phrases that made it into the blob.
-    entries: u32,
-    /// Phrases dropped as exact duplicates — of an earlier line with the
-    /// same keys and value, or of a built-in word on the same code.
-    dropped: u32,
-    /// Kept phrases on a shared code (重码): a built-in word, another kept
-    /// phrase, or both already sit on it.
-    shared: u32,
-    /// Lines skipped because they do not parse: no TAB, bad keys, or a bad
-    /// value.
-    invalid: u32,
-    /// Notes `build` left past the blob — one per dropped, shared or
-    /// skipped line, so `dropped + shared + invalid` — ascending by line.
-    notes: u32,
-    /// Byte offset of the notes in the host's buffer, 4-byte aligned.
-    notes_offset: u32,
-
-    pub const empty: Report = .{
-        .status = 0,
-        .line = 0,
-        .entries = 0,
-        .dropped = 0,
-        .shared = 0,
-        .invalid = 0,
-        .notes = 0,
-        .notes_offset = 0,
-    };
-};
-
-/// Mirrors `jd_user_dict_note` in `include/jd.h`: one thing `build` has
-/// to say about an input line. A skipped line — it does not parse —
-/// carries exactly one of `malformed`, `bad_keys` and `bad_value`, and
-/// nothing else; a dropped line carries a `repeats_*` flag; a kept line
-/// whose code is already taken carries `code_in_*` flags.
-pub const Note = extern struct {
-    /// 1-based input line.
-    line: u32,
-    /// `NoteFlag` bits.
-    flags: u32,
-    /// A kept line this one relates to: for a repeat, the line it repeats
-    /// (0 for a built-in word); for a shared code, the first kept line on
-    /// that code — and for that first line, the second. 0 otherwise.
-    other: u32,
-    /// Built-in words on exactly this code; 0 on a skipped line.
-    builtin: u32,
-    /// Other kept lines on exactly this code; 0 on a dropped or skipped
-    /// line.
-    peers: u32,
-};
-
-/// Mirrors the `JD_USER_DICT_LINE_*` flags.
-pub const NoteFlag = struct {
-    /// Dropped: same keys and value as the kept line `other`.
-    pub const repeats_line: u32 = 0x1;
-    /// Dropped: same keys and value as a built-in word.
-    pub const repeats_builtin: u32 = 0x2;
-    /// Kept: a built-in word sits on exactly this code; the phrase is
-    /// listed ahead of it.
-    pub const code_in_builtin: u32 = 0x4;
-    /// Kept: the kept line `other` sits on this code too; file order
-    /// decides between them.
-    pub const code_in_line: u32 = 0x8;
-    /// Skipped: neither blank nor a comment, and no TAB.
-    pub const malformed: u32 = 0x10;
-    /// Skipped: keys empty, longer than `MAX_KEYS_LEN`, or not all a-z.
-    pub const bad_keys: u32 = 0x20;
-    /// Skipped: value empty, longer than `VALUE_MAX`, not UTF-8, or
-    /// containing control bytes.
-    pub const bad_value: u32 = 0x40;
-};
-
-/// Mirrors `jd_user_dict_info` in `include/jd.h`: what `check` can tell
-/// about a valid blob without the host re-parsing anything.
-pub const Info = extern struct {
-    /// The host-defined tag `build` was given.
-    source_tag: u64,
-    /// Phrases in the blob.
-    entries: u32,
-};
+// What a build reports — shared with dictionaries (see `dict.zig`).
+pub const Status = dict.Status;
+pub const Report = dict.Report;
+pub const Note = dict.Note;
+pub const NoteFlag = dict.NoteFlag;
+pub const Info = dict.Info;
 
 /// Fixed header at offset 0 of the blob. Every multi-byte field is in the
 /// building machine's native byte order; `endian_tag` catches a blob that
@@ -191,9 +89,10 @@ pub const Header = extern struct {
     magic: [4]u8,
     format_version: u32,
     endian_tag: u32,
-    /// `tables.blob_fingerprint` of the built-in trie this blob was
-    /// deduplicated against.
-    base_fingerprint: u32,
+    /// The fingerprint of the dictionary this blob was deduplicated
+    /// against, split so the header stays 4-byte aligned.
+    base_fingerprint_lo: u32,
+    base_fingerprint_hi: u32,
     entry_count: u32,
     /// Bytes in the strings pool, NULs included.
     strings_total: u32,
@@ -216,10 +115,10 @@ pub const Header = extern struct {
 /// While `build` runs — between its first pass and its last — the value
 /// fields describe the *source text* instead: `value_off` is the value's
 /// offset in the input, and the 1-based line number rides above the byte
-/// length — its low 24 bits in `value_len` (`line << 8 | len`), its high 8
-/// in `_pad` — which is what lets dropped phrases be reported by line
-/// without a second scan of the text. `VALUE_MAX` fits in 8 bits and the
-/// line in 32, so the packing is lossless; the last pass writes the final
+/// length — its low 22 bits in `value_len` (`line << 10 | len`), its high
+/// 8 in `_pad` — which is what lets dropped phrases be reported by line
+/// without a second scan of the text. `VALUE_MAX` fits in 10 bits and the
+/// line in 30, so the packing is lossless; the last pass writes the final
 /// fields and zeroes `_pad`.
 pub const Entry = extern struct {
     keys: [MAX_KEYS_LEN]u8,
@@ -236,11 +135,11 @@ pub const Entry = extern struct {
 
     // Build-time views of the packed `value_len` (see the struct docs).
     inline fn srcLen(self: Entry) u32 {
-        return self.value_len & 0xFF;
+        return self.value_len & LEN_MASK;
     }
 
     inline fn srcLine(self: Entry) u32 {
-        return (self.value_len >> 8) | (@as(u32, self._pad) << 24);
+        return (self.value_len >> LEN_BITS_PACKED) | (@as(u32, self._pad) << (32 - LEN_BITS_PACKED));
     }
 
     /// The value's bytes in the source text (build time only).
@@ -257,6 +156,10 @@ pub const Entry = extern struct {
     }
 };
 
+/// The build-time packing of a value's byte length below its line number.
+const LEN_BITS_PACKED = 10;
+const LEN_MASK: u32 = (1 << LEN_BITS_PACKED) - 1;
+
 comptime {
     // Entries follow the header directly, so the header must keep them
     // 4-aligned; the per-entry size is part of the on-disk format.
@@ -267,11 +170,12 @@ comptime {
     std.debug.assert(@sizeOf(Note) == 20);
     std.debug.assert(@alignOf(Note) == 4);
     std.debug.assert(MAX_KEYS_LEN <= 255);
-    // The build-time packing in `Entry.value_len` and `_pad`.
-    std.debug.assert(VALUE_MAX <= 0xFF);
-    std.debug.assert(TEXT_MAX + 1 <= std.math.maxInt(u32));
+    // The build-time packing in `Entry.value_len` and `_pad`: a line
+    // number has 30 bits, and the text has fewer lines than bytes.
+    std.debug.assert(VALUE_MAX <= LEN_MASK);
+    std.debug.assert(TEXT_MAX + 1 <= 1 << (32 - LEN_BITS_PACKED + 8));
     // `Entry.code` packs the keys and their length into a u64.
-    std.debug.assert(LETTERS <= 1 << RANK_BITS);
+    std.debug.assert(dict.KEY_RANKS <= 1 << RANK_BITS);
     std.debug.assert(MAX_KEYS_LEN < 1 << LEN_BITS);
     std.debug.assert(CODE_BITS <= 64);
 }
@@ -286,15 +190,8 @@ pub const Range = struct {
     }
 };
 
-pub const Error = error{ Misaligned, Corrupt, Stale };
-
-fn statusOf(err: Error) Status {
-    return switch (err) {
-        error.Misaligned => .misaligned,
-        error.Corrupt => .corrupt,
-        error.Stale => .stale,
-    };
-}
+pub const Error = dict.Error;
+const statusOf = dict.statusOf;
 
 /// Runtime view over a validated blob. Plain slices into the host's
 /// bytes — copy it freely, it owns nothing.
@@ -305,10 +202,10 @@ pub const UserDict = struct {
     max_value_len: u32,
     source_tag: u64,
 
-    /// Validate `bytes` as a blob built against the trie whose fingerprint
-    /// is `expected_fingerprint`, and view it. One linear pass; allocates
-    /// nothing. The returned view points into `bytes`.
-    pub fn fromBytes(bytes: []const u8, expected_fingerprint: u32) Error!UserDict {
+    /// Validate `bytes` as a blob built against the dictionary whose
+    /// fingerprint is `expected_fingerprint`, and view it. One linear pass;
+    /// allocates nothing. The returned view points into `bytes`.
+    pub fn fromBytes(bytes: []const u8, expected_fingerprint: u64) Error!UserDict {
         if (!std.mem.isAligned(@intFromPtr(bytes.ptr), 4)) return error.Misaligned;
         if (bytes.len < @sizeOf(Header)) return error.Corrupt;
         const aligned: []align(4) const u8 = @alignCast(bytes);
@@ -316,7 +213,8 @@ pub const UserDict = struct {
 
         if (!std.mem.eql(u8, &h.magic, &MAGIC)) return error.Corrupt;
         if (h.format_version != FORMAT_VERSION or h.endian_tag != ENDIAN_TAG) return error.Stale;
-        if (h.base_fingerprint != expected_fingerprint) return error.Stale;
+        const base: u64 = (@as(u64, h.base_fingerprint_hi) << 32) | h.base_fingerprint_lo;
+        if (base != expected_fingerprint) return error.Stale;
         if (h.entry_count > MAX_ENTRIES) return error.Corrupt;
 
         const n: usize = h.entry_count;
@@ -332,8 +230,8 @@ pub const UserDict = struct {
 
         const starts = h.length_starts;
         if (starts[0] != 0 or starts[MAX_KEYS_LEN] != h.entry_count) return error.Corrupt;
-        // Every entry sits in its length's bucket, holds letters only with
-        // zero padding, comes no earlier than the one before it in code
+        // Every entry sits in its length's bucket, holds a code by the code
+        // rules with zero padding, comes no earlier than the one before it in code
         // order — which, the length leading, orders the buckets too — and
         // owns the next value in the pool, NUL-terminated.
         var max_value_len: u32 = 0;
@@ -344,7 +242,7 @@ pub const UserDict = struct {
             const hi = starts[len];
             if (hi < lo) return error.Corrupt;
             for (entries[lo..hi]) |*e| {
-                if (e.keys_len != len or e._pad != 0 or !lettersOnly(e.keys, len)) return error.Corrupt;
+                if (e.keys_len != len or e._pad != 0 or !validRanks(e.keys, len)) return error.Corrupt;
                 const c = e.code();
                 if (c < prev_code) return error.Corrupt;
                 prev_code = c;
@@ -360,7 +258,7 @@ pub const UserDict = struct {
         // NULs are the terminators just seen, and around them it is clean
         // UTF-8 — a NUL is ASCII, so no sequence runs across one into the
         // next value.
-        if (!isCleanPool(strings, n)) return error.Corrupt;
+        if (!dict.isCleanPool(strings, n)) return error.Corrupt;
 
         return .{
             .entries = entries,
@@ -373,7 +271,7 @@ pub const UserDict = struct {
 
     /// `fromBytes` as a status code, for the C ABI, filling `info` when the
     /// blob is valid.
-    pub fn check(bytes: []const u8, expected_fingerprint: u32, info: ?*Info) Status {
+    pub fn check(bytes: []const u8, expected_fingerprint: u64, info: ?*Info) Status {
         const d = fromBytes(bytes, expected_fingerprint) catch |err| return statusOf(err);
         if (info) |out| out.* = .{ .source_tag = d.source_tag, .entries = d.count() };
         return .ok;
@@ -467,177 +365,31 @@ pub const UserDict = struct {
 };
 
 /// Rank-encode a key-byte prefix (a-z, ';') into `buf`. The caller
-/// guarantees the bytes are in the alphabet and fit. A prefix with ';'
-/// in it matches no entry: user keys are letters only.
+/// guarantees the bytes are in the alphabet and fit.
 pub fn ranksOf(keys: []const u8, buf: *[MAX_KEYS_LEN]u8) []const u8 {
     for (keys, 0..) |k, i| buf[i] = trie_mod.keyRank(k);
     return buf[0..keys.len];
 }
 
-/// Are a code's `len` key bytes all letters, with zero padding past them?
-/// All six bytes at once.
-fn lettersOnly(keys: [MAX_KEYS_LEN]u8, len: usize) bool {
+/// Is a code's `len` key ranks a code by the rules (`dict.isValidRanks`),
+/// with zero padding past them? All six bytes at once for the common case
+/// — letters only — and the ';' rule only for a code that holds one.
+fn validRanks(keys: [MAX_KEYS_LEN]u8, len: usize) bool {
     const Word = @Int(.unsigned, 8 * MAX_KEYS_LEN);
     const ones: Word = std.math.maxInt(Word) / 0xFF; // 0x01 in every byte
     const w = std.mem.readInt(Word, &keys, .little);
     const used: Word = @truncate((@as(u64, 1) << @intCast(8 * len)) - 1);
-    // A byte at or above LETTERS sets its high bit once (127 - (LETTERS -
-    // 1)) is added to it, or already has it set; no carry can clear one.
-    const high = ((w +% ones * (127 - (LETTERS - 1))) | w) & (ones * 0x80);
-    return w & ~used == 0 and high == 0;
+    // A byte at or above SEMICOLON_RANK sets its high bit once (127 -
+    // (SEMICOLON_RANK - 1)) is added to it, or already has it set; no
+    // carry can clear one.
+    const high = ((w +% ones * (127 - (dict.SEMICOLON_RANK - 1))) | w) & (ones * 0x80);
+    if (w & ~used != 0) return false;
+    if (high & used == 0) return true;
+    return dict.isValidRanks(keys[0..len]);
 }
 
-/// A blob's strings pool, which holds `terminators` values back to back,
-/// each followed by its NUL: exactly that many NULs, and between them
-/// `isCleanValue`'s rules — one pass over the whole pool, in vector
-/// registers where the target has them. Every load runs it over every
-/// value, so it is the load's hot loop.
-fn isCleanPool(pool: []const u8, terminators: usize) bool {
-    if (comptime std.simd.suggestVectorLength(u8) != null) return isCleanPoolVector(pool, terminators);
-    return isCleanPoolScalar(pool, terminators);
-}
-
-fn isCleanPoolScalar(pool: []const u8, terminators: usize) bool {
-    var nuls: usize = 0;
-    for (pool) |b| nuls += @intFromBool(b == 0);
-    return nuls == terminators and isClean(pool, true);
-}
-
-const POOL_LANES = 16;
-const PoolBytes = @Vector(POOL_LANES, u8);
-const PoolMask = @Vector(POOL_LANES, bool);
-
-/// A `@shuffle` mask that moves a block `k` bytes later, its first `k`
-/// lanes taken from the end of the block before: the byte `k` places back
-/// from each lane.
-fn backMask(comptime k: usize) [POOL_LANES]i32 {
-    var m: [POOL_LANES]i32 = undefined;
-    for (0..POOL_LANES) |j| m[j] = if (j >= k) @intCast(j - k) else ~@as(i32, @intCast(POOL_LANES - k + j));
-    return m;
-}
-
-/// `isCleanPoolScalar`'s rules as lane-wise comparisons: a byte is a
-/// continuation exactly when the lead byte one, two or three places back
-/// asks for one; the leads that can never start a sequence, and the
-/// second bytes that make one overlong, a surrogate or past U+10FFFF, are
-/// refused; so are the control bytes other than NUL, which are counted.
-fn isCleanPoolVector(pool: []const u8, terminators: usize) bool {
-    const splat = struct {
-        inline fn f(b: u8) PoolBytes {
-            return @splat(b);
-        }
-    }.f;
-    var bad: PoolMask = @splat(false);
-    var nuls: usize = 0;
-    var prev: PoolBytes = splat(0);
-    var i: usize = 0;
-    // One block past the end, all NUL, so a sequence the pool cuts short
-    // is caught; its NULs are not counted.
-    const blocks = pool.len / POOL_LANES + 1;
-    var tail: [POOL_LANES]u8 = @splat(0);
-    @memcpy(tail[0 .. pool.len % POOL_LANES], pool[pool.len - pool.len % POOL_LANES ..]);
-    var block: usize = 0;
-    while (block <= blocks) : (block += 1) {
-        const cur: PoolBytes = if (block < blocks - 1)
-            pool[i..][0..POOL_LANES].*
-        else if (block == blocks - 1)
-            tail
-        else
-            splat(0);
-        i += POOL_LANES;
-        const back1 = @shuffle(u8, cur, prev, backMask(1));
-        const back2 = @shuffle(u8, cur, prev, backMask(2));
-        const back3 = @shuffle(u8, cur, prev, backMask(3));
-
-        const is_cont = (cur & splat(0xC0)) == splat(0x80);
-        const wants_cont = (back1 >= splat(0xC0)) | (back2 >= splat(0xE0)) | (back3 >= splat(0xF0));
-        bad |= is_cont != wants_cont;
-        bad |= (cur == splat(0xC0)) | (cur == splat(0xC1)) | (cur >= splat(0xF5));
-        bad |= (back1 == splat(0xE0)) & (cur < splat(0xA0));
-        bad |= (back1 == splat(0xED)) & (cur > splat(0x9F));
-        bad |= (back1 == splat(0xF0)) & (cur < splat(0x90));
-        bad |= (back1 == splat(0xF4)) & (cur > splat(0x8F));
-        const nul = cur == splat(0);
-        bad |= ((cur < splat(0x20)) & !nul) | (cur == splat(0x7F));
-        if (block < blocks) nuls += @popCount(@as(@Int(.unsigned, POOL_LANES), @bitCast(nul)));
-        prev = cur;
-    }
-    // The tail block's padding is NUL too.
-    nuls -= POOL_LANES - pool.len % POOL_LANES;
-    return !@reduce(.Or, bad) and nuls == terminators;
-}
-
-/// One pass over `v`: well-formed UTF-8 (the Unicode byte-sequence table,
-/// so no overlong forms, no surrogates, nothing above U+10FFFF) with no C0
-/// control byte and no DEL. Values are checked on every build, so this is
-/// the build's hot loop; it stays a single pass.
-fn isCleanValue(v: []const u8) bool {
-    return isClean(v, false);
-}
-
-/// `isCleanValue`, letting NUL through when `nul_ok` — for a pool of
-/// values, whose NULs are counted separately.
-inline fn isClean(v: []const u8, comptime nul_ok: bool) bool {
-    var i: usize = 0;
-    while (i < v.len) {
-        const b = v[i];
-        if (b < 0x80) {
-            if ((b < 0x20 and !(nul_ok and b == 0)) or b == 0x7f) return false;
-            i += 1;
-            continue;
-        }
-        // Lead byte → sequence length and the range its second byte may
-        // take; every later continuation byte is 80..BF.
-        var len: usize = undefined;
-        var lo: u8 = 0x80;
-        var hi: u8 = 0xBF;
-        switch (b) {
-            0xC2...0xDF => len = 2,
-            0xE0 => {
-                len = 3;
-                lo = 0xA0;
-            },
-            0xE1...0xEC, 0xEE...0xEF => len = 3,
-            0xED => {
-                len = 3;
-                hi = 0x9F;
-            },
-            0xF0 => {
-                len = 4;
-                lo = 0x90;
-            },
-            0xF1...0xF3 => len = 4,
-            0xF4 => {
-                len = 4;
-                hi = 0x8F;
-            },
-            else => return false,
-        }
-        if (v.len - i < len) return false;
-        const b1 = v[i + 1];
-        if (b1 < lo or b1 > hi) return false;
-        var j: usize = 2;
-        while (j < len) : (j += 1) {
-            const c = v[i + j];
-            if (c < 0x80 or c > 0xBF) return false;
-        }
-        i += len;
-    }
-    return true;
-}
-
-// =========================================================================
-// Content hash
-// =========================================================================
-
-/// A 64-bit hash of `bytes` for a host's `source_tag`: Wyhash (final v4)
-/// with seed 0, several gigabytes a second, so a host can hash its whole
-/// phrases file at every launch to see whether a cached blob still matches
-/// it. Pinned by the test vectors below — the same bytes must hash the
-/// same in every release, or every host's cache would look stale.
-pub fn hash(bytes: []const u8) u64 {
-    return std.hash.Wyhash.hash(0, bytes);
-}
+/// The content hash every host uses for a `source_tag` (`dict.hash`).
+pub const hash = dict.hash;
 
 // =========================================================================
 // Builder
@@ -684,74 +436,15 @@ pub fn blobBound(phrases: []const u8) usize {
     return Layout.of(phrases).bound;
 }
 
-const Line = struct {
-    value: []const u8,
-    keys: []const u8,
-};
-
-const ParseError = error{ MalformedLine, BadKeys, BadValue };
-
-/// Parse one raw line. Null for blank and comment lines. The rules are the
-/// table files' (`scripts/gen_trie.zig`), tightened: empty keys and empty
-/// values are errors rather than silently skipped, and keys are letters
-/// only. In the built-in tables `;` appears only in the symbol codes,
-/// which all start with it; users do not define symbols, and a user code
-/// with `;` after a prefix would make that key descend there instead of
-/// committing the second candidate (`query.zig`, case B).
-fn parseLine(raw: []const u8) ParseError!?Line {
-    const trimmed = std.mem.trim(u8, raw, " \r");
-    if (trimmed.len == 0 or trimmed[0] == '#') return null;
-    const tab = std.mem.findScalar(u8, trimmed, '\t') orelse return error.MalformedLine;
-    const value = std.mem.trim(u8, trimmed[0..tab], " ");
-    const keys = std.mem.trim(u8, trimmed[tab + 1 ..], " ");
-    if (keys.len == 0 or keys.len > MAX_KEYS_LEN) return error.BadKeys;
-    for (keys) |k| if (k < 'a' or k > 'z') return error.BadKeys;
-    if (value.len == 0 or value.len > VALUE_MAX or !isCleanValue(value)) return error.BadValue;
-    return .{ .value = value, .keys = keys };
-}
-
-/// 9 bits, four passes over the 33-bit code: the counts take 2 KiB of the
-/// stack. A frame of over a page gets a stack probe on Windows, and zig's
-/// (`___chkstk_ms`) is a compiler-rt symbol that MSVC's linker, which links
-/// libjd into the Windows IME, does not have. 11 bits took three passes and
-/// 8 KiB, at the same speed.
-const RADIX_BITS = 9;
-const RADIX_PASSES = (CODE_BITS + RADIX_BITS - 1) / RADIX_BITS;
-comptime {
-    std.debug.assert(@sizeOf([1 << RADIX_BITS]u32) <= 2048);
+fn codeKey(e: Entry) u64 {
+    return e.code();
 }
 
 /// Sort `entries` by `Entry.code`, stably — entries on one code keep the
 /// order they came in — with `scratch` (as long as `entries`) as the other
-/// half of each pass. A least-significant-digit radix sort: a few linear
-/// passes, no comparisons, and the counts on the stack.
+/// half of each pass.
 fn sortByCode(entries: []Entry, scratch: []Entry) void {
-    std.debug.assert(scratch.len == entries.len);
-    var src = entries;
-    var dst = scratch;
-    var counts: [1 << RADIX_BITS]u32 = undefined;
-    inline for (0..RADIX_PASSES) |pass| {
-        const shift = pass * RADIX_BITS;
-        const mask = (1 << RADIX_BITS) - 1;
-        @memset(&counts, 0);
-        for (src) |e| counts[@intCast((e.code() >> shift) & mask)] += 1;
-        // A digit every entry shares orders nothing: skip the pass.
-        if (std.mem.findScalar(u32, &counts, @intCast(src.len)) == null) {
-            var sum: u32 = 0;
-            for (&counts) |*c| {
-                const here = c.*;
-                c.* = sum;
-                sum += here;
-            }
-            for (src) |e| {
-                const d: usize = @intCast((e.code() >> shift) & mask);
-                dst[counts[d]] = e;
-                counts[d] += 1;
-            }
-            std.mem.swap([]Entry, &src, &dst);
-        }
-    }
-    if (src.ptr != entries.ptr) @memcpy(entries, src);
+    dict.radixSort(Entry, entries, scratch, CODE_BITS, codeKey);
 }
 
 /// Value bytes, then source order (`value_off` is the source offset during
@@ -770,7 +463,7 @@ fn sourceOrder(_: void, a: Entry, b: Entry) bool {
     return a.value_off < b.value_off;
 }
 
-/// The built-in trie's nodes along the last code looked up, so the next
+/// The base dictionary's nodes along the last code looked up, so the next
 /// code — sorted, it usually shares a prefix with this one — walks only
 /// from where the two part.
 const BasePath = struct {
@@ -800,7 +493,7 @@ const BasePath = struct {
     }
 };
 
-/// Does the built-in node carry `value`?
+/// Does the base dictionary's node carry `value`?
 fn nodeHas(values: Trie.Values, value: []const u8) bool {
     for (0..values.len()) |i| {
         if (std.mem.eql(u8, values.at(i), value)) return true;
@@ -835,7 +528,7 @@ pub fn build(
     phrases: []const u8,
     out: []align(4) u8,
     base: *const Trie,
-    fingerprint: u32,
+    fingerprint: u64,
     source_tag: u64,
     report: *Report,
 ) usize {
@@ -868,7 +561,7 @@ pub fn build(
     var it = std.mem.splitScalar(u8, phrases, '\n');
     while (it.next()) |raw| {
         line_no += 1;
-        const line = (parseLine(raw) catch |err| {
+        const line = (dict.parseLine(raw) catch |err| {
             notes[note_count] = .{
                 .line = line_no,
                 .flags = switch (err) {
@@ -888,9 +581,9 @@ pub fn build(
         var e: Entry = .{
             .keys = @splat(0),
             .keys_len = @intCast(line.keys.len),
-            ._pad = @truncate(line_no >> 24),
+            ._pad = @truncate(line_no >> (32 - LEN_BITS_PACKED)),
             .value_off = @intCast(@intFromPtr(line.value.ptr) - @intFromPtr(phrases.ptr)),
-            .value_len = (line_no << 8) | @as(u32, @intCast(line.value.len)),
+            .value_len = (line_no << LEN_BITS_PACKED) | @as(u32, @intCast(line.value.len)),
         };
         for (line.keys, 0..) |k, j| e.keys[j] = trie_mod.keyRank(k);
         slots[n] = e;
@@ -1022,7 +715,8 @@ pub fn build(
         .magic = MAGIC,
         .format_version = FORMAT_VERSION,
         .endian_tag = ENDIAN_TAG,
-        .base_fingerprint = fingerprint,
+        .base_fingerprint_lo = @truncate(fingerprint),
+        .base_fingerprint_hi = @truncate(fingerprint >> 32),
         .entry_count = kept,
         .strings_total = @intCast(pos - pool_start),
         .total_len = @intCast(pos),
@@ -1057,7 +751,7 @@ pub const Blob = struct {
         return self.buf[0..self.len];
     }
 
-    pub fn dict(self: *const Blob, fingerprint: u32) Error!UserDict {
+    pub fn dict(self: *const Blob, fingerprint: u64) Error!UserDict {
         return UserDict.fromBytes(self.bytes(), fingerprint);
     }
 
@@ -1083,7 +777,7 @@ pub fn buildAlloc(
     allocator: std.mem.Allocator,
     phrases: []const u8,
     base: *const Trie,
-    fingerprint: u32,
+    fingerprint: u64,
     err_report: ?*Report,
 ) !Blob {
     const buf = try allocator.alignedAlloc(u8, .@"4", blobBound(phrases));
@@ -1336,7 +1030,8 @@ test "lines that do not parse are skipped and noted" {
         .{ .text = "乙\tabcdefg\n", .flag = NoteFlag.bad_keys, .line = 1, .entries = 0 },
         .{ .text = "甲\ta\n\n\n\tb\n", .flag = NoteFlag.bad_value, .line = 4, .entries = 1 },
         .{ .text = "a\tb\tc\n", .flag = NoteFlag.bad_keys, .line = 1, .entries = 0 },
-        .{ .text = "甲\ta\n冒号\t;;\n", .flag = NoteFlag.bad_keys, .line = 2, .entries = 1 },
+        .{ .text = "甲\ta\n冒号\tb;\n", .flag = NoteFlag.bad_keys, .line = 2, .entries = 1 },
+        .{ .text = "：\t;;\n分号\t;a;\n", .flag = NoteFlag.bad_keys, .line = 2, .entries = 1 },
         .{ .text = "分号\ta;\n", .flag = NoteFlag.bad_keys, .line = 1, .entries = 0 },
         .{ .text = "\xff\xfe\ta\n", .flag = NoteFlag.bad_value, .line = 1, .entries = 0 },
         .{ .text = "x\x01y\ta\n", .flag = NoteFlag.bad_value, .line = 1, .entries = 0 },
@@ -1414,41 +1109,6 @@ test "skipped lines are noted alongside dropped and shared ones" {
     try testing.expectEqualStrings("泥", valueOf(&d, 1));
 }
 
-test "isCleanValue agrees with std's UTF-8 validation plus the control-byte rule" {
-    // Fixed edge cases: overlong forms, surrogates, the U+10FFFF ceiling,
-    // truncated sequences, stray continuation bytes.
-    const good = [_][]const u8{ "", "a", "你好", "\u{7F}"[0..0], "\xC2\x80", "\xDF\xBF", "\xE0\xA0\x80", "\xED\x9F\xBF", "\xEE\x80\x80", "\xEF\xBF\xBF", "\xF0\x90\x80\x80", "\xF3\xBF\xBF\xBF", "\xF4\x8F\xBF\xBF", "mixed 混合 \xF0\x9F\x98\x80 ok" };
-    for (good) |g| try testing.expect(isCleanValue(g));
-    const bad = [_][]const u8{ "\x00", "\x1f", "\x7f", "a\nb", "\t", "\xC0\x80", "\xC1\xBF", "\xE0\x9F\xBF", "\xED\xA0\x80", "\xF0\x8F\xBF\xBF", "\xF4\x90\x80\x80", "\xF5\x80\x80\x80", "\x80", "\xBF", "\xC2", "\xE4\xBD", "\xF0\x90\x80", "\xE4\x41\xA0", "\xFF" };
-    for (bad) |b| try testing.expect(!isCleanValue(b));
-
-    // Random byte strings, biased toward the interesting ranges, against
-    // the reference: std's validator plus a separate control-byte scan.
-    var prng = std.Random.DefaultPrng.init(0x5EED);
-    const r = prng.random();
-    var buf: [12]u8 = undefined;
-    for (0..20_000) |_| {
-        const len = r.uintLessThan(usize, buf.len + 1);
-        for (buf[0..len]) |*b| {
-            b.* = switch (r.uintLessThan(u8, 6)) {
-                0 => r.int(u8),
-                1 => r.uintLessThan(u8, 0x20),
-                2 => 0x20 + r.uintLessThan(u8, 0x60),
-                3 => 0x80 + r.uintLessThan(u8, 0x40),
-                4 => 0xC0 + r.uintLessThan(u8, 0x20),
-                else => 0xE0 + r.uintLessThan(u8, 0x20),
-            };
-        }
-        const s = buf[0..len];
-        var no_control = true;
-        for (s) |b| if (b < 0x20 or b == 0x7f) {
-            no_control = false;
-        };
-        const want = no_control and std.unicode.utf8ValidateSlice(s);
-        try testing.expectEqual(want, isCleanValue(s));
-    }
-}
-
 test "build enforces the entry cap and the buffer size" {
     var base = try emptyBase(testing.allocator);
     defer base.deinit(testing.allocator);
@@ -1503,6 +1163,7 @@ test "fromBytes rejects stale, misaligned and corrupt blobs" {
     var blob = try buildAlloc(testing.allocator, "甲\ta\n乙\tab\n丙\tb\n", &base.trie, FP, null);
     defer blob.deinit(testing.allocator);
     const good = blob.bytes();
+    // Entries: "a", "b", "ab".
 
     try testing.expectEqual(Status.ok, UserDict.check(good, FP, null));
     // Wrong built-in dictionary.
@@ -1517,7 +1178,7 @@ test "fromBytes rejects stale, misaligned and corrupt blobs" {
     try testing.expectEqual(Status.ok, UserDict.check(blob.buf, FP, null));
 
     const mutate = struct {
-        fn run(src: []align(4) const u8, offset: usize, byte: u8, fp: u32) !Status {
+        fn run(src: []align(4) const u8, offset: usize, byte: u8, fp: u64) !Status {
             const copy = try testing.allocator.alignedAlloc(u8, .@"4", src.len);
             defer testing.allocator.free(copy);
             @memcpy(copy, src);
@@ -1536,9 +1197,11 @@ test "fromBytes rejects stale, misaligned and corrupt blobs" {
     try testing.expectEqual(Status.corrupt, try mutate(good, entries_off + 6, 2, FP));
     // A rank outside the alphabet.
     try testing.expectEqual(Status.corrupt, try mutate(good, entries_off + 0, 27, FP));
-    // ';' (rank 26), which no user key holds. Entry 1 ("b") is the last
-    // of its length, so it stays sorted and only the alphabet check fails.
-    try testing.expectEqual(Status.corrupt, try mutate(good, entries_off + @sizeOf(Entry), 26, FP));
+    // ';' (rank 26) after a letter: entry 2 ("ab") becomes "a;", still
+    // the last of its length, so only the code rule fails.
+    try testing.expectEqual(Status.corrupt, try mutate(good, entries_off + 2 * @sizeOf(Entry) + 1, 26, FP));
+    // ';' before any letter is a code like any other: entry 1 ("b") as ";".
+    try testing.expectEqual(Status.ok, try mutate(good, entries_off + @sizeOf(Entry), 26, FP));
     // Non-zero key padding.
     try testing.expectEqual(Status.corrupt, try mutate(good, entries_off + 1, 1, FP));
     // Unsorted: entries 0 and 1 are "a" and "b" (both length 1); turn
@@ -1644,7 +1307,7 @@ const Reference = struct {
         var line: u32 = 0;
         while (it.next()) |raw| {
             line += 1;
-            const l = (parseLine(raw) catch |err| {
+            const l = (dict.parseLine(raw) catch |err| {
                 try self.notes.append(allocator, .{
                     .line = line,
                     .flags = switch (err) {
@@ -1819,68 +1482,4 @@ test "the text cap, and line numbers up to it" {
     try testing.expectError(error.BuildFailed, buildAlloc(testing.allocator, over, &base.trie, FP, &report));
     try testing.expectEqual(@backingInt(Status.text_too_long), report.status);
     try testing.expectEqual(@as(u32, 0), report.line);
-}
-
-test "the vector pool check agrees with the scalar one" {
-    // Random pools, biased toward the bytes that matter — NULs, controls,
-    // lead and continuation bytes — at every length across a few blocks,
-    // so sequences straddle block edges and the tail.
-    var prng = std.Random.DefaultPrng.init(0xB10C);
-    const r = prng.random();
-    var buf: [5 * POOL_LANES + 7]u8 = undefined;
-    var agreed_clean: usize = 0;
-    for (0..200_000) |round| {
-        const len = r.uintLessThan(usize, buf.len + 1);
-        for (buf[0..len]) |*b| {
-            b.* = switch (r.uintLessThan(u8, 12)) {
-                0 => r.int(u8),
-                1 => 0,
-                2 => r.uintLessThan(u8, 0x20),
-                3, 4 => 0x20 + r.uintLessThan(u8, 0x60),
-                5, 6 => 0x80 + r.uintLessThan(u8, 0x40),
-                7 => 0xC0 + r.uintLessThan(u8, 0x20),
-                8 => 0xE0 + r.uintLessThan(u8, 0x10),
-                9 => 0xF0 + r.uintLessThan(u8, 0x10),
-                else => "a\x00"[r.uintLessThan(usize, 2)],
-            };
-        }
-        // Splice in whole sequences at random spots, half the time.
-        if (round % 2 == 0 and len >= 4) {
-            const at = r.uintLessThan(usize, len - 3);
-            @memcpy(buf[at..][0..3], "你");
-        }
-        const pool = buf[0..len];
-        var nuls: usize = 0;
-        for (pool) |b| nuls += @intFromBool(b == 0);
-        const want = isCleanPoolScalar(pool, nuls);
-        try testing.expectEqual(want, isCleanPoolVector(pool, nuls));
-        if (want) agreed_clean += 1;
-        // A wrong terminator count is refused either way.
-        try testing.expect(!isCleanPoolVector(pool, nuls + 1));
-    }
-    try testing.expect(agreed_clean > 1000);
-
-    // Clean text of every length, cut and uncut.
-    const text = "键道\x00a\x00\xF0\x9F\x98\x80\x00©x\x00中文输入法\x00";
-    for (0..text.len + 1) |cut| {
-        const pool = text[0..cut];
-        var nuls: usize = 0;
-        for (pool) |b| nuls += @intFromBool(b == 0);
-        try testing.expectEqual(isCleanPoolScalar(pool, nuls), isCleanPoolVector(pool, nuls));
-    }
-}
-
-test "hash: pinned values, and a different value for any change" {
-    // Pinned: a host's cached blobs are tagged with these, so a change in
-    // the function (a Zig upgrade swapping its Wyhash) must not go unseen.
-    try testing.expectEqual(@as(u64, 0x0409638EE2BDE459), hash(""));
-    try testing.expectEqual(@as(u64, 0xB5F6C3766F38E694), hash("键道\tjd\n"));
-    var long: [1000]u8 = undefined;
-    for (&long, 0..) |*b, i| b.* = @truncate(i *% 31);
-    try testing.expectEqual(@as(u64, 0xA1C52CEC77FCE62F), hash(&long));
-
-    var copy = long;
-    copy[999] ^= 1;
-    try testing.expect(hash(&copy) != hash(&long));
-    try testing.expect(hash(long[0..999]) != hash(&long));
 }

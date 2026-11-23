@@ -18,7 +18,7 @@ pub const test_entries = [_]trie.Entry{
     .{ .keys = "acd", .value = "丁2" },
     .{ .keys = "acd", .value = "丁3" },
     .{ .keys = "ace", .value = "丁4" },
-    .{ .keys = "ac;", .value = "FooBar" },
+    .{ .keys = "acz", .value = "FooBar" },
     .{ .keys = "ae", .value = "Foo" },
     .{ .keys = "af", .value = "Bar" },
 };

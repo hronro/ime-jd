@@ -560,7 +560,7 @@ const expected_a = [_]ExpectedOption{
     .{ .value = "丁2", .hint = "cd" },
     .{ .value = "丁3", .hint = "cd" },
     .{ .value = "丁4", .hint = "ce" },
-    .{ .value = "FooBar", .hint = "c;" },
+    .{ .value = "FooBar", .hint = "cz" },
 };
 
 test "totalOptions counts the whole subtree" {
@@ -859,7 +859,7 @@ const expected_a_merged = [_]ExpectedOption{
     .{ .value = "丁2", .hint = "cd" },
     .{ .value = "丁3", .hint = "cd" },
     .{ .value = "丁4", .hint = "ce" },
-    .{ .value = "FooBar", .hint = "c;" },
+    .{ .value = "FooBar", .hint = "cz" },
 };
 
 fn mergedPager(harness: *TestHarness, th: *const trie_mod.TrieHandle, dict: UserDict, prefix: []const u8) TriePagination {
@@ -957,7 +957,7 @@ test "TriePagination over a prefix only the user dictionary knows" {
         .{ .value = "丁2", .hint = "d" },
         .{ .value = "丁3", .hint = "d" },
         .{ .value = "丁4", .hint = "e" },
-        .{ .value = "FooBar", .hint = ";" },
+        .{ .value = "FooBar", .hint = "z" },
     }, out8[0..8]);
 }
 
