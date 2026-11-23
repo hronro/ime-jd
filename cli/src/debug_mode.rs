@@ -4,51 +4,43 @@ use std::time::Instant;
 
 use crossterm::{event, terminal};
 
-use crate::user_dict;
+use crate::dicts::Dicts;
 
 /// How many candidates the debug REPL prints per keystroke.
 const WINDOW: u32 = 4;
 
-/// `user_dict` is the path of a `value<TAB>keys` text file whose phrases are
-/// merged into every candidate list. The REPL is the one place the engine's
-/// notes — skipped lines, dropped lines, and phrases on shared codes — are
-/// listed. A dictionary that cannot be loaded ends the run with exit status 2.
-pub fn debug_mode<W>(w: &mut W, user_dict: Option<&str>) -> Result<ExitCode>
+/// `dicts` are `--dict` and `--user-dict`, loaded. The REPL is the one place
+/// the engine's notes on them — skipped lines, dropped lines, and phrases on
+/// shared codes — are listed.
+pub fn debug_mode<W>(w: &mut W, dicts: &Dicts) -> Result<ExitCode>
 where
     W: Write,
 {
-    // Loaded before raw mode, so its lines print as ordinary text.
-    let loaded = match user_dict {
-        Some(path) => match user_dict::load(path) {
-            Ok(loaded) => Some(loaded),
-            Err(message) => {
-                eprintln!("jd-cli: user dict: {message}");
-                return Ok(ExitCode::from(2));
-            }
-        },
-        None => None,
-    };
-    if let Some(loaded) = &loaded {
-        writeln!(w, "User dict: {}", loaded.summary())?;
-        for (note, text) in &loaded.notes {
+    // Printed before raw mode, so the lines come out as ordinary text.
+    if let Some(dict) = &dicts.dict {
+        writeln!(w, "Dict: {}", dict.summary())?;
+        for (note, text) in &dict.notes {
+            writeln!(w, "  {note}: {text}")?;
+        }
+    }
+    if let Some(user) = &dicts.user {
+        writeln!(w, "User dict: {}", user.summary())?;
+        for (note, text) in &user.notes {
             writeln!(w, "  {note}: {text}")?;
         }
     }
 
     terminal::enable_raw_mode()?;
-    // jd_init validates the user dictionary blob in one linear pass, so
-    // this timing includes it when one is loaded.
+    // jd_init validates each blob it is given in one linear pass, so this
+    // timing includes that.
     let init_start = Instant::now();
-    let mut jd = match &loaded {
-        Some(loaded) => jd::JdContext::with_user_dict(loaded.dict),
-        None => jd::JdContext::new(),
-    }
-    .expect("failed to initialize the jd engine");
+    let mut jd = dicts.context().expect("failed to initialize the jd engine");
     let init_elapsed = init_start.elapsed();
-    let dict_note = if loaded.is_some() {
-        " (with user dict)"
-    } else {
-        ""
+    let dict_note = match (&dicts.dict, &dicts.user) {
+        (Some(_), Some(_)) => " (with dict and user dict)",
+        (Some(_), None) => " (with dict)",
+        (None, Some(_)) => " (with user dict)",
+        (None, None) => "",
     };
     write!(w, "Initialized in {:?}{}\n\r", init_elapsed, dict_note)?;
     w.flush()?;

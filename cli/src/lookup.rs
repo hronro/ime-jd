@@ -4,36 +4,21 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use crate::user_dict;
-
 /// The exit status when no dictionary holds the candidate — 1, as grep
-/// reports no match; 2 stays the status of a usage or user-dict error.
+/// reports no match; 2 stays the status of a usage or dictionary error.
 const NOT_FOUND: u8 = 1;
 
-/// Look `candidate` up in the built-in dictionary, merged with the phrases of
-/// the `user_dict` text file when given, and write the report to `w`. A
-/// dictionary that cannot be loaded ends the run with exit status 2.
+/// Look `candidate` up in what `jd` types from — the built-in dictionary or
+/// `--dict`, and `--user-dict` when given — and write the report to `w`.
 pub fn run<W>(
     w: &mut W,
+    jd: &jd::JdContext,
     candidate: &str,
-    user_dict: Option<&str>,
     no_newline: bool,
 ) -> io::Result<ExitCode>
 where
     W: Write,
 {
-    let jd = match user_dict {
-        Some(path) => match user_dict::load(path) {
-            Ok(loaded) => jd::JdContext::with_user_dict(loaded.dict),
-            Err(message) => {
-                eprintln!("jd-cli: user dict: {message}");
-                return Ok(ExitCode::from(2));
-            }
-        },
-        None => jd::JdContext::new(),
-    }
-    .expect("failed to initialize the jd engine");
-
     let codes = jd.lookup_codes(candidate);
     let report = render(candidate, &codes);
     if no_newline {
@@ -118,19 +103,34 @@ mod tests {
     }
 
     #[test]
+    fn a_dictionary_of_ones_own_replaces_the_built_in_one() {
+        let (dict, _) = jd::Dict::build("甲\ta\n乙\ta\n乙\tbb\n", 0).unwrap();
+        let dict = dict.leak();
+        let ctx = jd::JdContext::with_dict(dict, None).unwrap();
+        assert_eq!(report(&ctx, "乙"), "a\tcandidate 2\nbb");
+        assert_eq!(report(&ctx, "的"), "的: not found");
+
+        let (user, _) = jd::UserDict::build_on(dict, "丙\ta\n", 0).unwrap();
+        let ctx = jd::JdContext::with_dict(dict, Some(user.leak())).unwrap();
+        assert_eq!(report(&ctx, "甲"), "a\tcandidate 2");
+        assert_eq!(report(&ctx, "丙"), "a\tuser dict");
+    }
+
+    #[test]
     fn run_writes_the_report_and_exits_by_whether_it_was_found() {
+        let jd = jd::JdContext::new().unwrap();
         let mut out = Vec::new();
-        let status = run(&mut out, "的", None, false).unwrap();
+        let status = run(&mut out, &jd, "的", false).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "d\ndeuiua\ndkuiua\n");
         assert_eq!(status, ExitCode::SUCCESS);
 
         let mut out = Vec::new();
-        let status = run(&mut out, "键道", None, true).unwrap();
+        let status = run(&mut out, &jd, "键道", true).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "jmdzi");
         assert_eq!(status, ExitCode::SUCCESS);
 
         let mut out = Vec::new();
-        let status = run(&mut out, "不在词库里的词", None, false).unwrap();
+        let status = run(&mut out, &jd, "不在词库里的词", false).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "不在词库里的词: not found\n"

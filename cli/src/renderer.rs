@@ -7,8 +7,6 @@ use crossterm::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::user_dict;
-
 /// The layout is like below:
 /// ```
 /// +--------------------------+
@@ -49,10 +47,10 @@ pub struct Renderer {
     jd: jd::JdContext,
 }
 impl Renderer {
-    /// `user_dict` is the path of a `value<TAB>keys` text file whose phrases
-    /// are merged into every candidate list. Fails with a message when it
-    /// cannot be loaded.
-    pub fn new(size: (u16, u16), user_dict: Option<&str>) -> std::result::Result<Self, String> {
+    /// `jd` types from the built-in dictionary or `--dict`, and `--user-dict`
+    /// when given. Nothing is printed about them in normal mode; the debug
+    /// REPL is where their summaries and notes show up.
+    pub fn new(size: (u16, u16), jd: jd::JdContext) -> Self {
         let (width, height) = size;
         // Floor at one option row: the engine rejects a page size of 0, and
         // terminals of height ≤ 8 would otherwise compute 0 (≤ 6 would
@@ -60,19 +58,7 @@ impl Renderer {
         let option_rows = (height.saturating_sub(3) / 2).saturating_sub(2).clamp(1, 4);
         let output_rows = height.saturating_sub(4 + option_rows + 1);
 
-        // Loaded here, where the context is created. Nothing is printed about
-        // it in normal mode; the debug REPL is where the summary and the
-        // dropped lines show up.
-        let jd = match user_dict {
-            Some(path) => {
-                let loaded = user_dict::load(path).map_err(|e| format!("user dict: {e}"))?;
-                jd::JdContext::with_user_dict(loaded.dict)
-            }
-            None => jd::JdContext::new(),
-        }
-        .expect("failed to initialize the jd engine");
-
-        Ok(Self {
+        Self {
             width,
             height,
             output_rows,
@@ -90,7 +76,7 @@ impl Renderer {
             current_options: Vec::new(),
             page_start: 0,
             jd,
-        })
+        }
     }
 
     /// Store the latest options and draw them. Used by every key handler so
