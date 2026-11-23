@@ -12,6 +12,7 @@ const KEYS = {
   fontSize: "jd.fontSize",
   codeHints: "jd.codeHints",
   userDict: "jd.userDict.enabled",
+  userDictOnly: "jd.userDict.only",
 } as const;
 
 export const FONT_SIZES = [16, 18, 20, 22, 24, 28] as const;
@@ -32,8 +33,10 @@ const [fontSize, setFontSizeSignal] = createSignal(readFontSize());
 const [codeHints, setCodeHintsSignal] = createSignal(readLocal(KEYS.codeHints) === "1");
 // Off by default, as in every client.
 const [userDictEnabled, setUserDictSignal] = createSignal(readLocal(KEYS.userDict) === "1");
+// 忽略内置词库: off by default, and heeded only while the user dictionary is on.
+const [userDictOnly, setUserDictOnlySignal] = createSignal(readLocal(KEYS.userDictOnly) === "1");
 
-export { codeHints, fontSize, theme, userDictEnabled };
+export { codeHints, fontSize, theme, userDictEnabled, userDictOnly };
 
 export function applyTheme(value: Theme): void {
   const meta = document.querySelector<HTMLMetaElement>('meta[name="color-scheme"]');
@@ -64,6 +67,11 @@ export function setCodeHints(value: boolean): void {
 export function setUserDictEnabled(value: boolean): void {
   writeLocal(KEYS.userDict, value ? "1" : null);
   setUserDictSignal(value);
+}
+
+export function setUserDictOnly(value: boolean): void {
+  writeLocal(KEYS.userDictOnly, value ? "1" : null);
+  setUserDictOnlySignal(value);
 }
 
 /** Another tab changed a setting: follow it. */

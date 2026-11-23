@@ -32,15 +32,31 @@ function shown(query: string): string {
   return chars.length > 20 ? chars.slice(0, 20).join("") + "…" : query;
 }
 
-export function lookupReport(query: string, codes: readonly Code[], userDictEnabled: boolean): LookupReport {
+/** Which dictionaries a lookup searched — what the IME types from. */
+export type LookupScope = "builtIn" | "builtInAndUser" | "userOnly";
+
+const NOT_FOUND: Record<LookupScope, string> = {
+  builtIn: "内置词库中没有这个词。用户自造词未启用，不在查询范围内。",
+  builtInAndUser: "内置词库和用户自造词中都没有这个词。",
+  userOnly: "用户自造词中没有这个词。内置词库已忽略，不在查询范围内。",
+};
+
+/**
+ * `scope` says which dictionaries were looked in — or, as a string of its
+ * own, why there was nothing to look in: the phrases alone were to be
+ * searched, and cannot be had.
+ */
+export function lookupReport(
+  query: string,
+  codes: readonly Code[],
+  scope: LookupScope | { unavailable: string },
+): LookupReport {
   const word = shown(query);
   if (codes.length === 0) {
     return {
       title: `没有找到「${word}」`,
       lines: [],
-      message: userDictEnabled
-        ? "内置词库和用户自造词中都没有这个词。"
-        : "内置词库中没有这个词。用户自造词未启用，不在查询范围内。",
+      message: typeof scope === "string" ? NOT_FOUND[scope] : scope.unavailable,
     };
   }
   return {

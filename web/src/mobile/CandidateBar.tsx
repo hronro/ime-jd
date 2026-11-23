@@ -95,7 +95,8 @@ export default function CandidateBar() {
               >
                 {ime.mode() === "zh" ? "中" : "英"}
               </button>
-              <Show when={codeHints() && hint()}>
+              <Show when={ime.notice()}>{(why) => <span class="imebar-tip imebar-notice">{why()}</span>}</Show>
+              <Show when={!ime.notice() && codeHints() && hint()}>
                 {(h) => (
                   <span class="imebar-tip">
                     {h().value} → <b>{h().code}</b>

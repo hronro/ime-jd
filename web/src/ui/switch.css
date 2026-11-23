@@ -29,3 +29,8 @@
     translate: 18px 0;
   }
 }
+
+.switch:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

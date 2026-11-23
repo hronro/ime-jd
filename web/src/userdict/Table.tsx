@@ -5,6 +5,7 @@
 
 import { createEffect, createMemo, createSignal, flush, For, Show, untrack } from "solid-js";
 import { IME_FIELD_ATTRS } from "../ime/target";
+import { userDictOnly } from "../storage/settings";
 import type { Model, Row } from "./model";
 import { type Problem, problemText } from "./problem";
 import { createVirtualList, type Window } from "./virtual";
@@ -174,7 +175,8 @@ export function Table(props: { model: Model; editRequest: number | null; onEditH
                 when={model.filter() === ""}
                 fallback={<>没有符合「{model.filter()}」的词条</>}
               >
-                还没有词条。点「添加」新建一条，或切换到「文本」成批粘贴，也可以从文本文件导入。与内置词同码时，自造词排在内置词之前。
+                还没有词条。点「添加」新建一条，或切换到「文本」成批粘贴，也可以从文本文件导入。
+                {userDictOnly() ? "忽略内置词库时，只打这里的词。" : "与内置词同码时，自造词排在内置词之前。"}
               </Show>
             </p>
           }

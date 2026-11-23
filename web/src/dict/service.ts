@@ -1,12 +1,17 @@
 // The user dictionary as the page uses it: the phrases text (source of
 // truth), libjd's verdict on it (the build report), and the live engine that
-// merges it in while 启用用户自造词 is on. Every client's rules apply:
+// merges it in while 启用用户自造词 is on — or, with 忽略内置词库, types
+// from it alone, on the empty dictionary. Every client's rules apply:
 //  - libjd is the only judge of a line; nothing here validates;
 //  - a failed rebuild keeps the last good dictionary in use;
-//  - the blob cache is tagged with libjd's hash of the text.
+//  - the blob cache is tagged with libjd's hash of the text, and is for the
+//    dictionary it was built on (a cache for the other one reads as stale);
+//  - with only the phrases to type from and none to be had, the IME says so
+//    and lets keys through as typed; never the built-in dictionary instead.
 
 import { type Accessor, createSignal, type Setter } from "solid-js";
 import {
+  type Dict,
   type Engine,
   type JdModule,
   type UserDict,
@@ -15,7 +20,8 @@ import {
   type UserDictReport,
 } from "jd";
 import { ime } from "../ime/controller";
-import { setUserDictEnabled, userDictEnabled } from "../storage/settings";
+import { setUserDictEnabled, setUserDictOnly, userDictEnabled, userDictOnly } from "../storage/settings";
+import { showToast } from "../ui/toast";
 import {
   cacheBlob,
   type DictSource,
@@ -70,6 +76,8 @@ class DictService {
 
   #jd: JdModule | null = null;
   #live: Live | null = null;
+  /** The empty dictionary the phrases sit on with 忽略内置词库, built once. */
+  #empty: Dict | null = null;
   #channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("jd") : null;
   #fileStamp = "";
 
@@ -87,6 +95,43 @@ class DictService {
     return this.#jd;
   }
 
+  /** Whether the phrases are all there is to type from right now. */
+  get typesUserDictOnly(): boolean {
+    return userDictEnabled() && userDictOnly();
+  }
+
+  /**
+   * The dictionary the phrases are built on: the empty one, or the built-in
+   * one (null). The switches are passed in where one has just been set: a
+   * Solid signal reads its old value until the batch is flushed.
+   */
+  #base(userOnly = userDictOnly()): Dict | null {
+    if (!userOnly) return null;
+    this.#empty ??= this.jd.emptyDict();
+    return this.#empty;
+  }
+
+  /**
+   * An engine on `dict`, by the switches. With only the phrases to type from
+   * and none to be had, an engine on the empty dictionary — nothing to type
+   * from — and the IME told why, so keys pass as typed.
+   */
+  #engineFor(dict: UserDict | null, enabled = userDictEnabled(), userOnly = userDictOnly()): Engine {
+    if (!(enabled && userOnly)) {
+      ime.setNotice(null);
+      return this.jd.createEngine({ userDict: dict });
+    }
+    const empty = this.#base(true)!;
+    if (dict) {
+      ime.setNotice(null);
+      return this.jd.createEngine({ dict: empty, userDict: dict });
+    }
+    const why = `用户自造词未能加载：${this.error() ?? "没有词条"}`;
+    if (ime.notice() !== why) showToast(`${why}。忽略内置词库时，暂时直接输入字母。`, { tone: "error" });
+    ime.setNotice(why);
+    return this.jd.createEngine({ dict: empty });
+  }
+
   /** The first engine, from what storage holds — a cached blob when it matches. */
   async boot(jd: JdModule): Promise<Engine> {
     this.#jd = jd;
@@ -94,7 +139,7 @@ class DictService {
     this.#adoptStored(stored);
     if (stored.source.kind === "file" && stored.text !== null) this.#fileStamp = await this.#stamp(stored.source.handle);
     const dict = userDictEnabled() ? this.#dictAtBoot(stored) : null;
-    const engine = jd.createEngine({ userDict: dict });
+    const engine = this.#engineFor(dict);
     this.#live = { engine, dict };
 
     this.#channel?.addEventListener("message", (e) => {
@@ -123,7 +168,7 @@ class DictService {
       // dictionary built from it, until the user grants access again.
       if (!cached) return null;
       try {
-        return jd.loadUserDict(cached.bytes);
+        return jd.loadUserDict(cached.bytes, { dict: this.#base() });
       } catch {
         return null;
       }
@@ -132,9 +177,9 @@ class DictService {
     const tag = jd.hashUserDictText(bytes);
     if (cached && cached.tag === tag.toString()) {
       try {
-        return jd.loadUserDict(cached.bytes);
+        return jd.loadUserDict(cached.bytes, { dict: this.#base() });
       } catch {
-        // stale (another libjd) or corrupt: rebuild below
+        // stale (another libjd, or the other base) or corrupt: rebuild below
       }
     }
     return this.#build(text, { bytes, tag })?.dict ?? null;
@@ -144,11 +189,15 @@ class DictService {
    * Build `text`; on success record the report and cache the blob. Encoded
    * once, for both the hash and the build: 500 000 phrases are 8 MB of UTF-8.
    */
-  #build(text: string, encoded?: { bytes: Uint8Array; tag: bigint }): { dict: UserDict; report: UserDictReport } | null {
+  #build(
+    text: string,
+    encoded?: { bytes: Uint8Array; tag: bigint },
+    userOnly = userDictOnly(),
+  ): { dict: UserDict; report: UserDictReport } | null {
     try {
       const bytes = encoded?.bytes ?? encoder.encode(text);
       const tag = encoded?.tag ?? this.jd.hashUserDictText(bytes);
-      const built = this.jd.buildUserDict(bytes, { sourceTag: tag });
+      const built = this.jd.buildUserDict(bytes, { sourceTag: tag, dict: this.#base(userOnly) });
       this.#setReport(built.report);
       this.#setError(null);
       void cacheBlob(tag, built.dict.bytes()).catch(() => {});
@@ -198,11 +247,19 @@ class DictService {
   setEnabled(on: boolean): void {
     setUserDictEnabled(on);
     if (!on) {
-      this.#swap(null);
+      this.#swap(null, false);
       return;
     }
     const built = this.#build(this.text());
-    this.#swap(built?.dict ?? null);
+    this.#swap(built?.dict ?? null, true);
+  }
+
+  /** 忽略内置词库: rebuild the phrases on the other base, and adopt them. */
+  setUserOnly(on: boolean): void {
+    setUserDictOnly(on);
+    const built = this.#build(this.text(), undefined, on);
+    if (userDictEnabled()) this.#swap(built?.dict ?? null, true, on);
+    else built?.dict.dispose();
   }
 
   /** Re-read storage: another tab saved, or the linked file changed on disk. */
@@ -234,10 +291,10 @@ class DictService {
     return true;
   }
 
-  #swap(dict: UserDict | null): void {
+  #swap(dict: UserDict | null, enabled = userDictEnabled(), userOnly = userDictOnly()): void {
     const old = this.#live;
     if (!old) return;
-    const engine = this.jd.createEngine({ userDict: dict });
+    const engine = this.#engineFor(dict, enabled, userOnly);
     this.#live = { engine, dict };
     ime.swapEngine(engine, () => {
       old.engine.dispose();

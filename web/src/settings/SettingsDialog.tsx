@@ -11,6 +11,7 @@ import {
   type Theme,
   theme,
   userDictEnabled,
+  userDictOnly,
 } from "../storage/settings";
 import { Dialog } from "../ui/Dialog";
 import { ChevronRight } from "../ui/icons";
@@ -93,7 +94,7 @@ export default function SettingsDialog(props: { open: boolean; onClose: () => vo
               <span class="set-title">用户自造词</span>
               <span class="set-note">
                 <Show when={userDictEnabled()} fallback="未启用">
-                  已启用
+                  {userDictOnly() ? "已启用，忽略内置词库" : "已启用"}
                   <Show when={dict.report()}>{(r) => `，${r().entries} 条生效`}</Show>
                 </Show>
               </span>

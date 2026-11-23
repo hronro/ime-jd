@@ -5,7 +5,7 @@ import { createEffect, createSignal, For, Show } from "solid-js";
 import { lookupSeed } from "../app/dialogs";
 import { ime } from "../ime/controller";
 import { IME_FIELD_ATTRS } from "../ime/target";
-import { userDictEnabled } from "../storage/settings";
+import { userDictEnabled, userDictOnly } from "../storage/settings";
 import { Dialog } from "../ui/Dialog";
 import { SearchIcon } from "../ui/icons";
 import { type LookupReport, lookupQuery, lookupReport } from "./report";
@@ -21,7 +21,9 @@ export default function LookupDialog(props: { open: boolean; onClose: () => void
     const query = lookupQuery(input.value);
     const engine = ime.session?.engine;
     if (query === "" || !engine) return;
-    setReport(lookupReport(query, engine.lookupCodes(query), userDictEnabled()));
+    const notice = ime.notice();
+    const scope = !userDictEnabled() ? "builtIn" : userDictOnly() ? "userOnly" : "builtInAndUser";
+    setReport(lookupReport(query, engine.lookupCodes(query), notice !== null ? { unavailable: notice } : scope));
     // Leave the word selected for the next query, as macOS does.
     input.select();
   };

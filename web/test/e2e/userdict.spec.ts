@@ -24,7 +24,7 @@ async function addPhrase(page: Page, word: string, keys: string) {
 test("a phrase added in the table is typed at once; libjd's verdicts show", async ({ page }) => {
   await ready(page);
   await openManager(page);
-  await page.locator(".ud-enable").click();
+  await page.getByRole("switch", { name: "启用用户自造词" }).click();
   await addPhrase(page, "n ", "zzzzzz");
   await expect(page.locator(".ud-row")).toHaveCount(1);
   await expect(page.locator(".ud-cell-keys").first()).toHaveText("zzzzzz");
@@ -42,6 +42,37 @@ test("a phrase added in the table is typed at once; libjd's verdicts show", asyn
   await editor(page).click();
   await page.keyboard.type("zzzzzz ");
   await expect(editor(page)).toHaveValue("你");
+});
+
+test("with only the user's phrases the built-in dictionary is gone, and none at all lets keys through", async ({
+  page,
+}) => {
+  await ready(page);
+  await openManager(page);
+  const userOnly = page.getByRole("switch", { name: "忽略内置词库" });
+  await expect(userOnly).toBeDisabled();
+  await page.getByRole("switch", { name: "启用用户自造词" }).click();
+  await expect(userOnly).toBeEnabled();
+  await userOnly.click();
+  await expect(page.locator(".ud-status")).toContainText("已忽略内置词库，但尚无词条");
+
+  // No phrases at all: keys reach the page as typed.
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".ud")).toBeHidden();
+  await editor(page).click();
+  await page.keyboard.type("nk");
+  await expect(editor(page)).toHaveValue("nk");
+
+  // A phrase: it is all there is to type from.
+  await editor(page).fill("");
+  await openManager(page);
+  await addPhrase(page, "nk", "b");
+  await expect(page.locator(".ud-row")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".ud")).toBeHidden();
+  await editor(page).click();
+  await page.keyboard.type("b ");
+  await expect(editor(page)).toHaveValue("nk");
 });
 
 test("the text view edits the same file, with libjd's notes as lint marks", async ({ page }) => {

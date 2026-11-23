@@ -3,6 +3,7 @@
 // Only the cards on screen are in the DOM (virtual.ts), as in the table.
 
 import { createEffect, createMemo, For, Show } from "solid-js";
+import { userDictOnly } from "../storage/settings";
 import type { Model, Row } from "./model";
 import { type Problem, problemText } from "./problem";
 import { toneOf } from "./Table";
@@ -41,7 +42,8 @@ export function Cards(props: { model: Model; onOpen: (row: Row) => void }) {
         fallback={
           <p class="ud-empty">
             <Show when={model.filter() === ""} fallback={<>没有符合「{model.filter()}」的词条</>}>
-              尚无词条。轻点「添加」新建一条：一个词和它的编码。与内置词同码时，自造词排在内置词之前。
+              尚无词条。轻点「添加」新建一条：一个词和它的编码。
+              {userDictOnly() ? "忽略内置词库时，只打这里的词。" : "与内置词同码时，自造词排在内置词之前。"}
             </Show>
           </p>
         }

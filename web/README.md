@@ -53,6 +53,7 @@ npm run preview     # serves dist/ on http://localhost:4173
 It works the same as in every other client:
 - The phrases are a text file in libjd's table format (`词<TAB>编码` per line). It is the single source of truth, and libjd is the only judge of a line.
 - The feature is off by default (**启用用户自造词**).
+- **忽略内置词库**, beside it, works only while it is on: the phrases are built on libjd's empty dictionary (`emptyDict()`) and are all the page types from. With none to be had, the bar and a toast say why and keys reach the page as typed; it never falls back to the built-in dictionary.
 - Every change is saved at once, and an import appends a file's rows exactly as they are.
 
 Storage:

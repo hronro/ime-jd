@@ -9,7 +9,7 @@ import { createEffect, createMemo, createSignal, lazy, Loading, Match, onSettled
 import { buildErrorMessage, dict, userDictLimits } from "../dict/service";
 import { IME_FIELD_ATTRS } from "../ime/target";
 import { unlinkFile, linkFile, writeBrowserText, readFileText, writeFileText } from "../storage/userdict";
-import { userDictEnabled } from "../storage/settings";
+import { userDictEnabled, userDictOnly } from "../storage/settings";
 import { ask, ConfirmHost } from "../ui/Confirm";
 import { Dialog } from "../ui/Dialog";
 import { ExportIcon, ImportIcon, LinkIcon, MinusIcon, PlusIcon, SearchIcon, TableIcon, TextIcon, WarnIcon } from "../ui/icons";
@@ -63,6 +63,7 @@ export default function UserDictDialog(props: { open: boolean; onClose: () => vo
     if (c.duplicate > 0) parts.push(`${c.duplicate} 条重复`);
     if (c.shared > 0) parts.push(`${c.shared} 条同码`);
     if (!userDictEnabled()) parts.push("已停用");
+    else if (userDictOnly()) parts.push(c.total === 0 ? "已忽略内置词库，但尚无词条：只能输入字母和标点" : "已忽略内置词库");
     return parts.join("，");
   });
 
@@ -311,6 +312,15 @@ export default function UserDictDialog(props: { open: boolean; onClose: () => vo
           <label class="ud-enable">
             <Switch label="启用用户自造词" checked={userDictEnabled()} onChange={(on) => dict.setEnabled(on)} />
             <span>启用用户自造词</span>
+          </label>
+          <label class="ud-enable" title="只用这里的词条打字">
+            <Switch
+              label="忽略内置词库"
+              checked={userDictOnly()}
+              disabled={!userDictEnabled()}
+              onChange={(on) => dict.setUserOnly(on)}
+            />
+            <span>忽略内置词库</span>
           </label>
           <Show when={view() === "table"}>
             <div class="ud-search">

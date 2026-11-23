@@ -15,9 +15,9 @@ const verdicts = (entries: { value: string; keys: string }[]) => {
 
 describe("row verdicts", () => {
   test("invalid rows say why, in the shared wording", () => {
-    expect(verdicts([{ value: "缺编码", keys: "" }])[0]).toBe("编码无效（1 到 6 个 a-z），不生效");
-    expect(verdicts([{ value: "词", keys: "toolongx" }])[0]).toBe("编码无效（1 到 6 个 a-z），不生效");
-    expect(verdicts([{ value: "", keys: "zz" }])[0]).toBe("词无效（不能为空或含控制字符，最长 255 字节），不生效");
+    expect(verdicts([{ value: "缺编码", keys: "" }])[0]).toBe("编码无效（1 到 6 个 a-z，开头可以有 ;），不生效");
+    expect(verdicts([{ value: "词", keys: "toolongx" }])[0]).toBe("编码无效（1 到 6 个 a-z，开头可以有 ;），不生效");
+    expect(verdicts([{ value: "", keys: "zz" }])[0]).toBe("词无效（不能为空或含控制字符，最长 1023 字节），不生效");
   });
 
   test("a line with no TAB is malformed", () => {

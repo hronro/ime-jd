@@ -25,7 +25,7 @@ export function problemText(problem: Problem, unit: "条" | "行" = "条"): stri
   switch (problem.kind) {
     case "invalid":
       if (problem.flags & UserDictNoteFlags.MALFORMED) return "缺少制表符（无编码），不生效";
-      if (problem.flags & UserDictNoteFlags.BAD_KEYS) return `编码无效（1 到 ${MAX_KEY_LENGTH} 个 a-z），不生效`;
+      if (problem.flags & UserDictNoteFlags.BAD_KEYS) return `编码无效（1 到 ${MAX_KEY_LENGTH} 个 a-z，开头可以有 ;），不生效`;
       return `词无效（不能为空或含控制字符，最长 ${MAX_VALUE_BYTES} 字节），不生效`;
     case "duplicate":
       return problem.ofRow === null ? "与内置词重复，不生效" : `与第 ${problem.ofRow + 1} ${unit}重复，不生效`;

@@ -22,12 +22,12 @@ export interface ParsedRow extends Entry {
 
 /** libjd's caps (core/include/jd.h). */
 export const MAX_KEY_LENGTH = 6;
-export const MAX_VALUE_BYTES = 255;
+export const MAX_VALUE_BYTES = 1023;
 
 export const FILE_NAME = "用户自造词.txt";
 
 /** The first line of every file a client writes. */
-export const HEADER = `# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，1 到 ${MAX_KEY_LENGTH} 个字符。`;
+export const HEADER = `# 键道用户自造词：每行一条，格式为「词<TAB>编码」，编码由 a-z 组成，开头可以有分号（;），1 到 ${MAX_KEY_LENGTH} 个字符。`;
 
 /** libjd trims a line of spaces and CRs, and nothing else (not TAB, not U+3000). */
 const isLineTrim = (c: number) => c === 0x20 || c === 0x0d;

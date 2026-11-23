@@ -45,6 +45,11 @@ export class ImeController {
   readonly host;
   readonly surface;
   readonly caret;
+  /**
+   * Why there is no dictionary to type from — 忽略内置词库, with none to
+   * be had — or null. While it is set every key is the page's, as typed.
+   */
+  readonly notice;
 
   #setView;
   #setMode;
@@ -52,6 +57,7 @@ export class ImeController {
   #setHost;
   #setSurface;
   #setCaret;
+  #setNotice;
 
   #session: InputSession | null = null;
   #current: ImeTarget | null = null;
@@ -77,6 +83,12 @@ export class ImeController {
     [this.host, this.#setHost] = createSignal<HTMLDialogElement | null>(null);
     [this.surface, this.#setSurface] = createSignal<Surface>(this.#hardware || !coarse() ? "popup" : "bar");
     [this.caret, this.#setCaret] = createSignal<CaretRect | null>(null);
+    [this.notice, this.#setNotice] = createSignal<string | null>(null);
+  }
+
+  /** See `notice`. Set before the engine it goes with is swapped in. */
+  setNotice(text: string | null): void {
+    this.#setNotice(text);
   }
 
   get session(): InputSession | null {
@@ -255,7 +267,7 @@ export class ImeController {
       }
     }
 
-    if (this.mode() === "en" || (!session.composing && target.imeOff?.())) return;
+    if (this.mode() === "en" || (!session.composing && (target.imeOff?.() || this.notice() !== null))) return;
     if (this.#perform(keyAction(e, session.composing, { touch: onScreen }))) {
       e.preventDefault();
       e.stopPropagation();
@@ -309,7 +321,7 @@ export class ImeController {
     // Another input method's own composition, or a key the hardware path
     // already looked at and let through.
     if (e.isComposing || this.#realKey || this.#ownEdit > 0) return;
-    if (this.mode() === "en" || (!session.composing && target.imeOff?.())) return;
+    if (this.mode() === "en" || (!session.composing && (target.imeOff?.() || this.notice() !== null))) return;
 
     switch (e.inputType) {
       case "insertText": {
