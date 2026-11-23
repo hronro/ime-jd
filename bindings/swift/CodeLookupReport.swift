@@ -42,20 +42,32 @@ struct CodeLookupReport: Equatable {
         input.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n"))
     }
 
+    /// Which dictionaries a lookup searched — what the keyboard types from.
+    enum Scope: Equatable {
+        /// The built-in dictionary alone: the user's phrases are off.
+        case builtIn
+        /// The built-in dictionary and the user's phrases.
+        case builtInAndUser
+        /// The user's phrases alone: the built-in dictionary is off.
+        case userOnly
+    }
+
     /// `codes` are libjd's, in its order. On a code where the word is the
     /// first candidate the code stands alone; any other says which
     /// candidate the word is there. Nothing says which key commits it: that
-    /// is the engine's business, and it has changed before.
-    /// `userDictEnabled` says whether the user's phrases were looked up too,
-    /// which only changes the wording when nothing was found.
-    init(query: String, codes: [Code], userDictEnabled: Bool) {
+    /// is the engine's business, and it has changed before. `scope` says
+    /// which dictionaries were looked up, which only changes the wording
+    /// when nothing was found.
+    init(query: String, codes: [Code], scope: Scope) {
         let word = Self.shown(query)
         guard !codes.isEmpty else {
             title = "没有找到「\(word)」"
             lines = []
-            message = userDictEnabled
-                ? "内置词库和用户自造词中都没有这个词。"
-                : "内置词库中没有这个词。用户自造词未启用，不在查询范围内。"
+            switch scope {
+            case .builtIn: message = "内置词库中没有这个词。用户自造词未启用，不在查询范围内。"
+            case .builtInAndUser: message = "内置词库和用户自造词中都没有这个词。"
+            case .userOnly: message = "用户自造词中没有这个词。内置词库已忽略，不在查询范围内。"
+            }
             return
         }
         title = "「\(word)」的编码"
@@ -66,6 +78,14 @@ struct CodeLookupReport: Equatable {
             return Line(keys: code.keys, note: notes.isEmpty ? nil : notes.joined(separator: "，"))
         }
         message = nil
+    }
+
+    /// Nothing could be looked up: the user's phrases alone were to be
+    /// searched, and they cannot be had, for the reason `why` gives.
+    init(query: String, unavailable why: String) {
+        title = "没有找到「\(Self.shown(query))」"
+        lines = []
+        message = why
     }
 
     /// The query as a title quotes it: a long paste is cut short.

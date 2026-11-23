@@ -75,6 +75,17 @@ A line that does not parse never fails the build: the engine skips it, counts it
 
 Where memory is tight — an iOS keyboard extension — read the cache without reading it: `UserDict(mapping: MappedFile.open(url))` maps the file read-only and the engine reads it where it lies, so the blob costs no dirty memory at all, and `UserDict.build(utf8:)` builds from mapped text without copying it into a `String`. A mapped file must be replaced atomically, never rewritten in place.
 
+### Without the built-in dictionary
+
+An engine types from libjd's embedded dictionary unless it is given a `Dict`. The frontends use one to turn the embedded dictionary off: `Dict.empty` has no codes at all, so an engine on it types from the user dictionary alone. Build and check that user dictionary on the same dictionary, with `on:`:
+
+```swift
+let (phrases, report) = try UserDict.build(text, on: .empty, sourceTag: UserDict.hash(text))
+let engine = try Engine(dict: .empty, userDict: phrases)   // throws Engine.InitError
+```
+
+Nothing is then dropped as a repeat of an embedded word, and every code is the user's. A user dictionary built on one dictionary is `.stale` on any other — `UserDict(mapping:on:)`, `UserDict(blob:on:)` and `UserDict.check(_:on:)` take the dictionary to check against — so a frontend keeps a cache per mode, or rebuilds when the user switches. `Dict.build` builds a dictionary of any other text, and `Dict(mapping:)` maps a cached one in place.
+
 ### Reverse lookup
 
 `lookupCodes` goes the other way — the codes a value is typed with, from the built-in tables and the engine's user dictionary, and where the value sits on each:

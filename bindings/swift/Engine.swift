@@ -5,33 +5,82 @@
 import Foundation
 import Libjd
 
+/// What a frontend types from, by the user's two switches — 启用用户自造词
+/// and, while it is on, 忽略内置词库. Shared by the macOS and iOS frontends.
+enum UserDictSelection {
+    /// The built-in dictionary, merged with the user's phrases when they are
+    /// on and load.
+    case builtIn(UserDict?)
+    /// The user's phrases alone, on the empty dictionary (`Dict.empty`).
+    case userOnly(UserDict)
+    /// The user's phrases alone were asked for and cannot be had, for the
+    /// reason given: the frontend says so and keys type themselves. Never
+    /// the built-in dictionary instead.
+    case unavailable(String)
+}
+
 final class Engine {
     private let ctx: OpaquePointer
     /// `jd_state_ptr` is fixed for the context's lifetime, so it's read once.
     private let statePtr: UnsafePointer<jd_state>
-    /// The user dictionary this context reads in place, if any. Retained for
-    /// the context's whole lifetime: the engine never copies the blob, and
-    /// every candidate `value` read from a user phrase points into it.
+    /// The dictionary this context types from in place of the embedded one,
+    /// if any, and the user dictionary it reads, if any. Retained for the
+    /// context's whole lifetime: the engine never copies a blob, and every
+    /// candidate `value` read from one points into it.
+    let dict: Dict?
     let userDict: UserDict?
+
+    /// Why a context could not be created.
+    enum InitError: Error, Equatable {
+        /// No dictionary was given, and this libjd has none of its own
+        /// (libjd-engine).
+        case noBuiltinDict
+        /// The user dictionary was built on another dictionary than the one
+        /// the context types from.
+        case staleUserDict
+        case outOfMemory
+    }
 
     /// `userDict` is merged into every candidate list — same ordering as the
     /// built-in words, a user phrase first on a code it shares with one — or
     /// nil for the built-in dictionary alone. A context's dictionary is fixed
     /// for its lifetime; to switch, create a new `Engine` (and drop the
     /// candidates read from the old one first — see `Candidate`).
-    init(userDict: UserDict? = nil) {
-        Engine.checkABI()
-        self.userDict = userDict
-        let raw: OpaquePointer?
-        if let dict = userDict {
-            raw = jd_init(dict.bytes.baseAddress, dict.bytes.count)
-        } else {
-            raw = jd_init(nil, 0)
+    ///
+    /// The user dictionary must have been built on the embedded dictionary
+    /// (`UserDict.build` with no `on:`), as every one is that a frontend
+    /// loads with no `on:`: anything else is a programming error.
+    convenience init(userDict: UserDict? = nil) {
+        do {
+            try self.init(on: nil, userDict: userDict)
+        } catch {
+            fatalError("jd_init failed: \(error)")
         }
-        // A UserDict is validated when it is created, so NULL here is an
-        // allocation failure, not a rejected blob.
+    }
+
+    /// A context typing from `dict` instead of the embedded dictionary —
+    /// `Dict.empty` to type from `userDict` alone — merged with `userDict`,
+    /// which must have been built on this same `dict`.
+    convenience init(dict: Dict, userDict: UserDict?) throws {
+        try self.init(on: dict, userDict: userDict)
+    }
+
+    private init(on dict: Dict?, userDict: UserDict?) throws {
+        Engine.checkABI()
+        self.dict = dict
+        self.userDict = userDict
+        let base = dict?.bytes
+        let user = userDict?.bytes
+        let raw = jd_init(base?.baseAddress, base?.count ?? 0, user?.baseAddress, user?.count ?? 0)
         guard let raw else {
-            fatalError("jd_init failed (allocation failure)")
+            // Both blobs passed their checks when they were wrapped, so the
+            // failure is one of these — worked out only now, to spare a
+            // start that succeeds a second pass over them.
+            if dict == nil && Dict.builtinEntries == 0 { throw InitError.noBuiltinDict }
+            if let user, jd_user_dict_check(base?.baseAddress, base?.count ?? 0, user.baseAddress, user.count, nil) != 0 {
+                throw InitError.staleUserDict
+            }
+            throw InitError.outOfMemory
         }
         guard let sp = jd_state_ptr(raw) else {
             fatalError("jd_state_ptr returned NULL")
@@ -42,6 +91,17 @@ final class Engine {
 
     deinit {
         jd_deinit(ctx)
+    }
+
+    /// An engine on what the user chose to type from; nil when that cannot
+    /// be had — `.unavailable`, or a user-only dictionary the engine refuses,
+    /// which a frontend shows the same way: keys type themselves.
+    static func make(_ selection: UserDictSelection) -> Engine? {
+        switch selection {
+        case .builtIn(let userDict): return Engine(userDict: userDict)
+        case .userOnly(let userDict): return try? Engine(dict: .empty, userDict: userDict)
+        case .unavailable: return nil
+        }
     }
 
     // MARK: - Mutating operations
@@ -178,6 +238,11 @@ final class Engine {
         precondition(
             Int(jd_abi_layout(UInt32(JD_ABI_USER_DICT_TEXT_MAX))) == UserDict.maxTextBytes,
             "libjd user dictionary text cap mismatch — core/include/jd.h is out of sync with the library"
+        )
+        precondition(
+            Int(jd_abi_layout(UInt32(JD_ABI_DICT_MAX_ENTRIES))) == Dict.maxEntries
+                && Int(jd_abi_layout(UInt32(JD_ABI_DICT_VALUE_MAX))) == Dict.maxValueBytes,
+            "libjd dictionary caps mismatch — core/include/jd.h is out of sync with the library"
         )
     }()
 
