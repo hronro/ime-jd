@@ -172,6 +172,38 @@ TEST(theTarballIsPickedByItsExactName) {
              "none");
 }
 
+// The feed as cf-worker/latest.sh writes it, jq's layout: the fields the clients
+// read and no others, the downloads the Worker's.
+TEST(theFeedTheWorkerServesIsRead) {
+    const char *feed = R"({
+  "tag_name": "v0.13.0",
+  "html_url": "https://github.com/hronro/ime-jd/releases/tag/v0.13.0",
+  "assets": [
+    {
+      "name": "jd-ime-v0.13.0-linux-arm64.tar.xz",
+      "size": 1380744,
+      "digest": "sha256:bce534f7e8d87692d7dbe2797bd2fd6eb541d9afd55e22e2bbf8cb64f9ef2d43",
+      "browser_download_url": "https://ime-jd-repo.hronro.com/releases/download/v0.13.0/jd-ime-v0.13.0-linux-arm64.tar.xz"
+    },
+    {
+      "name": "jd-ime-v0.13.0-linux-x86_64.tar.xz",
+      "size": 1380424,
+      "digest": "sha256:2714b65705bbeb47505c96180644da80daf58105b8416b2c63125bf1e94ae569",
+      "browser_download_url": "https://ime-jd-repo.hronro.com/releases/download/v0.13.0/jd-ime-v0.13.0-linux-x86_64.tar.xz"
+    }
+  ]
+})";
+    CHECK_EQ(show(extractTag(feed)), "v0.13.0");
+    const auto tarball = extractAsset(feed, "jd-ime-v0.13.0-linux-x86_64.tar.xz");
+    CHECK(tarball.has_value());
+    if (tarball) {
+        CHECK_EQ(tarball->url,
+                 "https://ime-jd-repo.hronro.com/releases/download/v0.13.0/jd-ime-v0.13.0-linux-x86_64.tar.xz");
+        CHECK_EQ(tarball->size, 1380424u);
+        CHECK_EQ(show(tarball->sha256), "2714b65705bbeb47505c96180644da80daf58105b8416b2c63125bf1e94ae569");
+    }
+}
+
 TEST(releaseTagsAreSafeInFileNames) {
     CHECK(isReleaseTag("v0.9.2"));
     CHECK(isReleaseTag("v1.0.0-rc1"));

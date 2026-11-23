@@ -3,8 +3,11 @@
 // -Dupdate_check=true, which only the tarball is: distro packages are updated
 // by their package managers.
 //
-// The release feed is GitHub's `releases/latest`, read by the rules every
-// self-updating client shares (UpdateFeed.swift, feed.rs, ReleaseFeed.kt):
+// The release feed is the latest release as ime-jd-repo.hronro.com serves it
+// (cf-worker/worker.js), in the shape of GitHub's `releases/latest`, its
+// downloads that host's too, so that users who cannot reach GitHub get
+// updates; without it there, the host sends the request on to GitHub's own.
+// It is read by the rules every self-updating client shares (UpdateFeed.swift, feed.rs, ReleaseFeed.kt):
 // compare the release's MAJOR.MINOR.PATCH with the running build, and pick
 // the asset release.yml names for this platform — here the tarball,
 // `jd-ime-<tag>-linux-<arch>.tar.xz`.
@@ -27,8 +30,9 @@
 
 namespace imejd::update {
 
-/// `releases/latest`: drafts and pre-releases excluded by the endpoint.
-inline constexpr const char *kFeedUrl = "https://api.github.com/repos/hronro/ime-jd/releases/latest";
+/// The latest release, which the release workflow publishes once all of its
+/// installers are built (cf-worker/latest.sh); never a pre-release.
+inline constexpr const char *kFeedUrl = "https://ime-jd-repo.hronro.com/releases/latest.json";
 /// Minimum gap between two automatic checks, in seconds.
 inline constexpr int64_t kCheckInterval = 24 * 60 * 60;
 /// The switch, in settings.ini: on until the user turns it off, as on

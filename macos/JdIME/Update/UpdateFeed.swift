@@ -2,9 +2,12 @@
 // is unit-testable (JdIMETests/UpdateFeedTests.swift). UpdateManager does the
 // fetching and the presenting.
 //
-// The feed is GitHub's `releases/latest` endpoint for this repository. Every
-// platform frontend that updates itself reads the same feed and applies the
-// same rules (windows/src/update/feed.rs, android/.../update/ReleaseFeed.kt):
+// The feed is the latest release as ime-jd-repo.hronro.com serves it
+// (cf-worker/worker.js), in the shape of GitHub's `releases/latest`
+// endpoint, its downloads that host's too, so that users who cannot reach
+// GitHub get updates; without it there, the host sends the request on to
+// GitHub's own. Every platform frontend that updates itself reads the same
+// feed and applies the same rules (windows/src/update/feed.rs, android/.../update/ReleaseFeed.kt):
 // compare the release's `MAJOR.MINOR.PATCH` against the running build, and
 // pick the asset `.github/workflows/release.yml` names for this platform.
 
@@ -73,8 +76,8 @@ struct ReleaseAsset: Equatable {
     let sha256: String?
 }
 
-/// The newest release, as reported by the `releases/latest` endpoint (which
-/// excludes drafts and pre-releases).
+/// The newest release, as reported by the feed (which, like GitHub's
+/// `releases/latest`, excludes drafts and pre-releases).
 struct LatestRelease: Equatable {
     /// The Git tag, e.g. `v0.6.0`. Also the version the asset names carry.
     let tag: String
@@ -117,8 +120,9 @@ struct LatestRelease: Equatable {
 }
 
 enum UpdateFeed {
-    /// `releases/latest` — drafts and pre-releases excluded by the endpoint.
-    static let latestReleaseURL = URL(string: "https://api.github.com/repos/hronro/ime-jd/releases/latest")!
+    /// The latest release, which the release workflow publishes once all of
+    /// its installers are built (cf-worker/latest.sh); never a pre-release.
+    static let latestReleaseURL = URL(string: "https://ime-jd-repo.hronro.com/releases/latest.json")!
     /// Where a user goes to read notes or download by hand.
     static let releasesPageURL = URL(string: "https://github.com/hronro/ime-jd/releases")!
     /// Minimum gap between two automatic checks.

@@ -2,9 +2,12 @@
 //! here run on any host (`cargo test` on the Windows CI job, or
 //! `rustc --test src/update/feed.rs` on a Mac).
 //!
-//! The feed is GitHub's `releases/latest` endpoint for this repository.
-//! Every platform frontend that updates itself reads the same feed and
-//! applies the same rules (macos/JdIME/Update/UpdateFeed.swift,
+//! The feed is the latest release as ime-jd-repo.hronro.com serves it
+//! (cf-worker/worker.js), in the shape of GitHub's `releases/latest`
+//! endpoint, its downloads that host's too, so that users who cannot reach
+//! GitHub get updates; without it there, the host sends the request on to
+//! GitHub's own, a redirect WinHTTP follows. Every platform frontend that
+//! updates itself reads the same feed and applies the same rules (macos/JdIME/Update/UpdateFeed.swift,
 //! android/.../update/ReleaseFeed.kt): compare the release's
 //! `MAJOR.MINOR.PATCH` against the running build, and pick the asset
 //! `.github/workflows/release.yml` names for this platform.
@@ -16,10 +19,11 @@
 //! minimal-dependency style; the keys involved never collide with the nested
 //! `uploader` object, so a per-object key lookup is unambiguous.
 
-/// Host + path of the `releases/latest` endpoint (drafts and pre-releases
-/// excluded by the endpoint). Split for WinHTTP, which wants them apart.
-pub const FEED_HOST: &str = "api.github.com";
-pub const FEED_PATH: &str = "/repos/hronro/ime-jd/releases/latest";
+/// Host + path of the feed: the latest release, which the release workflow
+/// publishes once all of its installers are built (cf-worker/latest.sh);
+/// never a pre-release. Split for WinHTTP, which wants them apart.
+pub const FEED_HOST: &str = "ime-jd-repo.hronro.com";
+pub const FEED_PATH: &str = "/releases/latest.json";
 
 /// Minimum gap between two automatic checks, in seconds.
 pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
@@ -493,6 +497,46 @@ mod tests {
         assert_eq!(extract_asset(FEED_WITH_ASSETS, "nope.zip"), None);
         // A payload with no assets array at all.
         assert_eq!(extract_asset(r#"{"tag_name":"v1.0.0"}"#, "x.zip"), None);
+    }
+
+    // The feed as cf-worker/latest.sh writes it, jq's layout: the fields the
+    // clients read and no others, the downloads the Worker's.
+    const WORKER_FEED: &str = r#"{
+  "tag_name": "v0.13.0",
+  "html_url": "https://github.com/hronro/ime-jd/releases/tag/v0.13.0",
+  "assets": [
+    {
+      "name": "jd-ime-v0.13.0-windows-arm64.zip",
+      "size": 8394505,
+      "digest": "sha256:040d1a3b5348e4f324b3a4e1244422e747ac5ecc8b7b4f0039fefd548c244b74",
+      "browser_download_url": "https://ime-jd-repo.hronro.com/releases/download/v0.13.0/jd-ime-v0.13.0-windows-arm64.zip"
+    },
+    {
+      "name": "jd-ime-v0.13.0-windows-x86_64.zip",
+      "size": 6326929,
+      "digest": "sha256:6c1fd414f3e9af88ffc1ba9b2ad260c1d2b4e8135011c8b28591810a93cb6e2f",
+      "browser_download_url": "https://ime-jd-repo.hronro.com/releases/download/v0.13.0/jd-ime-v0.13.0-windows-x86_64.zip"
+    }
+  ]
+}"#;
+
+    #[test]
+    fn reads_the_feed_the_worker_serves() {
+        assert_eq!(extract_tag(WORKER_FEED).as_deref(), Some("v0.13.0"));
+        let a =
+            extract_asset(WORKER_FEED, "jd-ime-v0.13.0-windows-x86_64.zip").expect("x86_64 asset");
+        assert_eq!(a.size, 6326929);
+        assert_eq!(
+            a.sha256.as_deref(),
+            Some("6c1fd414f3e9af88ffc1ba9b2ad260c1d2b4e8135011c8b28591810a93cb6e2f")
+        );
+        assert_eq!(
+            split_https_url(&a.url),
+            Some((
+                FEED_HOST,
+                "/releases/download/v0.13.0/jd-ime-v0.13.0-windows-x86_64.zip"
+            ))
+        );
     }
 
     #[test]

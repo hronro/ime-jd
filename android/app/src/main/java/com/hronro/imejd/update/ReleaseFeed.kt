@@ -2,9 +2,12 @@
 // framework types, so it runs as a JVM unit test (src/test/.../ReleaseFeedTest).
 // UpdateChecker does the fetching and the presenting.
 //
-// The feed is GitHub's `releases/latest` endpoint for this repository. Every
-// platform frontend that updates itself reads the same feed and applies the
-// same rules (macos/JdIME/Update/UpdateFeed.swift, windows/src/update/feed.rs):
+// The feed is the latest release as ime-jd-repo.hronro.com serves it
+// (cf-worker/worker.js), in the shape of GitHub's `releases/latest`
+// endpoint, its downloads that host's too, so that users who cannot reach
+// GitHub get updates; without it there, the host sends the request on to
+// GitHub's own. Every platform frontend that updates itself reads the same
+// feed and applies the same rules (macos/JdIME/Update/UpdateFeed.swift, windows/src/update/feed.rs):
 // compare the release's MAJOR.MINOR.PATCH against the running build, and pick
 // the asset `.github/workflows/release.yml` names for this platform.
 package com.hronro.imejd.update
@@ -63,8 +66,8 @@ data class ReleaseAsset(
 )
 
 /**
- * The newest release, as reported by the `releases/latest` endpoint (which
- * excludes drafts and pre-releases).
+ * The newest release, as reported by the feed (which, like GitHub's
+ * `releases/latest`, excludes drafts and pre-releases).
  */
 data class LatestRelease(
     /** The Git tag, e.g. "v0.6.0". Also the version the asset names carry. */
@@ -115,8 +118,11 @@ data class LatestRelease(
 }
 
 object UpdateFeed {
-    /** `releases/latest` — drafts and pre-releases excluded by the endpoint. */
-    const val LATEST_RELEASE_URL = "https://api.github.com/repos/hronro/ime-jd/releases/latest"
+    /**
+     * The latest release, which the release workflow publishes once all of
+     * its installers are built (cf-worker/latest.sh); never a pre-release.
+     */
+    const val LATEST_RELEASE_URL = "https://ime-jd-repo.hronro.com/releases/latest.json"
 
     /** Where a user goes to read notes or download by hand. */
     const val RELEASES_PAGE_URL = "https://github.com/hronro/ime-jd/releases"

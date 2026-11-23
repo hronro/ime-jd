@@ -84,7 +84,7 @@ object UpdateInstaller {
         try {
             conn.connectTimeout = 15_000
             conn.readTimeout = 30_000
-            conn.instanceFollowRedirects = true // github.com → objects.githubusercontent.com
+            conn.instanceFollowRedirects = true // to GitHub, where the feed's host sends a download it cannot serve
             conn.setRequestProperty("User-Agent", "ime-jd-android")
             val code = conn.responseCode
             if (code != HttpURLConnection.HTTP_OK) throw IOException("HTTP $code")

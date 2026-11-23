@@ -15,7 +15,7 @@
 //
 // What it has to say goes to the desktop's notification service. For tests,
 // IMEJD_UPDATE_FEED names a feed on this machine (http://127.0.0.1 or
-// localhost) to read instead of GitHub's; only then does IMEJD_UPDATE_SUDO
+// localhost) to read instead of the real one; only then does IMEJD_UPDATE_SUDO
 // name a program to run install.sh with in place of pkexec (empty: none),
 // and an install go ahead over 键道 installed some other way.
 #include <cerrno>
@@ -57,7 +57,7 @@ constexpr const char *kRestartHint =
 constexpr size_t kFeedLimit = 4 << 20;
 constexpr uint64_t kDownloadLimit = 256 << 20;
 
-/// Where the feed is read from, and how install.sh is run: GitHub's and
+/// Where the feed is read from, and how install.sh is run: the real feed and
 /// pkexec, or a test's.
 struct Setup {
     std::string feed = kFeedUrl;
